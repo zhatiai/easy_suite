@@ -7,6 +7,7 @@ import {
 import type { Identity } from './auth';
 import { ApiError, digest, json, readJson, token, type Env } from './core';
 import { noteRoutes, toNote, type NoteRow } from './notes';
+import { folderRoutes, listFolders } from './folders';
 
 interface TokenRow {
   id: string;
@@ -108,6 +109,8 @@ async function searchNotes(request: Request, env: Env, user: IntegrationIdentity
   const sort = url.searchParams.get('sort') ?? 'default';
   if (!['default', 'updated'].includes(sort)) throw new ApiError(400, 'Invalid sort.');
   const tag = (url.searchParams.get('tag') ?? '').slice(0, 40);
+  const folderId = url.searchParams.get('folderId') ?? '';
+  if (folderId && folderId !== 'root' && !idPattern.test(folderId)) throw new ApiError(400, 'Invalid folder filter.');
   const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
   const filters: string[] = [];
   const binds: unknown[] = [];
@@ -126,6 +129,8 @@ async function searchNotes(request: Request, env: Env, user: IntegrationIdentity
     filters.push('EXISTS(SELECT 1 FROM json_each(n.tags) WHERE value=?)');
     binds.push(tag);
   }
+  if (folderId === 'root') filters.push('n.folder_id IS NULL');
+  else if (folderId) { filters.push('n.folder_id=?'); binds.push(folderId); }
   const orderBinds: unknown[] = [];
   let order = sort === 'updated' ? 'n.updated_at DESC,n.id ASC' : 'n.pinned DESC,n.updated_at DESC,n.id ASC';
   if (query && sort === 'default') {
@@ -270,6 +275,15 @@ export async function integrationRoutes(
   }
   if (path === '/api/integrations/notes' && request.method === 'GET') {
     return searchNotes(request, env, user);
+  }
+  if (path === '/api/integrations/folders' && request.method === 'GET') {
+    return json({ folders: await listFolders(env, user.id) });
+  }
+  const folderMatch = /^\/api\/integrations\/folders(?:\/([^/]+))?$/.exec(path);
+  if (folderMatch && ['POST', 'PATCH', 'DELETE'].includes(request.method)) {
+    if (user.access !== 'read-write') throw new ApiError(403, 'This integration token is read-only.');
+    const browserPath = folderMatch[1] ? `/api/folders/${folderMatch[1]}` : '/api/folders';
+    return folderRoutes(request, env, user, browserPath);
   }
   if (path === '/api/integrations/notes/batch' && request.method === 'GET') {
     const rawIds = url.searchParams.get('ids');

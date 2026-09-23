@@ -17,20 +17,20 @@ import { publishNoteChanges } from './events';
 
 export interface NoteRow {
   id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
-  deleted_at: number | null; created_at: number; updated_at: number; revision: number;
+  folder_id: string | null; deleted_at: number | null; created_at: number; updated_at: number; revision: number;
   dedup_hash: string; mutation_id: string; mutation_hash: string;
 }
 interface VersionInputRow {
-  title: string; content: string; tags: string; pinned: number; archived: number; deleted_at: number | null;
+  title: string; content: string; tags: string; pinned: number; archived: number; folder_id: string | null; deleted_at: number | null;
 }
 export const toNote = (row: NoteRow): Note => ({
   id: row.id, title: row.title, content: row.content, tags: JSON.parse(row.tags),
-  pinned: !!row.pinned, archived: !!row.archived, deletedAt: row.deleted_at, createdAt: row.created_at,
+  pinned: !!row.pinned, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at, createdAt: row.created_at,
   updatedAt: row.updated_at, revision: row.revision,
 });
 const versionInput = (row: VersionInputRow): NoteInput => ({
   title: row.title, content: row.content, tags: JSON.parse(row.tags),
-  pinned: !!row.pinned, archived: !!row.archived, deletedAt: row.deleted_at,
+  pinned: !!row.pinned, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at,
 });
 
 export async function loadNote(env: Env, userId: string, id: string): Promise<NoteRow | null> {
@@ -39,9 +39,9 @@ export async function loadNote(env: Env, userId: string, id: string): Promise<No
 
 const blankCondition = "title='' AND content='' AND tags='[]' AND archived=0 AND deleted_at IS NULL";
 
-async function loadBlank(env: Env, userId: string): Promise<NoteRow | null> {
-  return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND ${blankCondition} LIMIT 1`)
-    .bind(userId).first<NoteRow>();
+async function loadBlank(env: Env, userId: string, folderId: string | null = null): Promise<NoteRow | null> {
+  return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND folder_id IS ? AND ${blankCondition} LIMIT 1`)
+    .bind(userId, folderId).first<NoteRow>();
 }
 
 function isBlank(input: NoteInput): boolean {
@@ -56,13 +56,15 @@ function validate(data: Record<string, unknown>, env: Env): NoteInput {
       data.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 40) ||
       typeof data.pinned !== 'boolean' ||
       typeof data.archived !== 'boolean' ||
+      !(data.folderId === undefined || data.folderId === null || typeof data.folderId === 'string' && idPattern.test(data.folderId)) ||
       !(data.deletedAt === null || typeof data.deletedAt === 'number' && Number.isSafeInteger(data.deletedAt) && data.deletedAt > 0)) {
     throw new ApiError(400, 'Invalid note fields or note size limit exceeded.');
   }
   return {
     title: data.title.trim(), content: data.content,
     tags: [...new Set((data.tags as string[]).map((tag) => tag.trim()))],
-    pinned: data.pinned, archived: data.archived, deletedAt: data.deletedAt as number | null,
+    pinned: data.pinned, archived: data.archived, folderId: (data.folderId ?? null) as string | null,
+    deletedAt: data.deletedAt as number | null,
   };
 }
 
@@ -75,10 +77,13 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
       (create && data.revision !== 0) || (!create && data.revision === 0)) {
     throw new ApiError(400, 'Invalid revision or operation ID.');
   }
+  const current = await loadNote(env, user.id, id);
+  if (data.folderId === undefined && current) input.folderId = current.folder_id;
+  if (input.folderId && !await env.DB.prepare('SELECT 1 FROM folders WHERE id=? AND user_id=?')
+      .bind(input.folderId, user.id).first()) throw new ApiError(404, 'Folder not found.');
   const createVersion = user.actorType === 'ai' || data.createVersion === true;
   const dedupHash = await noteFingerprint(input.title, input.content);
   const hash = await digest(JSON.stringify({ ...input, revision: data.revision, createVersion }));
-  const current = await loadNote(env, user.id, id);
   if (current?.mutation_id === data.operationId) {
     if (current.mutation_hash !== hash) throw new ApiError(409, 'Operation ID reused with different content.');
     return json({ note: toNote(current) });
@@ -91,7 +96,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   const currentInput = current ? noteInput(toNote(current)) : null;
   const latestVersion = createVersion && current
-    ? await env.DB.prepare(`SELECT title,content,tags,pinned,archived,deleted_at
+    ? await env.DB.prepare(`SELECT title,content,tags,pinned,archived,folder_id,deleted_at
       FROM note_versions WHERE note_id=? ORDER BY revision DESC LIMIT 1`)
       .bind(id).first<VersionInputRow>()
     : null;
@@ -110,8 +115,8 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
         WHERE id=? AND user_id=? AND revision=?`)
         .bind(mutation, hash, id, user.id, revision),
       env.DB.prepare(`INSERT OR IGNORE INTO note_versions
-        (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
-        SELECT id,revision,title,content,tags,pinned,deleted_at,?,archived,?,? FROM notes
+        (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name,folder_id)
+        SELECT id,revision,title,content,tags,pinned,deleted_at,?,archived,?,?,folder_id FROM notes
         WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
         .bind(time, user.actorType, user.actorName, ...guardBinds),
       env.DB.prepare(`DELETE FROM note_versions WHERE note_id=? AND revision NOT IN
@@ -140,29 +145,33 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   const mutation = data.operationId;
   const fields = [
     input.title, input.content, dedupHash, JSON.stringify(input.tags),
-    input.pinned ? 1 : 0, input.archived ? 1 : 0, input.deletedAt,
+    input.pinned ? 1 : 0, input.archived ? 1 : 0, input.folderId, input.deletedAt,
   ];
   const statements: D1PreparedStatement[] = [];
   if (create) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO notes
-      (id,user_id,title,content,dedup_hash,tags,pinned,archived,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      (id,user_id,title,content,dedup_hash,tags,pinned,archived,folder_id,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
       WHERE ${readyCondition}
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))
         AND NOT EXISTS(SELECT 1 FROM purged_notes WHERE id=?)
         AND (SELECT COUNT(*) FROM notes WHERE user_id=?)<?`)
-      .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
+      .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds,
+        input.folderId, input.folderId, user.id, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
   } else {
-    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,archived=?,deleted_at=?,
+    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,archived=?,folder_id=?,deleted_at=?,
       updated_at=?,revision=?,mutation_id=?,mutation_hash=?
-      WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}`)
-      .bind(...fields, time, revision, mutation, hash, id, user.id, data.revision, ...readyBinds));
+      WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))`)
+      .bind(...fields, time, revision, mutation, hash, id, user.id, data.revision, ...readyBinds,
+        input.folderId, input.folderId, user.id));
   }
   const guard = 'EXISTS(SELECT 1 FROM notes WHERE id=? AND user_id=? AND revision=? AND mutation_id=?)';
   const guardBinds = [id, user.id, revision, mutation];
   if (shouldCreateVersion) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO note_versions
-      (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name)
-      SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,? FROM notes
+      (note_id,revision,title,content,tags,pinned,deleted_at,saved_at,archived,actor_type,actor_name,folder_id)
+      SELECT id,revision,title,content,tags,pinned,deleted_at,updated_at,archived,?,?,folder_id FROM notes
       WHERE id=? AND user_id=? AND revision=? AND mutation_id=?`)
       .bind(user.actorType, user.actorName, ...guardBinds));
   }
@@ -194,7 +203,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   const saved = await loadNote(env, user.id, id);
   if (!result[0].meta.changes) {
     if (create && isBlank(input)) {
-      const blank = await loadBlank(env, user.id);
+      const blank = await loadBlank(env, user.id, input.folderId);
       if (blank) return json({ note: toNote(blank), reused: true });
     }
     if (saved) throw new ApiError(409, 'The note changed on another device.', { current: toNote(saved) });
@@ -245,6 +254,8 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const limit = Number(url.searchParams.get('limit') ?? 50);
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new ApiError(400, 'Invalid limit.');
     const tag = (url.searchParams.get('tag') ?? '').slice(0, 40);
+    const rawFolderId = url.searchParams.get('folderId');
+    if (rawFolderId !== null && rawFolderId !== 'root' && !idPattern.test(rawFolderId)) throw new ApiError(400, 'Invalid folder filter.');
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
     const filters = ['user_id=?'];
     const binds: unknown[] = [user.id];
@@ -259,11 +270,13 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       binds.push(`%${escape(q)}%`, `%${escape(q)}%`);
     }
     if (tag) { filters.push('EXISTS(SELECT 1 FROM json_each(notes.tags) WHERE value=?)'); binds.push(tag); }
+    if (rawFolderId === 'root') filters.push('folder_id IS NULL');
+    else if (rawFolderId) { filters.push('folder_id=?'); binds.push(rawFolderId); }
     const excerpt = q
       ? `(CASE WHEN instr(lower(content),lower(?))>61 THEN '…' ELSE '' END) ||
         substr(content,max(1,instr(lower(content),lower(?))-60),max(180,length(?)+60))`
       : 'substr(content,1,180)';
-    const result = await env.DB.prepare(`SELECT id,title,${excerpt} AS content,tags,pinned,archived,deleted_at,created_at,updated_at,revision
+    const result = await env.DB.prepare(`SELECT id,title,${excerpt} AS content,tags,pinned,archived,folder_id,deleted_at,created_at,updated_at,revision
       FROM notes WHERE ${filters.join(' AND ')} ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ? OFFSET ?`)
       .bind(...(q ? [q, q, q] : []), ...binds, limit + 1, offset).all<NoteRow>();
     const notes = result.results.slice(0, limit).map((row) => {
@@ -322,7 +335,9 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     return json({ deleted: count?.count ?? 0 });
   }
   if (path === '/api/notes/blank' && request.method === 'GET') {
-    const row = await loadBlank(env, user.id);
+    const rawFolderId = url.searchParams.get('folderId');
+    if (rawFolderId !== null && rawFolderId !== 'root' && !idPattern.test(rawFolderId)) throw new ApiError(400, 'Invalid folder filter.');
+    const row = await loadBlank(env, user.id, rawFolderId && rawFolderId !== 'root' ? rawFolderId : null);
     return json({ note: row ? toNote(row) : null });
   }
   const match = /^\/api\/notes\/([^/]+)(?:\/(versions|backlinks))?$/.exec(path);
@@ -333,7 +348,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
     if (match[2] === 'backlinks') {
       const escaped = id.replace(/[\\%_]/g, '\\$&');
-      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,
+      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,folder_id,
         deleted_at,created_at,updated_at,revision FROM notes
         WHERE user_id=? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\\'
         ORDER BY updated_at DESC,id ASC LIMIT 200`).bind(user.id, `%[[${escaped}|%`).all<NoteRow>();
@@ -348,7 +363,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       .bind(id).all<NoteRow & { saved_at: number; actor_type: 'user' | 'ai'; actor_name: string }>();
     const versions: Version[] = rows.results.map((row) => ({
       title: row.title, content: row.content, tags: JSON.parse(row.tags), pinned: !!row.pinned,
-      archived: !!row.archived, deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
+      archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at, revision: row.revision, savedAt: row.saved_at,
       actorType: row.actor_type, actorName: row.actor_name,
     }));
     return json({ versions });

@@ -5,14 +5,23 @@ export interface Note {
   tags: string[];
   pinned: boolean;
   archived: boolean;
+  folderId: string | null;
   deletedAt: number | null;
   createdAt: number;
   updatedAt: number;
   revision: number;
 }
 
-export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'archived' | 'deletedAt'>;
+export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'archived' | 'folderId' | 'deletedAt'>;
 export type NoteSummary = Omit<Note, 'content'> & { excerpt: string };
+export interface Folder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: number;
+  updatedAt: number;
+  noteCount: number;
+}
 export interface NoteSearchMatch {
   field: 'title' | 'content';
   line: number | null;
@@ -120,13 +129,14 @@ export interface SyncChange {
 
 export const noteInput = (note: Note): NoteInput => ({
   title: note.title, content: note.content, tags: note.tags,
-  pinned: note.pinned, archived: note.archived, deletedAt: note.deletedAt,
+  pinned: note.pinned, archived: note.archived, folderId: note.folderId, deletedAt: note.deletedAt,
 });
 
 export function sameVersionedInput(left: NoteInput, right: NoteInput): boolean {
   return left.title === right.title &&
     left.content === right.content &&
     left.archived === right.archived &&
+    left.folderId === right.folderId &&
     left.deletedAt === right.deletedAt &&
     left.tags.length === right.tags.length &&
     left.tags.every((tag) => right.tags.includes(tag));

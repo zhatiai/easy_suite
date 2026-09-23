@@ -16,6 +16,7 @@ const noteMetadataSchema = z.object({
   tags: z.array(z.string()),
   pinned: z.boolean(),
   archived: z.boolean(),
+  folderId: z.string().nullable(),
   deletedAt: z.number().nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
@@ -62,6 +63,7 @@ function noteMetadata(note: Note) {
     tags: note.tags,
     pinned: note.pinned,
     archived: note.archived,
+    folderId: note.folderId,
     deletedAt: note.deletedAt,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
@@ -132,6 +134,7 @@ function recentNote(note: IntegrationNoteSummary) {
     tags: note.tags,
     pinned: note.pinned,
     archived: note.archived,
+    folderId: note.folderId,
     deletedAt: note.deletedAt,
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
@@ -390,6 +393,22 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     };
   });
 
+  server.registerTool('easynote_list_folders', {
+    title: 'List EasyNote Folders',
+    description: 'List the complete EasyNote folder hierarchy with stable IDs, parent IDs and direct note counts.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: z.object({ folders: z.array(z.object({
+      id: z.string(), name: z.string(), parentId: z.string().nullable(),
+      createdAt: z.number(), updatedAt: z.number(), noteCount: z.number(),
+    })) }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async () => {
+    try {
+      const result = await client.folders();
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
+
   if (status.access !== 'read-write') return server;
 
   server.registerTool('easynote_create_note', {
@@ -401,10 +420,11 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
       tags: z.array(z.string().min(1).max(40)).max(20).default([]),
       pinned: z.boolean().default(false),
       archived: z.boolean().default(false),
+      folderId: z.uuid().nullable().default(null).describe('Optional destination folder ID from easynote_list_folders.'),
     }).strict(),
     outputSchema: noteResultSchema,
     annotations: writeAnnotations,
-  }, async ({ title, content, tags, pinned, archived }) => {
+  }, async ({ title, content, tags, pinned, archived, folderId }) => {
     try {
       return await save(client, crypto.randomUUID(), {
         title,
@@ -412,6 +432,7 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
         tags: [...new Set(tags)],
         pinned,
         archived,
+        folderId,
         deletedAt: null,
       }, 0);
     } catch (error) {
@@ -430,8 +451,9 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
       tags: z.array(z.string().min(1).max(40)).max(20).optional(),
       pinned: z.boolean().optional(),
       archived: z.boolean().optional(),
-    }).strict().refine(({ title, content, tags, pinned, archived }) =>
-      title !== undefined || content !== undefined || tags !== undefined || pinned !== undefined || archived !== undefined,
+      folderId: z.uuid().nullable().optional().describe('Move the note to this folder, or null for the root.'),
+    }).strict().refine(({ title, content, tags, pinned, archived, folderId }) =>
+      title !== undefined || content !== undefined || tags !== undefined || pinned !== undefined || archived !== undefined || folderId !== undefined,
     { message: 'At least one field must be supplied.' }),
     outputSchema: noteResultSchema,
     annotations: writeAnnotations,
@@ -445,6 +467,43 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     } catch (error) {
       return toolError(error);
     }
+  });
+
+  server.registerTool('easynote_create_folder', {
+    title: 'Create EasyNote Folder',
+    description: 'Create a folder at the root or inside another folder.',
+    inputSchema: z.object({ name: z.string().min(1).max(120), parentId: z.uuid().nullable().default(null) }).strict(),
+    annotations: writeAnnotations,
+  }, async ({ name, parentId }) => {
+    try {
+      const result = await client.createFolder(name, parentId);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('easynote_update_folder', {
+    title: 'Rename or Move EasyNote Folder',
+    description: 'Rename a folder or move it to another parent. Cycles and sibling name collisions are rejected.',
+    inputSchema: z.object({ id: z.uuid(), name: z.string().min(1).max(120).optional(), parentId: z.uuid().nullable().optional() })
+      .strict().refine(({ name, parentId }) => name !== undefined || parentId !== undefined, { message: 'Supply a name or parentId.' }),
+    annotations: writeAnnotations,
+  }, async ({ id, ...patch }) => {
+    try {
+      const result = await client.updateFolder(id, patch);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('easynote_delete_folder', {
+    title: 'Delete EasyNote Folder',
+    description: 'Delete a folder tree. Notes inside it are preserved and moved to the root; completely blank notes move to trash.',
+    inputSchema: z.object({ id: z.uuid() }).strict(),
+    annotations: { ...writeAnnotations, destructiveHint: true },
+  }, async ({ id }) => {
+    try {
+      const result = await client.deleteFolder(id);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    } catch (error) { return toolError(error); }
   });
 
   server.registerTool('easynote_archive_note', {

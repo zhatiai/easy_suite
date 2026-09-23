@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, GitMerge, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
-import type { ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
+import type { Folder, ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
 import { AiAccess } from './AiAccess';
@@ -38,6 +38,31 @@ function IconButton({ label, children, className, ...props }: React.ButtonHTMLAt
 
 function BrandIcon({ size }: { size: number }) {
   return <img className="brand-icon" src="/easynote-icon.svg" width={size} height={size} alt="" aria-hidden="true" />;
+}
+
+function FolderTree({ folders, selected, disabled, choose, createChild, edit, remove }: {
+  folders: Folder[];
+  selected: string | null | undefined;
+  disabled: boolean;
+  choose(id: string): void;
+  createChild(id: string): void;
+  edit(folder: Folder): void;
+  remove(folder: Folder): void;
+}) {
+  const render = (parentId: string | null, depth: number): ReactNode => folders
+    .filter((folder) => folder.parentId === parentId)
+    .map((folder) => <div key={folder.id} className="folder-tree-branch">
+      <div className={`folder-tree-row ${selected === folder.id ? 'active' : ''}`} style={{ paddingLeft: `${8 + depth * 15}px` }}>
+        <button className="folder-tree-select" onClick={() => choose(folder.id)}>
+          <FolderOpen size={15} /><span>{folder.name}</span><small>{folder.noteCount || ''}</small>
+        </button>
+        <IconButton label="新建子文件夹" disabled={disabled} onClick={() => createChild(folder.id)}><Plus size={12} /></IconButton>
+        <IconButton label="编辑文件夹" disabled={disabled} onClick={() => edit(folder)}><Pencil size={12} /></IconButton>
+        <IconButton label="删除文件夹" disabled={disabled} className="danger-icon" onClick={() => remove(folder)}><Trash2 size={12} /></IconButton>
+      </div>
+      {render(folder.id, depth + 1)}
+    </div>);
+  return <nav className="folder-tree" aria-label={t('文件夹')}>{render(null, 0)}</nav>;
 }
 
 const DialogFeedbackContext = createContext<((target: HTMLElement, mounted: boolean) => void) | null>(null);
@@ -135,6 +160,7 @@ const conflictFieldName: Record<NoteConflictField, string> = {
   tags: '标签',
   pinned: '置顶状态',
   archived: '归档状态',
+  folderId: '所属文件夹',
   deletedAt: '删除状态',
 };
 
@@ -142,6 +168,7 @@ function conflictFieldValue(note: Note, field: NoteConflictField): string {
   if (field === 'tags') return note.tags.join('、') || t('无标签');
   if (field === 'pinned') return note.pinned ? t('已置顶') : t('未置顶');
   if (field === 'archived') return note.archived ? t('已归档') : t('未归档');
+  if (field === 'folderId') return note.folderId ?? t('根目录');
   if (field === 'deletedAt') return note.deletedAt ? t('已移入回收站') : t('正常笔记');
   return note[field] || t('（空）');
 }
@@ -527,6 +554,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [linkQuery, setLinkQuery] = useState('');
   const [linkNotes, setLinkNotes] = useState<NoteSummary[]>([]);
   const [tagManager, setTagManager] = useState(false);
+  const [folderEditor, setFolderEditor] = useState<{ id?: string; name: string; parentId: string | null } | null>(null);
+  const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
+  const [importFolderId, setImportFolderId] = useState<string | null>(book.folderId ?? null);
   const [newTagInput, setNewTagInput] = useState('');
   const [editingTag, setEditingTag] = useState<string | null>(null);
   const [editingTagValue, setEditingTagValue] = useState('');
@@ -549,6 +579,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [transfer, setTransfer] = useState('');
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('easynote-theme') === 'dark');
+  const [lightBackground, setLightBackground] = useState<'light' | 'white' | 'warm'>(() => {
+    const stored = localStorage.getItem('easynote-light-background');
+    return stored === 'white' || stored === 'warm' ? stored : 'light';
+  });
   const [wideDocument, setWideDocument] = useState(() => localStorage.getItem('easynote-document-width') === 'wide');
   const editor = useRef<EditorHandle>(null);
   const editorCursor = useRef(0);
@@ -607,7 +641,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     updateNoteListWidth(widths[event.key]);
     localStorage.setItem('easynote-note-list-width', String(Math.min(440, Math.max(220, widths[event.key]))));
   };
-  useEffect(() => { document.documentElement.dataset.theme = dark ? 'dark' : 'light'; localStorage.setItem('easynote-theme', dark ? 'dark' : 'light'); }, [dark]);
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? 'dark' : lightBackground;
+    localStorage.setItem('easynote-theme', dark ? 'dark' : 'light');
+    localStorage.setItem('easynote-light-background', lightBackground);
+  }, [dark, lightBackground]);
   useEffect(() => {
     const pending = pendingEditorOffset.current;
     editorCursor.current = pending && pending.noteId === note?.id
@@ -726,12 +764,22 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }
   };
   const chooseView = (view: string, tag = '') => {
+    setShareManagement(false);
     book.setView(view);
     book.setTag(tag);
+    book.setFolderId(undefined);
     setMobileNavigation(false);
     setMobileNote(false);
     setSelectionMode(false);
     setSelected(new Set());
+  };
+  const chooseFolder = (id: string) => {
+    setShareManagement(false);
+    book.setView('all');
+    book.setTag('');
+    book.setFolderId(id);
+    setMobileNavigation(false);
+    setMobileNote(false);
   };
   const toggleMobileSearch = () => {
     if (mobileSearch || book.query) {
@@ -1048,7 +1096,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     finally { setTransfer(''); }
   };
   const viewName = book.view === 'trash' ? t('trash') : book.view === 'archive' ? t('归档笔记') : t('all_notes');
-  const activeView = book.tag ? `${viewName} · #${book.tag}` : viewName;
+  const activeFolder = book.folderId ? book.folders.find((folder) => folder.id === book.folderId) : null;
+  const activeView = activeFolder?.name ?? (book.tag ? `${viewName} · #${book.tag}` : viewName);
   const disabled = !!transfer || uploading || book.busy || syncing;
   const commandMatch = (...labels: string[]) => {
     const query = commandQuery.trim().toLocaleLowerCase();
@@ -1168,6 +1217,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           onClick={() => setShareManagement(true)}><Share2 size={17} />{t('sharing')}</button>
         <button className={!shareManagement && book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />{t('trash')}</button>
       </nav>
+      <div className="section-label"><span>{t('文件夹')}</span><IconButton label="新建文件夹" disabled={!book.online || !!session.offline}
+        onClick={() => setFolderEditor({ name: '', parentId: null })}><Plus size={14} /></IconButton></div>
+      <FolderTree folders={book.folders} selected={book.folderId} disabled={!book.online || !!session.offline} choose={chooseFolder}
+        createChild={(parentId) => setFolderEditor({ name: '', parentId })}
+        edit={(folder) => setFolderEditor({ id: folder.id, name: folder.name, parentId: folder.parentId })}
+        remove={setDeletingFolder} />
       <div className="section-label"><span>{t('tags')}</span><IconButton label="管理标签" onClick={() => setTagManager(true)}><Tags size={14} /></IconButton></div>
       <nav className="tag-nav" aria-label={t('tags')}>{book.tags.map((tag) =>
         <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-prefix" aria-hidden="true">#</span>{tag}</button>)}
@@ -1325,7 +1380,12 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <div className="document-scroll">
             <div className={`document ${wideDocument ? 'wide' : ''}`}>
               <input className="note-title" aria-label={t('note_title')} placeholder={t('untitled_note')} maxLength={256} value={note.title} readOnly={!!note.deletedAt || !!transfer} onChange={(e) => setNoteFields({ title: e.target.value })} />
-              <div className="document-meta"><time>{new Date(note.createdAt).toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric' })}</time><span>{uiLanguage() === 'en' ? `Rev ${note.revision}` : `修订 ${note.revision}`}</span></div>
+              <div className="document-meta"><time>{new Date(note.createdAt).toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric' })}</time><span>{uiLanguage() === 'en' ? `Rev ${note.revision}` : `修订 ${note.revision}`}</span>
+                <label className="note-folder-picker"><FolderOpen size={13} /><select aria-label={t('所属文件夹')} value={note.folderId ?? ''}
+                  disabled={!!note.deletedAt || !!transfer} onChange={(event) => setNoteFields({ folderId: event.target.value || null })}>
+                  <option value="">{t('根目录')}</option>{book.folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+                </select></label>
+              </div>
               {layout === 'preview' || note.deletedAt || transfer
                 ? <Preview content={note.content} onImage={setLightbox} onNote={(id) => void openNote(id)}
                     onFile={(id, href) => void run(() => downloadPrivateFile(id, href))}
@@ -1498,14 +1558,14 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
       const files = Array.from(e.target.files ?? []);
       if (files.length) void transferAction(() =>
-        importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
+        importExternalFiles(files, session.config, setTransfer, book.findDuplicates, importFolderId), ({ imported, skipped }) =>
         imported ? (skipped ? t('已导入 {0} 篇，跳过 {1} 篇重复笔记', imported, skipped) : t('已导入 {0} 篇笔记', imported)) : t('未导入：{0} 篇笔记已存在', skipped));
       e.target.value = '';
     }} />
     <input hidden ref={importFolderInput} type="file" multiple {...{ webkitdirectory: '' }} onChange={(e) => {
       const files = Array.from(e.target.files ?? []);
       if (files.length) void transferAction(() =>
-        importExternalFiles(files, session.config, setTransfer, book.findDuplicates), ({ imported, skipped }) =>
+        importExternalFiles(files, session.config, setTransfer, book.findDuplicates, importFolderId), ({ imported, skipped }) =>
         imported ? (skipped ? t('已导入 {0} 篇，跳过 {1} 篇重复笔记', imported, skipped) : t('已导入 {0} 篇笔记', imported)) : t('未导入：{0} 篇笔记已存在', skipped));
       e.target.value = '';
     }} />
@@ -1518,6 +1578,13 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           onClick={() => { setMobileNavigation(false); setShareManagement(true); }}><Share2 size={18} />{t('sharing')}</button>
         <button className={!shareManagement && book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={18} />{t('trash')}</button>
       </nav>
+      {book.folders.length > 0 && <>
+        <div className="mobile-navigation-label">{t('文件夹')}</div>
+        <FolderTree folders={book.folders} selected={book.folderId} disabled={!book.online || !!session.offline} choose={chooseFolder}
+          createChild={(parentId) => { setMobileNavigation(false); setFolderEditor({ name: '', parentId }); }}
+          edit={(folder) => { setMobileNavigation(false); setFolderEditor({ id: folder.id, name: folder.name, parentId: folder.parentId }); }}
+          remove={(folder) => { setMobileNavigation(false); setDeletingFolder(folder); }} />
+      </>}
       {book.tags.length > 0 && <>
         <div className="mobile-navigation-label">{t('tags')}</div>
         <nav className="mobile-navigation-list" aria-label={t('mobile_tags')}>{book.tags.map((tag) =>
@@ -1553,11 +1620,46 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           : <button onClick={() => { setMobileNoteActions(false); setNoteFields({ deletedAt: null }); }}><RotateCcw size={18} />{t('restore_note')}</button>}
       </div>
     </Modal>}
+    {folderEditor && <Modal title={folderEditor.id ? '编辑文件夹' : '新建文件夹'} close={() => setFolderEditor(null)}>
+      <form className="folder-form" onSubmit={(event) => {
+        event.preventDefault();
+        const name = folderEditor.name.trim();
+        if (!name) return;
+        void run(async () => {
+          if (folderEditor.id) await book.updateFolder(folderEditor.id, { name, parentId: folderEditor.parentId });
+          else await book.createFolder(name, folderEditor.parentId);
+          setFolderEditor(null);
+        });
+      }}>
+        <label>{t('文件夹名称')}<input autoFocus maxLength={120} value={folderEditor.name}
+          onChange={(event) => setFolderEditor({ ...folderEditor, name: event.target.value })} /></label>
+        <label>{t('上级文件夹')}<select value={folderEditor.parentId ?? ''}
+          onChange={(event) => setFolderEditor({ ...folderEditor, parentId: event.target.value || null })}>
+          <option value="">{t('根目录')}</option>
+          {book.folders.filter((folder) => folder.id !== folderEditor.id).map((folder) =>
+            <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+        </select></label>
+        <div className="dialog-actions"><button type="button" onClick={() => setFolderEditor(null)}>{t('cancel')}</button>
+          <button className="primary" type="submit" disabled={!folderEditor.name.trim()}>{t('save')}</button></div>
+      </form>
+    </Modal>}
+    {deletingFolder && <Modal title="删除文件夹" close={() => setDeletingFolder(null)}>
+      <p>{t('删除文件夹“{0}”及其子文件夹？其中的笔记会移到根目录，完全空白笔记会移入回收站。', deletingFolder.name)}</p>
+      <div className="dialog-actions"><button onClick={() => setDeletingFolder(null)}>{t('cancel')}</button><button className="danger" onClick={() => void run(async () => {
+        const moved = await book.deleteFolder(deletingFolder.id);
+        setDeletingFolder(null);
+        showNotice(t('文件夹已删除，{0} 篇笔记已移到根目录', moved));
+      })}>{t('delete')}</button></div>
+    </Modal>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>语言/Language</span><select aria-label={t('language')} value={uiLanguage()} onChange={(event) => setUiLanguage(event.target.value as 'zh' | 'en')}>
         <option value="zh">中文</option><option value="en">English</option>
       </select></div>
       <div className="setting-row"><span>{t('深色外观')}</span><button role="switch" aria-checked={dark} aria-label={t('深色外观')} className={`switch ${dark ? 'on' : ''}`} onClick={() => setDark(!dark)}>{dark ? <Moon size={14} /> : <Sun size={14} />}</button></div>
+      {!dark && <div className="setting-row"><span>{t('浅色背景')}</span><select aria-label={t('浅色背景')} value={lightBackground}
+        onChange={(event) => setLightBackground(event.target.value as 'light' | 'white' | 'warm')}>
+        <option value="light">{t('柔和灰白')}</option><option value="white">{t('纯白')}</option><option value="warm">{t('暖白')}</option>
+      </select></div>}
       <div className="setting-row"><span>{t('离线笔记库')}{book.offlineLibrary ? (uiLanguage() === 'en' ? ` · ${book.offlineCount} notes` : ` · ${book.offlineCount} 篇`) : ''}</span><button role="switch" aria-checked={book.offlineLibrary} aria-label={t('离线笔记库')} className={`switch ${book.offlineLibrary ? 'on' : ''}`} disabled={disabled || session.offline} onClick={() => void run(() => book.configureOffline(!book.offlineLibrary))}>{book.offlineLibrary ? <Check size={14} /> : <WifiOff size={14} />}</button></div>
       {installApp && <div className="setting-row"><span>{t('app')}</span><button disabled={disabled} onClick={() => void run(installApp)}><Download size={16} />{t('安装 EasyNote')}</button></div>}
       <div className="setting-row"><span>{t('导出')}</span><div className="button-group">
@@ -1568,6 +1670,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
             .catch((error: unknown) => book.setError(String(error))).finally(() => setTransfer(''));
         }}><Download size={16} />{t('导出草稿')}</button>
       </div></div>
+      <div className="setting-row"><span>{t('导入到')}</span><select aria-label={t('导入所属文件夹')} value={importFolderId ?? ''}
+        onChange={(event) => setImportFolderId(event.target.value || null)}><option value="">{t('根目录')}</option>
+        {book.folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></div>
       <div className="setting-row"><span>{t('导入')}</span><div className="button-group">
         <button disabled={!!transfer || !book.online} onClick={() => importInput.current?.click()}><Upload size={16} />{t('导入文件')}</button>
         <button disabled={!!transfer || !book.online} onClick={() => importFolderInput.current?.click()}><FolderOpen size={16} />{t('导入目录')}</button>

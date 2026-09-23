@@ -54,8 +54,12 @@ bearer_token_env_var = "EASYNOTE_TOKEN"
 | `easynote_read_notes` | 只读 | 批量读取最多 20 篇笔记 |
 | `easynote_connection_status` | 只读 | 验证账号、令牌名称和权限 |
 | `easynote_note_stats` | 只读 | 精确统计正常、归档、回收站及全部笔记数量 |
+| `easynote_list_folders` | 只读 | 列出完整文件夹树和每个文件夹的直接笔记数 |
 | `easynote_create_note` | 读写 | 创建笔记 |
-| `easynote_update_note` | 读写 | 更新笔记 |
+| `easynote_update_note` | 读写 | 更新笔记，或通过 `folderId` 移动笔记 |
+| `easynote_create_folder` | 读写 | 创建根文件夹或子文件夹 |
+| `easynote_update_folder` | 读写 | 改名或移动文件夹 |
+| `easynote_delete_folder` | 读写 | 删除文件夹树，笔记移到根目录，完全空白笔记移入回收站 |
 | `easynote_archive_note` | 读写 | 归档或取消归档 |
 | `easynote_trash_note` | 读写 | 移入回收站 |
 

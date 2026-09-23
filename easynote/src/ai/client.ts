@@ -1,4 +1,4 @@
-import type { IntegrationNoteSummary, Note, NoteInput } from '../shared/types.js';
+import type { Folder, IntegrationNoteSummary, Note, NoteInput } from '../shared/types.js';
 
 export interface BridgeConfig {
   url: string;
@@ -108,6 +108,7 @@ export class EasyNoteClient {
     sort?: 'default' | 'updated';
     offset?: number;
     limit?: number;
+    folderId?: string;
   }): Promise<SearchPage> {
     const parameters = new URLSearchParams();
     for (const [key, value] of Object.entries(query)) {
@@ -132,6 +133,22 @@ export class EasyNoteClient {
       operationId,
       createVersion: true,
     });
+  }
+
+  folders(): Promise<{ folders: Folder[] }> {
+    return this.json('/api/integrations/folders');
+  }
+
+  createFolder(name: string, parentId: string | null): Promise<{ folder: Folder }> {
+    return this.json('/api/integrations/folders', 'POST', { id: crypto.randomUUID(), name, parentId });
+  }
+
+  updateFolder(id: string, patch: { name?: string; parentId?: string | null }): Promise<{ folder: Folder }> {
+    return this.json(`/api/integrations/folders/${encodeURIComponent(id)}`, 'PATCH', patch);
+  }
+
+  deleteFolder(id: string): Promise<{ ok: true; movedNotes: number }> {
+    return this.json(`/api/integrations/folders/${encodeURIComponent(id)}`, 'DELETE', {});
   }
 
 }

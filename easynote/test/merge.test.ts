@@ -10,6 +10,7 @@ const baseNote = (patch: Partial<Note> = {}): Note => ({
   tags: ['工作'],
   pinned: false,
   archived: false,
+  folderId: null,
   deletedAt: null,
   createdAt: 1,
   updatedAt: 1,

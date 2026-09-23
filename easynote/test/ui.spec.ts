@@ -57,6 +57,50 @@ test('adds and removes existing tags for the current note', async ({ page }) => 
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 });
 
+test('nested folders create notes, move notes, rename safely, and keep notes on deletion', async ({ page }) => {
+  const suffix = randomUUID().slice(0, 8);
+  const parent = `项目-${suffix}`;
+  const child = `资料-${suffix}`;
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建文件夹', exact: true }).click();
+  await page.getByRole('textbox', { name: '文件夹名称' }).fill(parent);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+
+  const parentRow = page.locator('.folder-tree-row').filter({ hasText: parent }).first();
+  await parentRow.getByRole('button', { name: '新建子文件夹' }).click();
+  await page.getByRole('textbox', { name: '文件夹名称' }).fill(child);
+  await expect(page.getByRole('combobox', { name: '上级文件夹' })).toHaveValue(/.+/);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+
+  const childRow = page.locator('.folder-tree-row').filter({ hasText: child }).first();
+  await childRow.locator('.folder-tree-select').click();
+  await newNote(page, `目录笔记-${suffix}`, '文件夹正文');
+  await expect(page.getByRole('combobox', { name: '所属文件夹' })).toHaveValue(/.+/);
+  await page.getByRole('combobox', { name: '所属文件夹' }).selectOption({ label: parent });
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  await childRow.getByRole('button', { name: '编辑文件夹' }).click();
+  await page.getByRole('textbox', { name: '文件夹名称' }).fill(`${child}-已改名`);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('.folder-tree-select').filter({ hasText: `${child}-已改名` }).first()).toBeVisible();
+  await parentRow.getByRole('button', { name: '删除文件夹' }).click();
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(`目录笔记-${suffix}`);
+  await expect(page.getByRole('combobox', { name: '所属文件夹' })).toHaveValue('');
+});
+
+test('light background variants persist independently from dark appearance', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.account').click();
+  const background = page.getByRole('combobox', { name: '浅色背景' });
+  await background.selectOption('white');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'white');
+  await background.selectOption('warm');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'warm');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'warm');
+});
+
 test('switches to English without mobile horizontal overflow', async ({ page }) => {
   await page.goto('/');
   await page.locator('.account').click();

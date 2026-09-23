@@ -6,6 +6,7 @@ import { noteRoutes } from './notes';
 import { featureRoutes, publicShareRoutes } from './features';
 import { connectNoteEvents } from './events';
 import { mcpRoute } from './mcp';
+import { folderRoutes } from './folders';
 
 export { NoteEvents } from './events';
 
@@ -42,6 +43,7 @@ export default {
         return await connectNoteEvents(request, env, user.id);
       }
       const response = await featureRoutes(request, env, user, path) ??
+        await folderRoutes(request, env, user, path) ??
         await noteRoutes(request, env, user, path) ??
         await imageRoutes(request, env, user, path);
       if (response) return response;

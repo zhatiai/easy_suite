@@ -54,8 +54,12 @@ bearer_token_env_var = "EASYNOTE_TOKEN"
 | `easynote_read_notes` | Read-only | Batch reads up to 20 notes |
 | `easynote_connection_status` | Read-only | Verifies account, token name, and permissions |
 | `easynote_note_stats` | Read-only | Provides exact counts for active, archived, trash, and total notes |
+| `easynote_list_folders` | Read-only | Lists the complete folder tree and direct note counts |
 | `easynote_create_note` | Read-write | Creates a new note |
-| `easynote_update_note` | Read-write | Updates a note |
+| `easynote_update_note` | Read-write | Updates a note or moves it with `folderId` |
+| `easynote_create_folder` | Read-write | Creates a root folder or nested folder |
+| `easynote_update_folder` | Read-write | Renames or moves a folder |
+| `easynote_delete_folder` | Read-write | Deletes a folder tree; notes move to the root and completely blank notes move to trash |
 | `easynote_archive_note` | Read-write | Archives or unarchives a note |
 | `easynote_trash_note` | Read-write | Moves a note to trash |
 

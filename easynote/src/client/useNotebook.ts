@@ -7,6 +7,7 @@ import {
   sameNoteInput,
   storedFileIds,
   type Note,
+  type Folder,
   type NoteInput,
   type NoteSummary,
   type Session,
@@ -52,6 +53,13 @@ const noteExcerpt = (content: string, query: string) => {
 };
 
 const customTagsKey = (userId: string) => `easynote-custom-tags-${userId}`;
+const foldersKey = (userId: string) => `easynote-folders-${userId}`;
+const loadCachedFolders = (userId: string): Folder[] => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(foldersKey(userId)) ?? '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+};
 const loadCustomTags = (userId: string): string[] => {
   try {
     const raw = localStorage.getItem(customTagsKey(userId));
@@ -113,6 +121,8 @@ export function useNotebook(session: Session) {
   const [view, setView] = useState('all');
   const [query, setQuery] = useState('');
   const [tag, setTag] = useState('');
+  const [folderId, setFolderId] = useState<string | null | undefined>(undefined);
+  const [folders, setFolders] = useState<Folder[]>(() => loadCachedFolders(userId));
   const [tags, setTags] = useState<string[]>([]);
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [error, setError] = useState('');
@@ -156,6 +166,7 @@ export function useNotebook(session: Session) {
         if (item.deletedAt === null) return false;
       } else if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
       if (tag && !item.tags.includes(tag)) return false;
+      if (folderId !== undefined && item.folderId !== folderId) return false;
       return !query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
     });
     scoped.sort(compareNoteOrder);
@@ -170,7 +181,15 @@ export function useNotebook(session: Session) {
     setTags([...new Set([...viewTags, ...custom])].sort((left, right) => left.localeCompare(right, 'zh-CN')));
     setNextOffset(null);
     setOfflineCount(mirror.current.size);
-  }, [query, tag, userId, view]);
+  }, [folderId, query, tag, userId, view]);
+
+  const refreshFolders = useCallback(async (signal?: AbortSignal) => {
+    if (!navigator.onLine || session.offline) return;
+    const result = await api.folders(signal);
+    if (!alive.current) return;
+    setFolders(result.folders);
+    localStorage.setItem(foldersKey(userId), JSON.stringify(result.folders));
+  }, [session.offline, userId]);
 
   const cacheReferencedFiles = useCallback(() => {
     if (fileCacheAbort.current || !alive.current || !offlineLibraryRef.current) return;
@@ -294,13 +313,18 @@ export function useNotebook(session: Session) {
       if (alive.current && generation === listGeneration.current) renderMirror();
       return;
     }
-    const result = await api.list({ q: query, view, tag, offset: append ? nextOffset ?? 0 : 0 }, signal);
+    const result = await api.list({
+      q: query, view, tag,
+      ...(folderId === undefined ? {} : { folderId: folderId ?? 'root' }),
+      offset: append ? nextOffset ?? 0 : 0,
+    }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
-    const existingBlank = result.notes.find(blankSummary);
+    const existingBlank = result.notes.find((item) => item.folderId === (folderId ?? null) && blankSummary(item));
     if (existingBlank) {
       const redundant = [...drafts.current.values()]
         .map((draft) => draft.note)
-        .filter((item) => item.revision === 0 && item.id !== existingBlank.id && blankNote(item));
+        .filter((item) => item.revision === 0 && item.folderId === existingBlank.folderId &&
+          item.id !== existingBlank.id && blankNote(item));
       if (redundant.length) {
         const replacement = redundant.some((item) => item.id === current.current?.id)
           ? mirror.current.get(existingBlank.id) ?? (await api.note(existingBlank.id, signal)).note
@@ -317,7 +341,7 @@ export function useNotebook(session: Session) {
     if (alive.current && generation === listGeneration.current) {
       setTags([...new Set([...data.tags, ...custom])].sort((left, right) => left.localeCompare(right, 'zh-CN')));
     }
-  }, [nextOffset, query, renderMirror, session.offline, syncOfflineMirror, tag, userId, view]);
+  }, [folderId, nextOffset, query, renderMirror, session.offline, syncOfflineMirror, tag, userId, view]);
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
 
@@ -550,31 +574,32 @@ export function useNotebook(session: Session) {
         return value;
       };
       if (!Object.keys(input).length) {
+        const destination = folderId ?? null;
         const fullNotes = [
           ...mirror.current.values(),
           ...(current.current ? [current.current] : []),
           ...[...drafts.current.values()].map((draft) => draft.note),
         ];
-        const saved = fullNotes.find((item) => item.revision > 0 && blankNote(item));
+        const saved = fullNotes.find((item) => item.folderId === destination && item.revision > 0 && blankNote(item));
         if (saved) return open(saved);
-        const listed = notes.find(blankSummary);
+        const listed = notes.find((item) => item.folderId === destination && blankSummary(item));
         if (listed) {
           const existing = fullNotes.find((item) => item.id === listed.id) ?? (await api.note(listed.id)).note;
           const redundant = fullNotes.filter((item) =>
-            item.revision === 0 && item.id !== existing.id && blankNote(item) && drafts.current.has(item.id));
+            item.folderId === destination && item.revision === 0 && item.id !== existing.id && blankNote(item) && drafts.current.has(item.id));
           await Promise.all(redundant.map((item) => discardDraft(item.id)));
           return open(existing);
         }
-        const local = fullNotes.find((item) => item.revision === 0 && blankNote(item));
+        const local = fullNotes.find((item) => item.folderId === destination && item.revision === 0 && blankNote(item));
         if (local) return open(local);
         if (navigator.onLine && !session.offline) {
-          const existing = await api.blank();
+          const existing = await api.blank(folderId ?? null);
           if (existing.note) return open(existing.note);
         }
       }
       const newNote: Note = {
         id: crypto.randomUUID(), title: '', content: '', tags: [], pinned: false, archived: false, deletedAt: null,
-        createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
+        folderId: folderId ?? null, createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
       };
       open(newNote);
       edit({}, newNote);
@@ -841,6 +866,7 @@ export function useNotebook(session: Session) {
       for (const id of loaded.keys()) blocked.current.add(id);
       if (loaded.size) show(loaded.values().next().value!.note);
       try {
+        await refreshFolders();
         if (enabled && loaded.size && navigator.onLine && !session.offline) await retry();
         else {
           await refreshRef.current();
@@ -882,7 +908,7 @@ export function useNotebook(session: Session) {
       else void refreshRef.current().catch((e: unknown) => setError(String(e)));
     }, 200);
     return () => clearTimeout(timer);
-  }, [initialized, view, query, tag, renderMirror]);
+  }, [initialized, view, query, tag, folderId, renderMirror]);
 
   useEffect(() => {
     setOnline(navigator.onLine && !session.offline);
@@ -901,6 +927,7 @@ export function useNotebook(session: Session) {
       pollAbort.current = controller;
       const timeout = setTimeout(() => controller.abort(), session.config.pollSeconds * 1000);
       try {
+        await refreshFolders(controller.signal);
         if (offlineLibraryRef.current) await refreshRef.current(false, controller.signal);
         else await syncOnlineRef.current(controller.signal);
         const previous = pollError.current;
@@ -1014,18 +1041,28 @@ export function useNotebook(session: Session) {
       if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
     }
     if (tag && !item.tags.includes(tag)) return false;
+    if (folderId !== undefined && item.folderId !== folderId) return false;
     return !query || `${item.title} ${item.excerpt}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
   });
   const status = !online ? '仅保存在本机' : note && running.current.has(note.id) ? '正在保存' :
     note && drafts.current.has(note.id) ? blocked.current.has(note.id) ? '待处理草稿' : '本机草稿' : '已保存到云端';
   void tick;
   return {
-    note, notes: filtered, tags, view, query, tag, setView, setQuery, setTag,
+    note, notes: filtered, tags, folders, folderId, view, query, tag, setView, setQuery, setTag, setFolderId,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
     online, offlineLibrary, offlineCount,
     busy: running.current.size > 0, select, clearSelection, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, resolveConflict, discardConflict, purge, purgeTrash,
     refresh: () => refreshRef.current(), loadMore: () => refresh(true),
     configureOffline, cachedFile, backlinks, tasks, searchAll, addTag, manageTag, bulkUpdate, findDuplicates,
+    refreshFolders,
+    createFolder: async (name: string, parentId: string | null) => { await api.createFolder(name, parentId); await refreshFolders(); },
+    updateFolder: async (id: string, patch: { name?: string; parentId?: string | null }) => { await api.updateFolder(id, patch); await refreshFolders(); },
+    deleteFolder: async (id: string) => {
+      const result = await api.deleteFolder(id);
+      if (folderId === id) setFolderId(undefined);
+      await Promise.all([refreshFolders(), refreshRef.current()]);
+      return result.movedNotes;
+    },
   };
 }

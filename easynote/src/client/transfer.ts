@@ -275,6 +275,7 @@ async function importExternalEntries(
   config: ClientConfig,
   progress: (text: string) => void,
   findDuplicates: DuplicateLookup,
+  folderId: string | null,
 ): Promise<ImportResult> {
   if (!rawEntries.length || rawEntries.length > MAX_ENTRIES) throw new Error('请选择包含 Markdown 或 TXT 的目录或 ZIP。');
   let total = 0;
@@ -418,6 +419,7 @@ async function importExternalEntries(
       tags: source.tags,
       pinned: false,
       archived: false,
+      folderId,
       deletedAt: null,
     }, 0, crypto.randomUUID());
     imported++;
@@ -431,17 +433,18 @@ export async function importExternalFiles(
   config: ClientConfig,
   progress: (text: string) => void,
   findDuplicates: DuplicateLookup,
+  folderId: string | null,
 ): Promise<ImportResult> {
   if (!selected.length) throw new Error('没有选择导入文件。');
   if (selected.length === 1 && (selected[0].name.toLocaleLowerCase('en-US').endsWith('.zip') ||
       EXTERNAL_NOTE.test(selected[0].name) && selected[0].size === 0)) {
-    return importArchive(selected[0], config, progress, findDuplicates);
+    return importArchive(selected[0], config, progress, findDuplicates, folderId);
   }
   const entries = await Promise.all(selected.map(async (file) => ({
     path: file.webkitRelativePath || file.name,
     bytes: new Uint8Array(await file.arrayBuffer()),
   })));
-  return importExternalEntries(entries, config, progress, findDuplicates);
+  return importExternalEntries(entries, config, progress, findDuplicates, folderId);
 }
 
 export async function importArchive(
@@ -449,6 +452,7 @@ export async function importArchive(
   config: ClientConfig,
   progress: (text: string) => void,
   findDuplicates: DuplicateLookup,
+  folderId: string | null,
 ): Promise<ImportResult> {
   if (EXTERNAL_NOTE.test(file.name)) {
     if (file.size > config.maxNoteBytes) throw new Error('笔记大小超过限制。');
@@ -461,7 +465,7 @@ export async function importArchive(
     }
     await api.save(crypto.randomUUID(), {
       title, content,
-      tags: [], pinned: false, archived: false, deletedAt: null,
+      tags: [], pinned: false, archived: false, folderId, deletedAt: null,
     }, 0, crypto.randomUUID());
     return { imported: 1, skipped: 0 };
   }
@@ -472,6 +476,7 @@ export async function importArchive(
       config,
       progress,
       findDuplicates,
+      folderId,
     );
   }
   if (files['manifest.json'].length > 2 * 1024 **2) throw new Error('EasyNote 备份清单过大。');
@@ -482,6 +487,7 @@ export async function importArchive(
       config,
       progress,
       findDuplicates,
+      folderId,
     );
   }
   if (manifest.version !== 2 || !Array.isArray(manifest.notes) || !Array.isArray(manifest.files)) {
@@ -560,7 +566,7 @@ export async function importArchive(
         });
       await api.save(crypto.randomUUID(), {
         title: entry.title, content, tags: entry.tags, pinned: entry.pinned,
-        archived: entry.archived, deletedAt: entry.deletedAt,
+        archived: entry.archived, folderId, deletedAt: entry.deletedAt,
       }, 0, crypto.randomUUID());
       imported++;
       progress(`恢复笔记 ${imported}/${unique.length}`);

@@ -316,6 +316,40 @@ test('only one completely blank active note can exist', async () => {
   assert.notEqual(next.id, first.id);
 });
 
+test('nested folders support create, rename, move, filtering and safe deletion', async () => {
+  const parentId = randomUUID();
+  const childId = randomUUID();
+  const created = await request('/api/folders', 'POST', { id: parentId, name: '项目', parentId: null });
+  assert.equal(created.status, 201, await created.clone().text());
+  assert.equal((await request('/api/folders', 'POST', { id: childId, name: '资料', parentId })).status, 201);
+  assert.equal((await request('/api/folders', 'POST', { id: randomUUID(), name: '资料', parentId })).status, 409);
+
+  const note = await create({ title: '文件夹笔记', folderId: childId });
+  const blank = await create({ title: '', content: '', tags: [], folderId: childId });
+  assert.equal(note.folderId, childId);
+  const filtered = await (await request(`/api/notes?folderId=${childId}`)).json() as any;
+  assert.deepEqual(new Set(filtered.notes.map((item: any) => item.id)), new Set([note.id, blank.id]));
+  const root = await (await request('/api/notes?folderId=root')).json() as any;
+  assert.ok(!root.notes.some((item: any) => item.id === note.id));
+
+  const renamed = await request(`/api/folders/${childId}`, 'PATCH', { name: '参考资料', parentId: null });
+  assert.equal(renamed.status, 200, await renamed.clone().text());
+  assert.equal((await request(`/api/folders/${parentId}`, 'PATCH', { parentId: childId })).status, 200);
+  assert.equal((await request(`/api/folders/${childId}`, 'PATCH', { parentId })).status, 409);
+
+  const removed = await request(`/api/folders/${childId}`, 'DELETE', {});
+  assert.equal(removed.status, 200, await removed.clone().text());
+  assert.equal((await removed.json() as any).movedNotes, 2);
+  const preserved = await (await request(`/api/notes/${note.id}`)).json() as any;
+  assert.equal(preserved.note.folderId, null);
+  assert.equal(preserved.note.revision, note.revision + 1);
+  const preservedBlank = await (await request(`/api/notes/${blank.id}`)).json() as any;
+  assert.equal(preservedBlank.note.folderId, null);
+  assert.ok(preservedBlank.note.deletedAt);
+  const folders = await (await request('/api/folders')).json() as any;
+  assert.ok(!folders.folders.some((folder: any) => folder.id === childId));
+});
+
 test('batch duplicate lookup follows content fingerprints and tracks updates', async () => {
   const marker = randomUUID();
   const note = await create({ title: '原始标题', content: marker, tags: [] });
@@ -500,6 +534,14 @@ test('another account cannot read, edit or reference private notes and images', 
   await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(otherToken), otherId, testCsrf, Date.now() + 60000).run();
   const note = await create();
   const headers = { Cookie: `__Host-easynote=${otherToken}` };
+  const privateFolderId = randomUUID();
+  assert.equal((await request('/api/folders', 'POST', { id: privateFolderId, name: '私有目录', parentId: null })).status, 201);
+  assert.equal((await request(`/api/folders/${privateFolderId}`, 'PATCH', { name: '越权改名' }, headers)).status, 404);
+  assert.equal((await request('/api/folders', 'POST', {
+    id: randomUUID(), name: '越权子目录', parentId: privateFolderId,
+  }, headers)).status, 404);
+  assert.ok(!(await (await request('/api/folders', 'GET', undefined, headers)).json() as any).folders
+    .some((folder: any) => folder.id === privateFolderId));
   assert.equal((await request(`/api/notes/${note.id}`, 'GET', undefined, headers)).status, 404);
   assert.equal((await request(`/api/notes/${note.id}`, 'PUT', { ...base, revision: 1, operationId: randomUUID() }, headers)).status, 410);
   const duplicateLookup = await request('/api/notes/duplicates', 'POST', {

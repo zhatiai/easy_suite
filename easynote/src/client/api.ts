@@ -1,4 +1,5 @@
 import type {
+  Folder,
   ImageRecord,
   IntegrationToken,
   ManagedNoteShare,
@@ -107,11 +108,17 @@ export const api = {
   deleteUser: (id: string) => request<{ ok: true }>(`/api/admin/users/${id}`, 'DELETE', {}),
   setRegistration: (enabled: boolean) =>
     request<{ registrationEnabled: boolean }>('/api/admin/settings/registration', 'PATCH', { enabled }),
-  list: (query: { q?: string; view?: string; tag?: string; offset?: number } = {}, signal?: AbortSignal) =>
+  list: (query: { q?: string; view?: string; tag?: string; folderId?: string; offset?: number } = {}, signal?: AbortSignal) =>
     request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
   tags: (view: string, signal?: AbortSignal) =>
     request<{ tags: string[] }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
-  blank: () => request<{ note: Note | null }>('/api/notes/blank'),
+  blank: (folderId: string | null = null) => request<{ note: Note | null }>(`/api/notes/blank?folderId=${folderId ?? 'root'}`),
+  folders: (signal?: AbortSignal) => request<{ folders: Folder[] }>('/api/folders', 'GET', undefined, signal),
+  createFolder: (name: string, parentId: string | null) =>
+    request<{ folder: Folder }>('/api/folders', 'POST', { id: crypto.randomUUID(), name, parentId }),
+  updateFolder: (id: string, patch: { name?: string; parentId?: string | null }) =>
+    request<{ folder: Folder }>(`/api/folders/${id}`, 'PATCH', patch),
+  deleteFolder: (id: string) => request<{ ok: true; movedNotes: number }>(`/api/folders/${id}`, 'DELETE', {}),
   duplicates: (fingerprints: string[]) =>
     request<{ matches: Array<{ fingerprint: string; noteId: string }> }>('/api/notes/duplicates', 'POST', { fingerprints }),
   note: (id: string, signal?: AbortSignal) => request<{ note: Note }>(`/api/notes/${id}`, 'GET', undefined, signal),

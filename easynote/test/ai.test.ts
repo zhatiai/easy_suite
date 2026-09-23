@@ -108,6 +108,10 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_notes'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_connection_status'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_note_stats'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_list_folders'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_create_folder'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_update_folder'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_delete_folder'));
     assert.ok(!tools.tools.some((tool) => tool.name.includes('sync') || tool.name.includes('purge')));
 
     const stats = (await client.callTool({
@@ -203,6 +207,12 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     assert.match((resource.contents[0] as { text: string }).text, /^# Atlas 事故复盘/);
     assert.match((resource.contents[0] as { text: string }).text, /47 分钟/);
 
+    const folderResult = await client.callTool({
+      name: 'easynote_create_folder', arguments: { name: 'MCP 目录', parentId: null },
+    });
+    assert.notEqual(folderResult.isError, true);
+    const folder = JSON.parse((folderResult.content[0] as { text: string }).text).folder as { id: string };
+
     const result = await client.callTool({
       name: 'easynote_create_note',
       arguments: {
@@ -211,11 +221,13 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
         tags: ['MCP'],
         pinned: false,
         archived: false,
+        folderId: folder.id,
       },
     });
     assert.notEqual(result.isError, true);
-    const output = result.structuredContent as { note: { id: string; revision: number } };
+    const output = result.structuredContent as { note: { id: string; revision: number; folderId: string | null } };
     assert.equal(output.note.revision, 1);
+    assert.equal(output.note.folderId, folder.id);
     const remote = await integrationRequest(writeSecret, `/api/integrations/notes/${output.note.id}`);
     assert.equal((await remote.json() as any).note.title, 'MCP 创建');
 
@@ -240,6 +252,13 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     });
     assert.equal(conflict.isError, true);
     assert.match(JSON.stringify(conflict.content), /409/);
+
+    const listedFolders = await client.callTool({ name: 'easynote_list_folders', arguments: {} });
+    assert.ok((listedFolders.structuredContent as { folders: Array<{ id: string }> }).folders.some((item) => item.id === folder.id));
+    const deletedFolder = await client.callTool({ name: 'easynote_delete_folder', arguments: { id: folder.id } });
+    assert.notEqual(deletedFolder.isError, true);
+    const preserved = await integrationRequest(writeSecret, `/api/integrations/notes/${output.note.id}`);
+    assert.equal((await preserved.json() as any).note.folderId, null);
   } finally {
     await client.close();
   }
@@ -256,6 +275,7 @@ test('read-only MCP credentials do not expose write tools', async () => {
       'easynote_read_notes',
       'easynote_connection_status',
       'easynote_note_stats',
+      'easynote_list_folders',
     ]);
   } finally {
     await client.close();
