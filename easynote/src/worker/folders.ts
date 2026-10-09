@@ -67,6 +67,51 @@ export async function folderRoutes(request: Request, env: Env, user: Identity, p
     await publishNoteChanges(env, user.id, request);
     return json({ folder: { id: data.id, name, parentId: parent, createdAt: now, updatedAt: now, noteCount: 0 } satisfies Folder }, 201);
   }
+  const mergeMatch = /^\/api\/folders\/([^/]+)\/merge$/.exec(path);
+  if (mergeMatch && request.method === 'POST') {
+    const id = mergeMatch[1];
+    if (!idPattern.test(id) || !await ownedFolder(env, user.id, id)) throw new ApiError(404, 'Folder not found.');
+    const data = await readJson(request, 4096);
+    if (Object.keys(data).some((key) => key !== 'targetId')) throw new ApiError(400, 'Invalid merge fields.');
+    const target = parentId(data.targetId);
+    if (!target || target === id) throw new ApiError(409, 'Choose a different target folder.');
+    if (!await ownedFolder(env, user.id, target)) throw new ApiError(404, 'Target folder not found.');
+    const descendant = await env.DB.prepare(`WITH RECURSIVE descendants(id) AS (
+      SELECT id FROM folders WHERE parent_id=? AND user_id=?
+      UNION ALL SELECT f.id FROM folders f JOIN descendants d ON f.parent_id=d.id WHERE f.user_id=?
+    ) SELECT 1 FROM descendants WHERE id=?`).bind(id, user.id, user.id, target).first();
+    if (descendant) throw new ApiError(409, 'A folder cannot be merged into one of its descendants.');
+    const collision = await env.DB.prepare(`SELECT 1 FROM folders source_child JOIN folders target_child
+      ON target_child.user_id=source_child.user_id AND target_child.parent_id=?
+      AND target_child.name=source_child.name COLLATE NOCASE
+      WHERE source_child.user_id=? AND source_child.parent_id=? LIMIT 1`)
+      .bind(target, user.id, id).first();
+    if (collision) throw new ApiError(409, 'A child folder with the same name already exists in the target folder.');
+    const now = Date.now();
+    const mutation = crypto.randomUUID();
+    const results = await env.DB.batch([
+      env.DB.prepare(`UPDATE notes SET deleted_at=? WHERE user_id=? AND folder_id=?
+        AND title='' AND content='' AND tags='[]' AND archived=0 AND deleted_at IS NULL
+        AND EXISTS (SELECT 1 FROM notes target_note WHERE target_note.user_id=? AND target_note.folder_id=?
+          AND target_note.title='' AND target_note.content='' AND target_note.tags='[]'
+          AND target_note.archived=0 AND target_note.deleted_at IS NULL)`)
+        .bind(now, user.id, id, user.id, target),
+      env.DB.prepare(`UPDATE notes SET folder_id=?,updated_at=?,revision=revision+1,mutation_id=?,mutation_hash=?
+        WHERE user_id=? AND folder_id=?`).bind(target, now, mutation, mutation, user.id, id),
+      env.DB.prepare(`INSERT INTO note_changes(user_id,note_id,changed_at)
+        SELECT user_id,id,? FROM notes WHERE user_id=? AND mutation_id=?`).bind(now, user.id, mutation),
+      env.DB.prepare('UPDATE folders SET parent_id=?,updated_at=? WHERE user_id=? AND parent_id=?')
+        .bind(target, now, user.id, id),
+      env.DB.prepare('DELETE FROM folders WHERE id=? AND user_id=?').bind(id, user.id),
+    ]);
+    if (!results[4].meta.changes) throw new ApiError(404, 'Folder not found.');
+    await publishNoteChanges(env, user.id, request);
+    return json({
+      ok: true,
+      movedNotes: results[1].meta.changes ?? 0,
+      movedFolders: results[3].meta.changes ?? 0,
+    });
+  }
   const match = /^\/api\/folders\/([^/]+)$/.exec(path);
   if (!match) return null;
   const id = match[1];

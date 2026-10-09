@@ -9,7 +9,7 @@ export interface NoteMergeResult {
   conflicts: NoteConflictField[];
 }
 
-const inputFields: NoteConflictField[] = ['title', 'content', 'tags', 'pinned', 'archived', 'deletedAt'];
+const inputFields: NoteConflictField[] = ['title', 'content', 'tags', 'pinned', 'quick', 'archived', 'deletedAt'];
 const maxLineMergeWork = 250_000;
 
 function sameTags(left: string[], right: string[]): boolean {
@@ -115,6 +115,8 @@ export function mergeNoteChanges(
   if (content.conflict) conflicts.push('content');
   const pinned = mergeScalar('pinned', base.pinned, local.pinned, remote.pinned, preference);
   if (pinned.conflict) conflicts.push('pinned');
+  const quick = mergeScalar('quick', base.quick, local.quick, remote.quick, preference);
+  if (quick.conflict) conflicts.push('quick');
   const archived = mergeScalar('archived', base.archived, local.archived, remote.archived, preference);
   if (archived.conflict) conflicts.push('archived');
   const deletedAt = mergeScalar('deletedAt', base.deletedAt, local.deletedAt, remote.deletedAt, preference);
@@ -137,6 +139,7 @@ export function mergeNoteChanges(
       content: content.value,
       tags: mergeTags(base.tags, local.tags, remote.tags),
       pinned: pinned.value,
+      quick: quick.value,
       archived: archived.value,
       deletedAt: deletedAt.value,
     },

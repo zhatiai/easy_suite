@@ -15,6 +15,14 @@ async function newNote(page: Page, title: string, content = '') {
   await page.getByRole('textbox', { name: '笔记正文' }).fill(content);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 }
+async function addNoteTags(page: Page, tags: string[]) {
+  await page.getByLabel('添加标签').click();
+  const input = page.getByRole('textbox', { name: '搜索或回车新建标签…' });
+  for (const tag of tags) {
+    await input.fill(tag);
+    await input.press('Enter');
+  }
+}
 async function disableOfflineLibrary(page: Page) {
   await page.locator('.account').click();
   const offline = page.getByRole('switch', { name: '离线笔记库' });
@@ -48,16 +56,16 @@ test('adds and removes existing tags for the current note', async ({ page }) => 
   })).status()).toBe(201);
   await page.goto('/');
   await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
-  await page.getByText('标签管理', { exact: true }).click();
+  await page.getByLabel('添加标签').click();
   const existingTag = page.getByRole('checkbox', { name: tag });
   await existingTag.check();
-  await expect(page.getByRole('textbox', { name: '笔记标签' })).toHaveValue(tag);
+  await expect(existingTag).toBeChecked();
   await existingTag.uncheck();
-  await expect(page.getByRole('textbox', { name: '笔记标签' })).toHaveValue('');
+  await expect(existingTag).not.toBeChecked();
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 });
 
-test('nested folders create notes, move notes, rename safely, and keep notes on deletion', async ({ page }) => {
+test('nested folders create notes, move notes, and keep notes on deletion', async ({ page }) => {
   const suffix = randomUUID().slice(0, 8);
   const parent = `项目-${suffix}`;
   const child = `资料-${suffix}`;
@@ -67,26 +75,275 @@ test('nested folders create notes, move notes, rename safely, and keep notes on 
   await page.getByRole('button', { name: '保存', exact: true }).click();
 
   const parentRow = page.locator('.folder-tree-row').filter({ hasText: parent }).first();
-  await parentRow.getByRole('button', { name: '新建子文件夹' }).click();
+  await parentRow.getByLabel('文件夹操作').click();
+  await parentRow.getByRole('menuitem', { name: '新建文件夹' }).click();
   await page.getByRole('textbox', { name: '文件夹名称' }).fill(child);
   await expect(page.getByRole('combobox', { name: '上级文件夹' })).toHaveValue(/.+/);
   await page.getByRole('button', { name: '保存', exact: true }).click();
 
   const childRow = page.locator('.folder-tree-row').filter({ hasText: child }).first();
-  await childRow.locator('.folder-tree-select').click();
-  await newNote(page, `目录笔记-${suffix}`, '文件夹正文');
-  await expect(page.getByRole('combobox', { name: '所属文件夹' })).toHaveValue(/.+/);
-  await page.getByRole('combobox', { name: '所属文件夹' }).selectOption({ label: parent });
+  await expect(childRow).toBeVisible();
+  await parentRow.getByRole('button', { name: '折叠文件夹' }).click();
+  await expect(childRow).toBeHidden();
+  await page.reload();
+  await expect(childRow).toBeHidden();
+  await parentRow.getByRole('button', { name: '展开文件夹' }).click();
+  await childRow.getByLabel('文件夹操作').click();
+  await childRow.getByRole('menuitem', { name: '新建文件', exact: true }).click();
+  await page.getByRole('textbox', { name: '笔记标题' }).fill(`目录笔记-${suffix}`);
+  await page.getByRole('textbox', { name: '笔记正文' }).fill('文件夹正文');
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  const folderPicker = page.locator('.note-folder-picker');
+  await expect(folderPicker.locator('select')).toHaveCount(0);
+  await expect(folderPicker.locator('.folder-picker-summary')).toContainText(child);
+  await folderPicker.locator('.folder-picker-summary').click();
+  const folderPopover = folderPicker.getByRole('menu', { name: '所属文件夹' });
+  await expect(folderPopover).toBeVisible();
+  await expect(folderPopover.getByRole('menuitemradio')).toContainText(['根目录', parent, child]);
+  await page.screenshot({ path: 'test-results/document-folder-picker-context.png' });
+  await folderPopover.screenshot({ path: 'test-results/document-folder-picker.png' });
+  await page.getByRole('textbox', { name: '笔记标题' }).click();
+  await expect(folderPopover).toBeHidden();
+  await folderPicker.locator('.folder-picker-summary').click();
+  await page.keyboard.press('Escape');
+  await expect(folderPopover).toBeHidden();
+  await expect(folderPicker.locator('.folder-picker-summary')).toBeFocused();
+  await folderPicker.locator('.folder-picker-summary').click();
+  await folderPopover.getByRole('menuitemradio', { name: parent, exact: true }).click();
+  await expect(folderPopover).toBeHidden();
+  await expect(folderPicker.locator('.folder-picker-summary')).toContainText(parent);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
 
-  await childRow.getByRole('button', { name: '编辑文件夹' }).click();
-  await page.getByRole('textbox', { name: '文件夹名称' }).fill(`${child}-已改名`);
-  await page.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.locator('.folder-tree-select').filter({ hasText: `${child}-已改名` }).first()).toBeVisible();
-  await parentRow.getByRole('button', { name: '删除文件夹' }).click();
+  await parentRow.getByLabel('文件夹操作').click();
+  await parentRow.getByRole('menuitem', { name: '删除文件夹' }).click();
   await page.getByRole('button', { name: '删除', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(`目录笔记-${suffix}`);
-  await expect(page.getByRole('combobox', { name: '所属文件夹' })).toHaveValue('');
+  await expect(folderPicker.locator('.folder-picker-summary')).toContainText('根目录');
+});
+
+test('folder actions merge notes and subfolders into another collapsed tree branch', async ({ page }) => {
+  const suffix = randomUUID().slice(0, 8);
+  const sourceId = randomUUID();
+  const targetId = randomUUID();
+  const childId = randomUUID();
+  const deepId = randomUUID();
+  const emptyId = randomUUID();
+  const source = `来源-${suffix}`;
+  const target = `目标-${suffix}`;
+  const child = `子目录-${suffix}`;
+  const deep = `嵌套目录-${suffix}`;
+  const empty = `空目录-${suffix}`;
+  const title = `合并笔记-${suffix}`;
+  const childTitle = `嵌套笔记-${suffix}`;
+  const deepTitle = `深层笔记-${suffix}`;
+  const rootTitle = `根目录笔记-${suffix}`;
+  const tag = `项目标签-${suffix}`;
+  const otherTag = `备用标签-${suffix}`;
+  for (const data of [
+    { id: sourceId, name: source, parentId: null },
+    { id: targetId, name: target, parentId: null },
+    { id: childId, name: child, parentId: sourceId },
+    { id: deepId, name: deep, parentId: childId },
+    { id: emptyId, name: empty, parentId: null },
+  ]) expect((await page.request.post('/api/folders', { headers, data })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, {
+    headers,
+    data: { title, content: '合并内容', tags: [tag, otherTag], pinned: false, archived: false, folderId: sourceId, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, {
+    headers,
+    data: { title: childTitle, content: '嵌套内容', tags: [], pinned: false, archived: false, folderId: childId, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, {
+    headers,
+    data: { title: deepTitle, content: '深层内容', tags: [], pinned: false, archived: false, folderId: deepId, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, {
+    headers,
+    data: { title: rootTitle, content: '根目录内容', tags: [], pinned: false, archived: false, folderId: null, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+
+  await page.setViewportSize({ width: 1447, height: 1087 });
+  await page.goto('/');
+  const sourceRow = page.locator('.folder-tree-row').filter({ hasText: source }).first();
+  await expect(page.locator('.folder-tree-row').filter({ hasText: child })).toBeHidden();
+  await sourceRow.getByLabel('文件夹操作').click();
+  const folderMenu = sourceRow.getByRole('menu');
+  await expect(folderMenu).toBeVisible();
+  await page.locator('.explorer-header h1').click();
+  await expect(folderMenu).toBeHidden();
+  await sourceRow.getByLabel('文件夹操作').click();
+  await page.keyboard.press('Escape');
+  await expect(folderMenu).toBeHidden();
+  await expect(sourceRow.getByLabel('文件夹操作')).toBeFocused();
+  await sourceRow.getByLabel('文件夹操作').click();
+  await expect(folderMenu.getByRole('menuitem')).toHaveText(['新建文件夹', '新建文件', '删除文件夹', '合并文件到...']);
+  await expect(folderMenu.getByRole('menuitem', { name: '重命名文件夹' })).toHaveCount(0);
+  const [menuBox, menuTriggerBox] = await Promise.all([folderMenu.boundingBox(), sourceRow.getByLabel('文件夹操作').boundingBox()]);
+  expect(menuBox).not.toBeNull();
+  expect(menuTriggerBox).not.toBeNull();
+  expect(menuBox!.width).toBeGreaterThanOrEqual(183);
+  expect(menuBox!.width).toBeLessThanOrEqual(185);
+  expect(menuBox!.height).toBeGreaterThanOrEqual(180);
+  expect(menuBox!.height).toBeLessThanOrEqual(192);
+  expect(Math.abs(menuBox!.x - (menuTriggerBox!.x - 10))).toBeLessThanOrEqual(1);
+  expect(menuBox!.y).toBeGreaterThan(menuTriggerBox!.y);
+  await page.screenshot({ path: 'test-results/folder-tree-menu-context.png' });
+  await folderMenu.screenshot({ path: 'test-results/folder-action-menu.png' });
+  await folderMenu.getByRole('menuitem', { name: '合并文件到...' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('combobox', { name: '目标文件夹' }).selectOption(targetId);
+  await dialog.getByRole('button', { name: '合并', exact: true }).click();
+  await expect(sourceRow).toBeHidden();
+  await expect(page.getByRole('status')).toContainText(`文件夹“${source}”已合并到“${target}”`);
+
+  const railFolders = page.locator('.folder-nav');
+  await expect(railFolders.getByRole('button', { name: new RegExp(target) })).toBeVisible();
+  await expect(railFolders.getByRole('button', { name: new RegExp(child) })).toHaveCount(0);
+  await railFolders.getByRole('button', { name: new RegExp(target) }).click();
+  await expect(page.locator('.explorer-header h1')).toHaveText(target);
+  await expect(page.getByRole('button', { name: '全部笔记', exact: true })).not.toHaveClass(/active/);
+  await expect(railFolders.getByRole('button', { name: new RegExp(target) })).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('.folder-tree-row').filter({ hasText: target }).first()).toHaveClass(/active/);
+  await expect(page.locator('.folder-tree-row').filter({ hasText: empty })).toHaveCount(0);
+  await expect(page.locator('.explorer-note-item').filter({ hasText: rootTitle })).toHaveCount(0);
+  const childRow = page.locator('.folder-tree-row').filter({ hasText: child }).first();
+  await expect(childRow).toBeVisible();
+  await childRow.locator('.folder-tree-select').click();
+  await expect(page.locator('.explorer-header h1')).toHaveText(target);
+  await expect(page.locator('.folder-tree-row').filter({ hasText: target }).first()).toBeVisible();
+  await expect(childRow).toHaveClass(/active/);
+  const folderOverview = page.locator('.folder-overview');
+  await expect(folderOverview.getByRole('heading', { name: child, exact: true })).toBeVisible();
+  await expect(folderOverview).toContainText('创建时间');
+  await expect(folderOverview).toContainText('2 个文件');
+  await expect(folderOverview.getByText(deep, { exact: true })).toBeVisible();
+  const nestedFile = folderOverview.getByRole('button', { name: new RegExp(childTitle) });
+  const deepFile = folderOverview.getByRole('button', { name: new RegExp(deepTitle) });
+  await expect(nestedFile).toBeVisible();
+  await expect(deepFile).toBeVisible();
+  await childRow.locator('.folder-tree-select').click();
+  await expect(folderOverview.getByRole('heading', { name: child, exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(folderOverview).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1447, height: 1087 });
+  await deepFile.click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(deepTitle);
+  await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.explorer-header h1')).toHaveText(target);
+  const deepRow = page.locator('.folder-tree-row').filter({ hasText: deep }).first();
+  await expect(deepRow).toBeVisible();
+  await expect(deepRow).toHaveClass(/active/);
+  const locatedFile = page.locator('.explorer-note-item').filter({ hasText: deepTitle }).first();
+  await expect(locatedFile).toBeVisible();
+  await expect(locatedFile.locator('.explorer-note-row')).toHaveClass(/selected/);
+  const mergedNote = page.locator('.explorer-note-item').filter({ hasText: title }).first();
+  await expect(mergedNote).toBeVisible();
+  await expect(mergedNote.locator('.note-row-meta')).toBeVisible();
+  await expect(mergedNote.locator('.note-row-meta')).toContainText(/修订 \d+/);
+  await page.locator('.navigation-rail').screenshot({ path: 'test-results/navigation-real-folders.png' });
+
+  await expect(page.getByRole('status')).toBeHidden({ timeout: 6_000 });
+  const noteActionTrigger = mergedNote.getByLabel('更多笔记操作');
+  const triggerBox = await noteActionTrigger.boundingBox();
+  await noteActionTrigger.click();
+  const noteActions = page.getByRole('menu', { name: '笔记操作' });
+  await expect(noteActions).toBeVisible();
+  await expect(page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: '笔记操作' }) })).toHaveCount(0);
+  const visibleActions = noteActions.getByRole('menuitem');
+  expect(await visibleActions.count()).toBeGreaterThan(1);
+  const [noteMenuBox, firstActionBox, secondActionBox] = await Promise.all([noteActions.boundingBox(), visibleActions.nth(0).boundingBox(), visibleActions.nth(1).boundingBox()]);
+  expect(triggerBox).not.toBeNull();
+  expect(noteMenuBox).not.toBeNull();
+  expect(firstActionBox).not.toBeNull();
+  expect(secondActionBox).not.toBeNull();
+  expect(Math.abs(noteMenuBox!.x - (triggerBox!.x - 8))).toBeLessThanOrEqual(1);
+  expect(noteMenuBox!.y).toBeGreaterThan(triggerBox!.y);
+  expect(Math.abs(firstActionBox!.x - secondActionBox!.x)).toBeLessThanOrEqual(1);
+  expect(secondActionBox!.y).toBeGreaterThan(firstActionBox!.y + firstActionBox!.height - 1);
+  await page.screenshot({ path: 'test-results/note-actions-context.png' });
+  await noteActions.screenshot({ path: 'test-results/note-actions-vertical.png' });
+  await page.locator('.explorer-header h1').click();
+  await expect(noteActions).toBeHidden();
+
+  const tagRow = page.locator('.tag-navigation-row').filter({ hasText: tag });
+  await tagRow.locator('.tag-navigation-select').click();
+  await expect(tagRow.locator('.tag-navigation-select')).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByRole('button', { name: '全部笔记', exact: true })).not.toHaveClass(/active/);
+  await expect(page.locator('.folder-tree-row')).toHaveCount(0);
+  await expect(page.locator('.explorer-note-item').filter({ hasText: title })).toBeVisible();
+  await expect(page.locator('.active-tag-heading .view-heading-context')).toHaveText('全部笔记 · 标签');
+  await expect(page.locator('.active-tag-heading-name')).toHaveText(tag);
+  await tagRow.getByLabel('标签操作').click();
+  const tagMenu = tagRow.getByRole('menu');
+  await expect(tagMenu.getByRole('menuitem')).toHaveText(['重命名', '合并至', '删除', '设置颜色']);
+  await tagMenu.getByRole('menuitem', { name: '重命名' }).click();
+  let tagActionDialog = page.getByRole('dialog');
+  await expect(tagActionDialog.getByRole('heading', { name: '重命名标签' })).toBeVisible();
+  await expect(tagActionDialog.getByRole('heading', { name: '管理标签' })).toHaveCount(0);
+  await tagActionDialog.screenshot({ path: 'test-results/tag-rename-dialog.png' });
+  await tagActionDialog.getByRole('button', { name: '取消' }).click();
+  await tagRow.getByLabel('标签操作').click();
+  await tagMenu.getByRole('menuitem', { name: '合并至' }).click();
+  tagActionDialog = page.getByRole('dialog');
+  await expect(tagActionDialog.getByRole('heading', { name: '合并标签' })).toBeVisible();
+  await expect(tagActionDialog.getByRole('combobox', { name: '合并至' })).toHaveValue(otherTag);
+  await tagActionDialog.screenshot({ path: 'test-results/tag-merge-dialog.png' });
+  await tagActionDialog.getByRole('button', { name: '取消' }).click();
+  await tagRow.getByLabel('标签操作').click();
+  await tagMenu.getByRole('menuitem', { name: '删除' }).click();
+  tagActionDialog = page.getByRole('dialog');
+  await expect(tagActionDialog.getByRole('heading', { name: '删除标签' })).toBeVisible();
+  await expect(tagActionDialog).toContainText('笔记本身不会被删除');
+  await tagActionDialog.screenshot({ path: 'test-results/tag-delete-dialog.png' });
+  await tagActionDialog.getByRole('button', { name: '取消' }).click();
+  await tagRow.getByLabel('标签操作').click();
+  await tagMenu.getByRole('menuitem', { name: '设置颜色' }).click();
+  await page.screenshot({ path: 'test-results/tag-action-menu-context.png' });
+  await tagMenu.screenshot({ path: 'test-results/tag-action-menu.png' });
+  await tagMenu.getByRole('button', { name: '设置颜色 5' }).click();
+  await expect(tagRow.locator('.tag-color-dot')).toHaveClass(/tag-color-4/);
+  await page.reload();
+  await expect(page.locator('.tag-navigation-row').filter({ hasText: tag }).locator('.tag-color-dot')).toHaveClass(/tag-color-4/);
+  await page.locator('.tag-navigation-row').filter({ hasText: tag }).locator('.tag-navigation-select').click();
+  await page.locator('.notebook-explorer').screenshot({ path: 'test-results/tag-files-only.png' });
+
+  await page.locator('.explorer-note-item').filter({ hasText: title }).click();
+  await page.getByLabel('添加标签').click();
+  const editorTagPicker = page.getByRole('group', { name: '选择或创建标签' });
+  await expect(editorTagPicker).toBeVisible();
+  await page.screenshot({ path: 'test-results/editor-tag-picker-context.png' });
+  await editorTagPicker.screenshot({ path: 'test-results/editor-tag-picker.png' });
+  await page.locator('.note-title').click();
+  await expect(editorTagPicker).toBeHidden();
+
+  await page.getByRole('button', { name: '全部笔记', exact: true }).click();
+  await expect(page.getByRole('button', { name: '全部笔记', exact: true })).toHaveAttribute('aria-current', 'page');
+  const targetRow = page.locator('.folder-tree-row').filter({ hasText: target }).first();
+  await expect(targetRow.getByRole('button', { name: '折叠文件夹' })).toBeVisible();
+  await expect(page.locator('.explorer-note-item').filter({ hasText: title })).toBeVisible();
+
+  const emptyRow = page.locator('.folder-tree-row').filter({ hasText: empty }).first();
+  await emptyRow.getByRole('button', { name: '展开文件夹' }).click();
+  const emptyLabel = page.locator('.explorer-empty-label').filter({ hasText: '暂无笔记' });
+  await expect(emptyLabel).toBeVisible();
+  const [emptyBox, fileNameBox] = await Promise.all([
+    emptyLabel.boundingBox(),
+    page.locator('.explorer-note-item').filter({ hasText: title }).first().locator('.explorer-note-copy').boundingBox(),
+  ]);
+  expect(emptyBox).not.toBeNull();
+  expect(fileNameBox).not.toBeNull();
+  expect(Math.abs(emptyBox!.x - fileNameBox!.x)).toBeLessThanOrEqual(1);
+  await page.locator('.notebook-explorer').screenshot({ path: 'test-results/folder-tree-alignment.png' });
+
+  await page.setViewportSize({ width: 1900, height: 1080 });
+  await page.locator('.notebook-explorer').screenshot({ path: 'test-results/folder-tree-wide.png' });
+  await page.setViewportSize({ width: 1280, height: 850 });
+  await page.screenshot({ path: 'test-results/folder-tree-constrained.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await targetRow.getByLabel('文件夹操作').click();
+  await page.locator('.notebook-explorer').screenshot({ path: 'test-results/folder-tree-mobile.png' });
 });
 
 test('light background variants persist independently from dark appearance', async ({ page }) => {
@@ -156,10 +413,11 @@ test('cached startup remains usable while session verification and text sync are
     const row = page.locator('[data-note-row]').filter({ hasText: title });
     await expect(row).toBeVisible();
     await row.click();
-    await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('本地正文');
-    await expect(page.getByText('离线', { exact: true })).toBeVisible();
+    await expect(page.locator('.document .markdown')).toContainText('本地正文');
+    await expect(page.getByText('仅保存在本机', { exact: true })).toBeVisible();
     expect(sessions).toBe(1);
     expect(syncStarted).toBe(false);
+    await page.getByRole('button', { name: '编辑模式', exact: true }).click();
     await page.getByRole('textbox', { name: '笔记标题' }).fill(`${title}-修改`);
     releaseSession();
     await expect.poll(() => syncStarted).toBe(true);
@@ -274,7 +532,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   const manifest = await manifestResponse.json();
   expect(manifest).toMatchObject({
     name: 'EasyNote', start_url: '/', scope: '/', display: 'standalone',
-    theme_color: '#0071e3', background_color: '#ffffff',
+    theme_color: '#f9f9f9', background_color: '#f9f9f9',
   });
   expect(manifest).not.toHaveProperty('share_target');
   expect(manifest.icons).toEqual(expect.arrayContaining([
@@ -321,7 +579,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('heading', { name: 'EasyNote' })).toBeVisible();
+  await expect(page.locator('.app-shell')).toBeVisible();
   await context.setOffline(false);
 });
 
@@ -402,7 +660,7 @@ test('a note share can be created, extended and cancelled from share management'
   await page.goto('/');
   await newNote(page, title, content);
   expect(await page.getByRole('navigation', { name: '笔记分类' }).getByRole('button').allTextContents())
-    .toEqual(['全部笔记', '任务中心', '归档笔记', '分享管理', '回收站']);
+    .toEqual(['全部笔记', '小记', '任务中心', '归档', '分享', '回收站']);
   await page.getByRole('button', { name: '只读分享', exact: true }).click();
   await expect(page.getByLabel('有效期').locator('option[value="permanent"]')).toHaveText('永久');
   await page.getByLabel('有效期').selectOption('24');
@@ -445,7 +703,7 @@ test('a note share can be created, extended and cancelled from share management'
   await sharingDialog.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('button', { name: '返回笔记列表', exact: true }).click();
   const navigation = await openMobileNavigation(page);
-  await navigation.getByRole('button', { name: '分享管理', exact: true }).click();
+  await navigation.getByRole('button', { name: '分享', exact: true }).click();
   const manager = page.getByRole('dialog');
   await expect(manager.getByRole('heading', { name: '分享管理', exact: true })).toBeVisible();
   await expect(manager.getByRole('button', { name: title, exact: true })).toBeVisible();
@@ -464,10 +722,14 @@ test('dialog errors remain visible above the backdrop on desktop and mobile', as
   await page.goto('/');
   await page.getByRole('button', { name: '管理标签', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('来源标签').fill('不存在的标签');
-  await dialog.getByRole('button', { name: '应用', exact: true }).click();
+  const tagName = `错误反馈-${randomUUID().slice(0, 6)}`;
+  const input = dialog.getByPlaceholder('输入新标签名称…');
+  await input.fill(tagName);
+  await dialog.getByRole('button', { name: '添加', exact: true }).click();
+  await input.fill(tagName);
+  await dialog.getByRole('button', { name: '添加', exact: true }).click();
   const alert = dialog.locator('.dialog-feedback-anchor > [role="alert"]');
-  await expect(alert).toContainText('请选择来源标签并填写');
+  await expect(alert).toContainText('该标签已存在');
   expect(await alert.evaluate((element) => {
     const box = element.getBoundingClientRect();
     const topmost = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
@@ -499,7 +761,7 @@ test('AI integration tokens can be created once, listed and revoked', async ({ p
   await page.getByLabel('有效期').selectOption('permanent');
   await page.getByRole('button', { name: '创建令牌' }).click();
   await expect(page.getByText('令牌仅显示一次')).toBeVisible();
-  await expect(page.locator('.token-secret code')).toHaveText(/^enai_[a-f0-9]{64}$/);
+  await expect(page.locator('.token-secret code').first()).toHaveText(/^enai_[a-f0-9]{64}$/);
   await expect(page.getByText('桌面 AI', { exact: true })).toBeVisible();
   await expect(page.getByText('读取和写入 · 永久有效', { exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/desktop-ai-access.png', fullPage: true });
@@ -545,6 +807,8 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   expect(history.versions).toHaveLength(1);
   await page.reload();
   await page.getByRole('button').filter({ hasText: title }).click();
+  await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('本周阅读');
   await page.getByRole('button', { name: '预览模式' }).click();
   await expect(page.getByRole('heading', { name: '本周阅读' })).toBeVisible();
@@ -569,13 +833,226 @@ test('create, autosave, reload, edit Markdown and preview safely', async ({ page
   const readableLayout = await documentLayout();
   expect(Math.abs(readableLayout.leftGap)).toBeLessThanOrEqual(1);
   expect(readableLayout.width).toBeCloseTo(900, 0);
-  await page.getByRole('button', { name: '使用宽屏' }).click();
-  await expect(page.getByRole('button', { name: '使用阅读宽度' })).toHaveAttribute('aria-pressed', 'true');
-  const wideLayout = await documentLayout();
-  expect(wideLayout.width).toBeCloseTo(1080, 0);
-  expect(await page.evaluate(() => localStorage.getItem('easynote-document-width'))).toBe('wide');
+  const normalWorkspace = (await page.locator('#document-workspace').boundingBox())!;
+  await page.getByRole('button', { name: '进入全屏' }).click();
+  const exitFullscreen = page.getByRole('button', { name: '退出全屏' });
+  await expect(exitFullscreen).toHaveAttribute('aria-pressed', 'true');
+  await expect(exitFullscreen).toHaveAttribute('aria-controls', 'document-workspace');
+  await expect(page.locator('.app-shell')).toHaveClass(/document-focus-mode/);
+  await expect(page.locator('#navigation-rail')).toBeHidden();
+  await expect(page.locator('#notebook-explorer')).toBeHidden();
+  await expect.poll(async () => (await page.locator('#document-workspace').boundingBox())!.width).toBeCloseTo(2000, 0);
+  const fullscreenWorkspace = (await page.locator('#document-workspace').boundingBox())!;
+  expect(fullscreenWorkspace.width).toBeGreaterThan(normalWorkspace.width + 500);
+  const fullscreenLayout = await documentLayout();
+  expect(fullscreenLayout.width).toBeCloseTo(1080, 0);
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toBeVisible();
+  await page.getByRole('button', { name: '预览模式', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '本周阅读' })).toBeVisible();
+  await page.screenshot({ path: 'test-results/desktop-document-fullscreen.png', fullPage: true });
+  await exitFullscreen.click();
+  await expect(page.getByRole('button', { name: '进入全屏' })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('.app-shell')).not.toHaveClass(/document-focus-mode/);
+  await expect(page.locator('#navigation-rail')).toBeVisible();
+  await expect(page.locator('#notebook-explorer')).toBeVisible();
+  await expect.poll(async () => (await page.locator('#document-workspace').boundingBox())!.width).toBeCloseTo(normalWorkspace.width, 0);
+  const restoredWorkspace = (await page.locator('#document-workspace').boundingBox())!;
+  expect(restoredWorkspace.width).toBeCloseTo(normalWorkspace.width, 0);
   await page.screenshot({ path: 'test-results/desktop.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('notes open in preview and expose live or Markdown editing modes only while editing', async ({ page }) => {
+  const title = `编辑模式-${randomUUID().slice(0, 8)}`;
+  const id = randomUUID();
+  expect((await page.request.post(`/api/notes/${id}`, {
+    headers,
+    data: {
+      title, content: '# 初始内容', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  })).status()).toBe(201);
+
+  await page.goto('/');
+  await page.getByRole('button').filter({ hasText: title }).click();
+  await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('group', { name: '编辑模式选择' })).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toHaveCount(0);
+  await expect(page.locator('.document .markdown').getByRole('heading', { name: '初始内容' })).toBeVisible();
+
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  const modes = page.getByRole('group', { name: '编辑模式选择' });
+  await expect(modes).toBeVisible();
+  await expect(modes.getByRole('button', { name: '实时渲染' })).toHaveAttribute('aria-pressed', 'true');
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  await editor.fill('# 实时更新\n\n这里有 **粗体内容**\n\n正在编辑 *当前段落*\n\n>你好呀');
+  await expect(page.locator('.live-markdown-editor')).toBeVisible();
+  await expect(page.locator('.live-render-preview')).toHaveCount(0);
+  await expect(page.locator('.cm-live-h1')).toHaveText('实时更新');
+  await expect(page.locator('.cm-live-strong')).toHaveText('粗体内容');
+  await expect(page.locator('.cm-live-h1')).not.toContainText('#');
+  await expect(page.locator('.cm-line').filter({ hasText: '正在编辑' })).not.toContainText('*');
+  await expect(page.locator('.cm-line').filter({ hasText: '正在编辑' }).locator('.cm-live-emphasis')).toHaveText('当前段落');
+  await expect(page.locator('.cm-line').filter({ hasText: '你好呀' })).toHaveText('你好呀');
+  const earlierHeading = page.locator('.cm-line').filter({ hasText: '实时更新' });
+  await earlierHeading.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type('补充');
+  await expect(earlierHeading).toHaveText('实时更新补充');
+  await expect(earlierHeading).not.toContainText('#');
+  await page.locator('.cm-line').filter({ hasText: '正在编辑' }).click();
+  await expect(earlierHeading).toHaveText('实时更新补充');
+  const renderedParagraph = page.locator('.cm-line').filter({ hasText: '正在编辑' });
+  const renderedEmphasis = renderedParagraph.locator('.cm-live-emphasis');
+  await renderedEmphasis.click();
+  await expect(editor).toBeFocused();
+  await page.keyboard.type('CLICKED');
+  await expect(renderedEmphasis).toContainText('CLICKED');
+  await expect(renderedEmphasis).toContainText('当前');
+  await expect(renderedEmphasis).toContainText('段落');
+  await expect(renderedParagraph).not.toContainText('*');
+  await page.screenshot({ path: 'test-results/edit-mode-live-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(page.locator('.live-markdown-editor')).toBeVisible();
+  await page.screenshot({ path: 'test-results/edit-mode-live-mobile.png' });
+
+  await modes.getByRole('button', { name: 'MD 语法' }).click();
+  await expect(modes.getByRole('button', { name: 'MD 语法' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.cm-live-h1')).toHaveCount(0);
+  await expect(editor).toContainText('# 实时更新');
+});
+
+test('quick notes publish Markdown, edit rendered text, filter, sort and switch layouts', async ({ page }) => {
+  const taggedId = randomUUID();
+  const folderId = randomUUID();
+  const folderName = `小记归档-${folderId.slice(0, 6)}`;
+  expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${taggedId}`, {
+    headers,
+    data: {
+      title: '已有小记', content: `## 已有内容\n\n用于筛选。\n\n${'较长的小记内容。\n\n'.repeat(100)}详情内容末尾`, tags: ['灵感', '操作标签'], pinned: false, quick: true, archived: false,
+      folderId: null, deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, {
+    headers,
+    data: {
+      title: '文件夹中的笔记', content: '不应作为小记显示', tags: ['操作标签'], pinned: false, archived: false,
+      folderId, deletedAt: null, revision: 0, operationId: randomUUID(),
+    },
+  })).status()).toBe(201);
+
+  await page.goto('/');
+  await page.getByRole('button', { name: '小记', exact: true }).click();
+  await expect(page.getByRole('main', { name: '小记' })).toBeVisible();
+  await page.setViewportSize({ width: 1439, height: 899 });
+  await page.screenshot({ path: 'test-results/quick-notes-desktop.png', fullPage: true });
+  const editor = page.getByRole('textbox', { name: '笔记正文' });
+  const newTag = `随手记-${taggedId.slice(0, 6)}`;
+  await page.locator('.quick-tag-picker > summary').click();
+  await page.getByRole('textbox', { name: '搜索或回车新建标签…' }).fill(newTag);
+  await page.getByRole('textbox', { name: '搜索或回车新建标签…' }).press('Enter');
+  await expect(page.locator('.quick-tag-picker').getByRole('checkbox', { name: newTag })).toBeChecked();
+  await page.locator('.quick-tag-picker > summary').click();
+  await editor.fill('# 新的小记\n\n第一段 **实时渲染**\n\n第二段');
+  await expect(page.locator('.quick-compose-editor .cm-live-strong')).toHaveText('实时渲染');
+  await editor.fill(`# 新的小记\n\n第一段 **实时渲染**\n\n第二段\n\n${'扩展内容\n\n'.repeat(100)}详情内容末尾`);
+  await page.locator('.quick-compose-card').screenshot({ path: 'test-results/quick-notes-composer.png' });
+  await page.getByRole('button', { name: '插入待办' }).click();
+  await page.keyboard.type('稍后整理');
+  await expect(page.locator('.quick-compose-editor .cm-line').filter({ hasText: '稍后整理' })).toContainText('☐稍后整理');
+  await page.getByRole('button', { name: '小记一下' }).click();
+  await expect(page.locator('.quick-note-card').filter({ hasText: '新的小记' })).toBeVisible();
+  await expect(page.locator('.quick-note-card').filter({ hasText: '文件夹中的笔记' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '小记一下' })).toBeDisabled();
+
+  await page.locator('.tag-navigation-row').filter({ hasText: newTag }).locator('.tag-navigation-select').click();
+  await expect(page.locator('.note-row-title')).toHaveText(/小记-\d{4}年\d{2}月\d{2}日 \d{2}:\d{2}:\d{2}/);
+  await page.getByRole('button', { name: '小记', exact: true }).click();
+
+  const createdCard = page.locator('.quick-note-card').filter({ hasText: '新的小记' });
+  await expect(createdCard.getByLabel('编辑小记')).toBeHidden();
+  await createdCard.hover();
+  const editQuickNote = createdCard.getByLabel('编辑小记');
+  await expect(editQuickNote).toBeVisible();
+  const [createdCardBox, editQuickNoteBox] = await Promise.all([createdCard.boundingBox(), editQuickNote.boundingBox()]);
+  expect(createdCardBox).not.toBeNull();
+  expect(editQuickNoteBox).not.toBeNull();
+  await page.mouse.move(createdCardBox!.x + createdCardBox!.width - 2, editQuickNoteBox!.y + editQuickNoteBox!.height / 2);
+  await page.mouse.move(editQuickNoteBox!.x + editQuickNoteBox!.width / 2, editQuickNoteBox!.y + editQuickNoteBox!.height / 2, { steps: 12 });
+  await expect(editQuickNote).toBeVisible();
+  await createdCard.getByLabel('更多小记操作').click();
+  const cardMenu = page.getByRole('menu', { name: '小记操作' });
+  await expect(cardMenu.getByRole('menuitem')).toHaveText([
+    '置顶', '查看详情', '复制链接', '分享', '移动到文件夹', '添加标签', '归档', '查看历史', '删除',
+  ]);
+  const menuBox = await cardMenu.boundingBox();
+  expect(menuBox).not.toBeNull();
+  expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(899);
+  await page.screenshot({ path: 'test-results/quick-notes-card-menu.png', fullPage: true });
+  const cardPreview = createdCard.locator('.quick-card-preview');
+  expect(await cardPreview.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await cardMenu.getByRole('menuitem', { name: '查看详情', exact: true }).click();
+  await expect(createdCard).toHaveClass(/expanded/);
+  await expect(createdCard).toContainText('详情内容末尾');
+  expect(await cardPreview.evaluate((element) => element.scrollHeight === element.clientHeight)).toBe(true);
+  await createdCard.getByLabel('更多小记操作').click();
+  await cardMenu.getByRole('menuitem', { name: '置顶', exact: true }).click();
+  await expect(createdCard.getByLabel('已置顶')).toBeVisible();
+  await createdCard.getByLabel('更多小记操作').click();
+  await cardMenu.getByRole('menuitem', { name: '添加标签', exact: true }).click();
+  await page.getByRole('group', { name: '选择标签' }).getByRole('menuitem', { name: '操作标签' }).click();
+  await expect(createdCard).toContainText('操作标签');
+  await createdCard.getByLabel('更多小记操作').click();
+  await cardMenu.getByRole('menuitem', { name: '收起详情', exact: true }).click();
+  await expect(createdCard).not.toHaveClass(/expanded/);
+  await createdCard.click();
+  await expect(editor).toContainText('第一段');
+  const firstParagraph = page.locator('.quick-compose-editor .cm-line').filter({ hasText: '第一段' });
+  await firstParagraph.click({ position: { x: 2, y: 10 } });
+  await page.keyboard.type('可点击修改：');
+  await page.locator('.quick-compose-editor .cm-line').filter({ hasText: '第二段' }).click();
+  await expect(editor).toContainText('可点击修改');
+  await page.getByRole('button', { name: '更新小记' }).click();
+  await expect(createdCard).toContainText('可点击修改');
+
+  await page.getByLabel('筛选标签').selectOption('灵感');
+  await expect(page.locator('.quick-note-card')).toHaveCount(1);
+  await expect(page.locator('.quick-note-card')).toContainText('已有内容');
+  await page.getByLabel('筛选标签').selectOption('');
+  await page.getByLabel('搜索小记').fill('新的小记');
+  await expect(page.locator('.quick-note-card')).toHaveCount(1);
+  await page.getByLabel('搜索小记').fill('');
+  await page.getByRole('button', { name: '卡片视图' }).click();
+  await expect(page.locator('.quick-feed')).toHaveClass(/grid/);
+  await page.getByLabel('小记排序').selectOption('oldest');
+  await page.getByRole('button', { name: '展开编辑器' }).click();
+  await expect(page.getByRole('main', { name: '小记' })).toHaveClass(/fullscreen/);
+  await expect(page.locator('.quick-notes-header')).toBeHidden();
+  await expect(page.locator('.quick-feed-pane')).toBeHidden();
+  await expect(page.locator('.quick-compose-editor')).toBeVisible();
+  await page.screenshot({ path: 'test-results/quick-notes-fullscreen.png', fullPage: true });
+  await page.getByRole('button', { name: '退出全屏' }).click();
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.screenshot({ path: 'test-results/quick-notes-constrained.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileMenu = page.getByRole('button', { name: '打开导航菜单' });
+  await expect(mobileMenu).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/quick-notes-mobile.png', fullPage: true });
+  await mobileMenu.click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  await page.screenshot({ path: 'test-results/quick-notes-mobile-menu.png', fullPage: true });
+  await page.getByRole('dialog').getByRole('button', { name: '关闭' }).click();
+  await page.locator('.quick-notes-body').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await page.screenshot({ path: 'test-results/quick-notes-mobile-feed.png', fullPage: true });
+  await createdCard.getByLabel('更多小记操作').click();
+  await page.getByRole('menuitem', { name: '移动到文件夹', exact: true }).click();
+  await page.getByRole('group', { name: '选择文件夹' }).getByRole('menuitem', { name: folderName }).click();
+  await expect(createdCard).toHaveCount(0);
 });
 
 test('footnotes, lazy code highlighting and precise source switching work', async ({ page }) => {
@@ -873,7 +1350,7 @@ test('unsaved local draft survives refresh and syncs only after explicit retry',
   await page.unroute('**/api/notes/*');
   page.on('dialog', (dialog) => dialog.accept());
   await page.reload();
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('网络失败之后的本地草稿');
+  await expect(page.locator('.document .markdown')).toContainText('网络失败之后的本地草稿');
   await expect(page.getByText('待处理草稿', { exact: true })).toBeVisible();
   await page.getByRole('main').getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
@@ -1113,7 +1590,7 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await expect(page.locator('.note-row-meta time').first()).toBeVisible();
   await page.getByRole('button').filter({ hasText: title }).click();
   let actions = await openMobileNoteActions(page);
-  const syncVersion = actions.getByRole('button', { name: '同步并保存版本', exact: true });
+  const syncVersion = actions.getByRole('button', { name: '同步并更新历史版本', exact: true });
   await expect(syncVersion).toBeVisible();
   expect(await syncVersion.evaluate((button) => button.scrollWidth <= button.clientWidth)).toBe(true);
   await actions.screenshot({ path: 'test-results/mobile-note-actions.png' });
@@ -1128,11 +1605,11 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   await expect(page.getByRole('button').filter({ hasText: title })).toBeHidden();
   let navigation = await openMobileNavigation(page);
   expect(await navigation.getByRole('navigation', { name: '移动端笔记分类' }).getByRole('button').allTextContents())
-    .toEqual(['全部笔记', '任务中心', '归档笔记', '分享管理', '回收站']);
+    .toEqual(['全部笔记', '小记', '任务中心', '归档', '分享', '回收站']);
   await expect(navigation.getByRole('button', { name: '同步全部', exact: true })).toBeVisible();
   await expect(navigation.getByRole('button', { name: '同步并保存版本', exact: true })).toHaveCount(0);
   await navigation.screenshot({ path: 'test-results/mobile-navigation.png' });
-  await navigation.getByRole('button', { name: '归档笔记', exact: true }).click();
+  await navigation.getByRole('button', { name: '归档', exact: true }).click();
   await page.getByRole('button').filter({ hasText: title }).click();
   actions = await openMobileNoteActions(page);
   await actions.getByRole('button', { name: '取消归档', exact: true }).click();
@@ -1222,7 +1699,7 @@ test('mobile list syncs all notes without creating history while note sync creat
 
   await page.getByRole('button').filter({ hasText: title }).click();
   const actions = await openMobileNoteActions(page);
-  await actions.getByRole('button', { name: '同步并保存版本', exact: true }).click();
+  await actions.getByRole('button', { name: '同步并更新历史版本', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('已保存并记录历史版本');
   expect((await (await page.request.get(`/api/notes/${noteId}/versions`)).json()).versions).toHaveLength(1);
 });
@@ -1255,7 +1732,7 @@ test('mobile bulk selection supports select all and exit while settings owns the
   await navigation.getByRole('button', { name: '批量选择', exact: true }).click();
 
   const toolbar = page.locator('.bulk-toolbar');
-  await toolbar.getByRole('button', { name: '全部选中', exact: true }).click();
+  await toolbar.getByRole('button', { name: '全选', exact: true }).click();
   await expect(toolbar).toContainText('已选 2 篇');
   await expect(rows.nth(0)).toHaveAttribute('aria-pressed', 'true');
   await expect(rows.nth(1)).toHaveAttribute('aria-pressed', 'true');
@@ -1300,6 +1777,8 @@ test('search highlights title and a matching excerpt from deep in the note', asy
   await expect(row.locator('.note-row-title mark.search-highlight')).toHaveText(marker);
   await expect(row.locator('.note-excerpt mark.search-highlight')).toHaveCount(2);
   await row.click();
+  await expect(page.locator('.markdown mark.search-highlight')).toHaveText(marker);
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
   await expect(page.locator('.cm-search-highlight')).toHaveCount(2);
   await page.getByRole('button', { name: '预览模式' }).click();
   await expect(page.locator('.markdown mark.search-highlight')).toHaveText(marker);
@@ -1435,8 +1914,7 @@ test('tags are scoped to the current note category and preserve it when selected
   const title = `归档标签-${marker}`;
   const archiveTag = `归档-${marker}`;
   await newNote(page, title, '用于验证归档标签筛选');
-  await page.getByRole('textbox', { name: '笔记标签' }).fill(`${archiveTag}, 公共-${marker}`);
-  await page.getByRole('textbox', { name: '笔记标签' }).press('Tab');
+  await addNoteTags(page, [archiveTag, `公共-${marker}`]);
   await page.getByRole('button', { name: '归档', exact: true }).click();
   await expect.poll(async () => {
     const result = await (await page.request.get(`/api/notes?view=archive&tag=${encodeURIComponent(archiveTag)}`)).json();
@@ -1445,17 +1923,100 @@ test('tags are scoped to the current note category and preserve it when selected
 
   await page.getByRole('button', { name: '归档笔记', exact: true }).click();
   const tagNav = page.getByRole('navigation', { name: '标签' });
-  const tagButton = tagNav.getByRole('button', { name: archiveTag, exact: true });
+  const tagButton = tagNav.locator('.tag-navigation-row').filter({ hasText: archiveTag }).locator('.tag-navigation-select');
   await expect(tagButton).toBeVisible();
-  await expect(tagButton.locator('.tag-prefix')).toHaveText('#');
-  await expect(tagButton.locator('.tag-prefix')).toHaveAttribute('aria-hidden', 'true');
+  await expect(tagButton.locator('.tag-color-dot')).toHaveAttribute('aria-hidden', 'true');
   await tagButton.click();
-  await expect(page.getByRole('heading', { name: `归档笔记 · #${archiveTag}` })).toBeVisible();
-  await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
+  await expect(page.locator('.active-tag-heading .view-heading-context')).toHaveText('归档笔记 · 标签');
+  await expect(page.locator('.active-tag-heading-name')).toHaveText(archiveTag);
+  const taggedFile = page.locator('.explorer-file-results .explorer-note-item').filter({ hasText: title });
+  await expect(taggedFile).toBeVisible();
+  await expect(taggedFile.locator('.note-excerpt')).toBeHidden();
+  await expect(taggedFile.locator('.note-row-meta')).toBeVisible();
+  await expect(taggedFile.locator('.note-row-meta')).toContainText(/修订 \d+/);
   await page.screenshot({ path: 'test-results/desktop-archive-tags.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(taggedFile.locator('.note-excerpt')).toBeHidden();
+  await expect(taggedFile.locator('.note-row-meta')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 800 });
 
   await page.getByRole('button', { name: '全部笔记', exact: true }).click();
-  await expect(tagNav.getByRole('button', { name: archiveTag, exact: true })).toBeHidden();
+  await expect(tagNav.locator('.tag-navigation-row').filter({ hasText: archiveTag })).toBeHidden();
+});
+
+test('desktop pane edge controls collapse, persist and restore both side panes', async ({ page }) => {
+  await page.setViewportSize({ width: 1586, height: 992 });
+  await page.goto('/');
+  await newNote(page, '测试', '>你好呀');
+  await page.getByRole('button', { name: '预览模式', exact: true }).click();
+  const shell = page.locator('.app-shell');
+  const workspace = page.locator('.workspace');
+  const initialWidth = (await workspace.boundingBox())!.width;
+  await page.screenshot({ path: 'test-results/panes-expanded-desktop.png' });
+  await page.locator('#navigation-rail').screenshot({ path: 'test-results/panes-expanded-navigation.png' });
+  await page.locator('#notebook-explorer').screenshot({ path: 'test-results/panes-expanded-explorer.png' });
+  const topLevelNote = page.locator('.explorer-tree:not(.explorer-search-results) > .explorer-note-item').first();
+  const noteCardBox = (await topLevelNote.locator('.explorer-note-row').boundingBox())!;
+  const noteTitleBox = (await topLevelNote.locator('.note-row-title').boundingBox())!;
+  const noteMenuBox = (await topLevelNote.locator('.explorer-row-more').boundingBox())!;
+  expect(noteCardBox.height).toBeLessThanOrEqual(68);
+  await expect(topLevelNote.locator('.note-excerpt')).toBeHidden();
+  expect(noteTitleBox.y).toBeLessThan(noteMenuBox.y + noteMenuBox.height / 2);
+  expect(Math.abs(noteCardBox.y + noteCardBox.height / 2 - (noteMenuBox.y + noteMenuBox.height / 2))).toBeLessThanOrEqual(3);
+
+  const collapseNavigation = page.getByRole('button', { name: '收起导航栏', exact: true });
+  await expect(collapseNavigation).toHaveAttribute('aria-controls', 'navigation-rail');
+  await expect(collapseNavigation).toHaveAttribute('aria-expanded', 'true');
+  await collapseNavigation.click();
+  const expandNavigation = page.getByRole('button', { name: '展开导航栏', exact: true });
+  await expect(expandNavigation).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#navigation-rail')).toBeVisible();
+  await expect(page.locator('#navigation-rail')).toHaveClass(/compact-navigation-rail/);
+  await expect(page.locator('#navigation-rail').getByRole('button', { name: '搜索笔记' })).toBeVisible();
+  await expect.poll(async () => (await workspace.boundingBox())!.width).toBeGreaterThan(initialWidth + 130);
+  expect(await page.evaluate(() => localStorage.getItem('easynote-navigation-visible'))).toBe('false');
+  await expandNavigation.click();
+  await expect(page.locator('#navigation-rail')).not.toHaveClass(/compact-navigation-rail/);
+  await expect.poll(async () => (await workspace.boundingBox())!.width).toBeLessThan(initialWidth + 20);
+
+  const expandedWorkspaceWidth = (await workspace.boundingBox())!.width;
+  const collapseExplorer = page.getByRole('button', { name: '收起笔记列表', exact: true });
+  await expect(collapseExplorer).toHaveAttribute('aria-controls', 'notebook-explorer');
+  await expect(collapseExplorer).toHaveAttribute('aria-expanded', 'true');
+  await collapseExplorer.click();
+  const expandExplorer = page.getByRole('button', { name: '展开笔记列表', exact: true });
+  await expect(expandExplorer).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#notebook-explorer')).toBeHidden();
+  await expect.poll(async () => (await workspace.boundingBox())!.width).toBeGreaterThan(expandedWorkspaceWidth + 300);
+  expect(await page.evaluate(() => localStorage.getItem('easynote-note-list-visible'))).toBe('false');
+  await page.getByRole('button', { name: '收起导航栏', exact: true }).click();
+  await expect(page.locator('#navigation-rail')).toHaveClass(/compact-navigation-rail/);
+  await expect.poll(async () => (await page.locator('#navigation-rail').boundingBox())!.width).toBeCloseTo(88, 0);
+  await expect(page.locator('.explorer-divider')).toBeHidden();
+  expect((await page.locator('.explorer-divider').boundingBox())!.width).toBe(0);
+  expect(await page.locator('.pane-toggle:visible').count()).toBe(1);
+  await page.screenshot({ path: 'test-results/panes-collapsed-desktop.png' });
+  await page.locator('#navigation-rail').screenshot({ path: 'test-results/panes-collapsed-navigation.png' });
+  await page.screenshot({ path: 'test-results/panes-collapsed-boundary.png', clip: { x: 48, y: 0, width: 96, height: 900 } });
+  await page.locator('#navigation-rail').getByRole('button', { name: '搜索笔记' }).click();
+  await expect(page.locator('#notebook-explorer')).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeFocused();
+  await page.getByRole('button', { name: '收起笔记列表', exact: true }).click();
+  await expect(page.locator('#notebook-explorer')).toBeHidden();
+
+  await page.reload();
+  await page.getByRole('button', { name: '展开导航栏', exact: true }).click();
+  await expect(page.getByRole('button', { name: '展开笔记列表', exact: true })).toBeVisible();
+  await expect(page.locator('#notebook-explorer')).toBeHidden();
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await expect(shell).toHaveCSS('transition-duration', '0s');
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('#notebook-explorer')).toBeVisible();
+  expect(await page.locator('.pane-toggle:visible').count()).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/panes-collapsed-mobile.png' });
 });
 
 test('note list width is adjustable, persistent, and both footers align', async ({ page }) => {
@@ -1467,7 +2028,7 @@ test('note list width is adjustable, persistent, and both footers align', async 
   const handle = await separator.boundingBox();
   expect(initial).not.toBeNull();
   expect(handle).not.toBeNull();
-  expect(initial!.width).toBeCloseTo(300, 0);
+  expect(initial!.width).toBeCloseTo(340, 0);
   await expect(separator).toHaveAttribute('aria-valuemin', '220');
   await expect(separator).toHaveAttribute('aria-valuemax', '440');
   await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + 140);
@@ -1495,12 +2056,12 @@ test('note list width is adjustable, persistent, and both footers align', async 
   expect(footers.listHeight).toBeCloseTo(32, 0);
   expect(footers.documentHeight).toBeCloseTo(32, 0);
   await page.screenshot({ path: 'test-results/desktop-resized.png', fullPage: true });
-  await page.getByRole('button', { name: '收起侧栏' }).click();
+  await page.getByRole('button', { name: '收起导航栏', exact: true }).click();
   expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
   await page.reload();
   expect((await list.boundingBox())!.width).toBeCloseTo(resized!.width, 0);
   await separator.dblclick();
-  await expect(separator).toHaveAttribute('aria-valuenow', '300');
+  await expect(separator).toHaveAttribute('aria-valuenow', '340');
 });
 
 test('typing while a save response is delayed preserves the newer draft', async ({ page }) => {
@@ -1528,7 +2089,7 @@ test('typing while a save response is delayed preserves the newer draft', async 
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.reload();
   await page.getByRole('button').filter({ hasText: title }).click();
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('完整保留第二段修改');
+  await expect(page.locator('.document .markdown')).toContainText('完整保留第二段修改');
 });
 
 test('a stalled save times out and remains retryable without reloading', async ({ page }) => {
@@ -1574,15 +2135,14 @@ test('incremental polling preserves pagination while refreshing a selected note'
     expect(response.status()).toBe(201);
   }
   await page.goto('/');
+  await disableOfflineLibrary(page);
+  await page.getByRole('textbox', { name: '搜索笔记' }).fill(marker);
   await expect(page.locator('.note-row')).toHaveCount(50);
   await expect(page.locator('.note-row').first()).toHaveAttribute('aria-label', /.+，.+/);
   await expect(page.locator('.note-row').first().locator('.note-excerpt')).toHaveAttribute('aria-hidden', 'true');
   let loadMore = page.getByRole('button', { name: '加载更多' });
   await loadMore.click();
   await expect(page.locator('.note-row')).toHaveCount(55);
-  await disableOfflineLibrary(page);
-  loadMore = page.getByRole('button', { name: '加载更多' });
-  await loadMore.click();
   await expect(loadMore).toBeHidden();
   const loadedRows = await page.locator('.note-row').count();
   await page.getByRole('button').filter({ hasText: targetTitle }).click();
@@ -1607,7 +2167,7 @@ test('incremental polling preserves pagination while refreshing a selected note'
   });
   expect(remote.status()).toBe(200);
   await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('另一台设备更新后的内容');
+  await expect(page.locator('.document .markdown')).toContainText('另一台设备更新后的内容');
   expect(await page.locator('.note-row').count()).toBe(loadedRows);
   await expect(page.getByRole('alert')).toBeHidden();
 });
@@ -1714,18 +2274,21 @@ test('editing shortcuts and keyboard navigation work without pointer input', asy
 
   await editor.press('Meta+a');
   await editor.press('Meta+b');
-  await expect(editor).toContainText('**格式文本**');
+  await expect(page.locator('.cm-live-strong')).toHaveText('格式文本');
+  await expect(editor).not.toContainText('**');
   await editor.press('Meta+b');
   await expect(editor).toContainText('格式文本');
+  await expect(page.locator('.cm-live-strong')).toHaveCount(0);
   await expect(editor).not.toContainText('**');
   await editor.press('Meta+a');
   await editor.press('Meta+i');
-  await expect(editor).toContainText('*格式文本*');
+  await expect(page.locator('.cm-live-emphasis')).toHaveText('格式文本');
+  await expect(editor).not.toContainText('*');
 
   await editor.press('Meta+Enter');
   await expect(page.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
   await page.keyboard.press('Meta+Enter');
-  await expect(page.getByRole('button', { name: '编辑模式' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: '编辑模式', exact: true })).toHaveAttribute('aria-pressed', 'true');
   await page.getByRole('textbox', { name: '笔记正文' }).press('Meta+/');
   const shortcuts = page.getByRole('dialog');
   await expect(shortcuts.getByRole('heading', { name: '快捷键' })).toBeVisible();
@@ -1775,7 +2338,8 @@ test('Markdown todo items render and persist interactive checkbox changes', asyn
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.screenshot({ path: 'test-results/desktop-todo.png', fullPage: true });
 
-  await page.getByRole('button', { name: '编辑模式' }).click();
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  await page.getByRole('group', { name: '编辑模式选择' }).getByRole('button', { name: 'MD 语法' }).click();
   const editor = page.getByRole('textbox', { name: '笔记正文' });
   await expect(editor).toContainText('- [x] 兼容简写');
   await expect(editor).toContainText('- [ ] 已完成');
@@ -1796,8 +2360,7 @@ test('desktop export configures and downloads a structured PDF', async ({ page }
   ].join('\n');
   await page.goto('/');
   await newNote(page, title, content);
-  await page.getByRole('textbox', { name: '笔记标签' }).fill('打印, 测试');
-  await page.getByRole('textbox', { name: '笔记标签' }).press('Tab');
+  await addNoteTags(page, ['打印', '测试']);
   const image = await page.locator('.document').screenshot({ type: 'png' });
   await page.locator('input[type=file][accept^="image"]').setInputFiles({
     name: '打印图片.png', mimeType: 'image/png', buffer: image,
@@ -1980,6 +2543,9 @@ test('outline, stable internal links and backlinks navigate between notes', asyn
   const picker = page.getByRole('dialog');
   await picker.getByLabel('搜索链接目标').fill(targetTitle);
   await picker.getByRole('button', { name: targetTitle, exact: true }).click();
+  await expect(page.locator('.cm-live-link')).toHaveText(targetTitle);
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).not.toContainText('[[');
+  await page.getByRole('group', { name: '编辑模式选择' }).getByRole('button', { name: 'MD 语法' }).click();
   await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(/\[\[[0-9a-f-]{36}\|知识目标-/);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '预览模式' }).click();
@@ -2020,7 +2586,7 @@ test('offline library opens a cached note before remote revalidation finishes', 
 
   await page.locator('[data-note-row]').filter({ hasText: title }).click();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title, { timeout: 1000 });
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(content);
+  await expect(page.locator('.document .markdown')).toContainText(content);
   expect(revalidating).toBe(true);
   const revalidated = page.waitForResponse((response) => response.url().endsWith(`/api/notes/${id}`));
   release();
@@ -2065,17 +2631,16 @@ test('full offline library supports cold start, full-text search and note readin
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('离线', { exact: true })).toBeVisible();
+  await expect(page.getByText('仅保存在本机', { exact: true })).toBeVisible();
   await page.getByRole('textbox', { name: '搜索笔记' }).fill(`检索词-${marker}`);
   await expect(page.getByRole('button').filter({ hasText: title })).toBeVisible();
   await page.getByRole('button').filter({ hasText: title }).click();
-  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(`检索词-${marker}`);
-  await page.getByRole('button', { name: '预览模式' }).click();
+  await expect(page.locator('.document .markdown')).toContainText(`检索词-${marker}`);
   const cachedImage = page.locator('.markdown img');
   await expect(cachedImage).toBeVisible();
   await expect.poll(() => cachedImage.evaluate((element: HTMLImageElement) =>
     element.src.startsWith('blob:') && element.complete && element.naturalWidth > 0)).toBe(true);
-  await page.getByRole('button', { name: '编辑模式' }).click();
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
   const editor = page.getByRole('textbox', { name: '笔记正文' });
   await expect(editor).toBeFocused();
   await editor.press('Control+End');
@@ -2122,11 +2687,19 @@ test('batch note actions and tag management preserve revisions', async ({ page }
 
   await page.getByRole('button', { name: '管理标签' }).click();
   const manager = page.getByRole('dialog');
-  await manager.getByLabel('来源标签').fill(sourceTag);
-  await manager.getByLabel('操作').selectOption('merge');
-  await manager.getByLabel('目标标签').fill(renamedTag);
-  await manager.getByRole('button', { name: '应用' }).click();
-  await expect(page.getByRole('status')).toHaveText('已更新 2 篇笔记');
+  await manager.screenshot({ path: 'test-results/tag-manager-default.png' });
+  const sourceRow = manager.locator('.tag-manager-row').filter({ hasText: sourceTag });
+  await sourceRow.getByRole('button', { name: '编辑', exact: true }).click();
+  const editingRow = manager.locator('.tag-manager-row.editing');
+  await expect(editingRow.getByLabel('重命名')).toBeFocused();
+  await manager.screenshot({ path: 'test-results/tag-manager-editing.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await manager.screenshot({ path: 'test-results/tag-manager-editing-mobile.png' });
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await editingRow.locator('input').fill(renamedTag);
+  await editingRow.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('更新了 2 篇笔记');
+  await manager.getByRole('button', { name: '关闭', exact: true }).click();
 
   await page.getByRole('button', { name: '批量选择' }).click();
   await page.getByRole('button').filter({ hasText: firstTitle }).click();
@@ -2158,7 +2731,7 @@ test('a revoked offline session is removed as soon as the device reconnects', as
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('离线', { exact: true })).toBeVisible();
+  await expect(page.getByText('仅保存在本机', { exact: true })).toBeVisible();
 
   const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === 'easynote_dev');
   expect(sessionCookie).toBeTruthy();

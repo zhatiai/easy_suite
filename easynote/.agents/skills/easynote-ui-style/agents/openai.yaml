@@ -1,0 +1,5 @@
+interface:
+  display_name: "EasyNote UI Style"
+  short_description: "保持 EasyNote 现有技术架构、交互与视觉风格一致"
+  brand_color: "#007AFF"
+  default_prompt: "Use $easynote-ui-style to implement this EasyNote UI change in the existing product style."

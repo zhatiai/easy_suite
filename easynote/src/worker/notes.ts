@@ -17,7 +17,7 @@ import { publishNoteChanges } from './events';
 
 export interface NoteRow {
   id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
-  folder_id: string | null; deleted_at: number | null; created_at: number; updated_at: number; revision: number;
+  is_quick: number; folder_id: string | null; deleted_at: number | null; created_at: number; updated_at: number; revision: number;
   dedup_hash: string; mutation_id: string; mutation_hash: string;
 }
 interface VersionInputRow {
@@ -25,12 +25,12 @@ interface VersionInputRow {
 }
 export const toNote = (row: NoteRow): Note => ({
   id: row.id, title: row.title, content: row.content, tags: JSON.parse(row.tags),
-  pinned: !!row.pinned, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at, createdAt: row.created_at,
+  pinned: !!row.pinned, quick: !!row.is_quick, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at, createdAt: row.created_at,
   updatedAt: row.updated_at, revision: row.revision,
 });
 const versionInput = (row: VersionInputRow): NoteInput => ({
   title: row.title, content: row.content, tags: JSON.parse(row.tags),
-  pinned: !!row.pinned, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at,
+  pinned: !!row.pinned, quick: false, archived: !!row.archived, folderId: row.folder_id, deletedAt: row.deleted_at,
 });
 
 export async function loadNote(env: Env, userId: string, id: string): Promise<NoteRow | null> {
@@ -40,7 +40,7 @@ export async function loadNote(env: Env, userId: string, id: string): Promise<No
 const blankCondition = "title='' AND content='' AND tags='[]' AND archived=0 AND deleted_at IS NULL";
 
 async function loadBlank(env: Env, userId: string, folderId: string | null = null): Promise<NoteRow | null> {
-  return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND folder_id IS ? AND ${blankCondition} LIMIT 1`)
+  return env.DB.prepare(`SELECT * FROM notes WHERE user_id=? AND is_quick=0 AND folder_id IS ? AND ${blankCondition} LIMIT 1`)
     .bind(userId, folderId).first<NoteRow>();
 }
 
@@ -55,6 +55,7 @@ function validate(data: Record<string, unknown>, env: Env): NoteInput {
       !Array.isArray(data.tags) || data.tags.length > 20 ||
       data.tags.some((tag) => typeof tag !== 'string' || !tag.trim() || tag.length > 40) ||
       typeof data.pinned !== 'boolean' ||
+      !(data.quick === undefined || typeof data.quick === 'boolean') ||
       typeof data.archived !== 'boolean' ||
       !(data.folderId === undefined || data.folderId === null || typeof data.folderId === 'string' && idPattern.test(data.folderId)) ||
       !(data.deletedAt === null || typeof data.deletedAt === 'number' && Number.isSafeInteger(data.deletedAt) && data.deletedAt > 0)) {
@@ -63,7 +64,7 @@ function validate(data: Record<string, unknown>, env: Env): NoteInput {
   return {
     title: data.title.trim(), content: data.content,
     tags: [...new Set((data.tags as string[]).map((tag) => tag.trim()))],
-    pinned: data.pinned, archived: data.archived, folderId: (data.folderId ?? null) as string | null,
+    pinned: data.pinned, quick: data.quick === true, archived: data.archived, folderId: (data.folderId ?? null) as string | null,
     deletedAt: data.deletedAt as number | null,
   };
 }
@@ -79,6 +80,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   }
   const current = await loadNote(env, user.id, id);
   if (data.folderId === undefined && current) input.folderId = current.folder_id;
+  if (data.quick === undefined && current) input.quick = !!current.is_quick;
   if (input.folderId && !await env.DB.prepare('SELECT 1 FROM folders WHERE id=? AND user_id=?')
       .bind(input.folderId, user.id).first()) throw new ApiError(404, 'Folder not found.');
   const createVersion = user.actorType === 'ai' || data.createVersion === true;
@@ -145,13 +147,13 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   const mutation = data.operationId;
   const fields = [
     input.title, input.content, dedupHash, JSON.stringify(input.tags),
-    input.pinned ? 1 : 0, input.archived ? 1 : 0, input.folderId, input.deletedAt,
+    input.pinned ? 1 : 0, input.quick ? 1 : 0, input.archived ? 1 : 0, input.folderId, input.deletedAt,
   ];
   const statements: D1PreparedStatement[] = [];
   if (create) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO notes
-      (id,user_id,title,content,dedup_hash,tags,pinned,archived,folder_id,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
-      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+      (id,user_id,title,content,dedup_hash,tags,pinned,is_quick,archived,folder_id,deleted_at,created_at,updated_at,revision,mutation_id,mutation_hash)
+      SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
       WHERE ${readyCondition}
         AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))
         AND NOT EXISTS(SELECT 1 FROM purged_notes WHERE id=?)
@@ -159,7 +161,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
       .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds,
         input.folderId, input.folderId, user.id, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
   } else {
-    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,archived=?,folder_id=?,deleted_at=?,
+    statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,is_quick=?,archived=?,folder_id=?,deleted_at=?,
       updated_at=?,revision=?,mutation_id=?,mutation_hash=?
       WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}
         AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))`)
@@ -248,7 +250,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
       ? `"${q.replaceAll('"', '""')}"`
       : null;
     const view = url.searchParams.get('view') ?? 'all';
-    if (!['all', 'archive', 'trash', 'export'].includes(view)) throw new ApiError(400, 'Invalid note view.');
+    if (!['all', 'quick', 'archive', 'trash', 'export'].includes(view)) throw new ApiError(400, 'Invalid note view.');
     const offset = Number(url.searchParams.get('offset') ?? 0);
     if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid offset.');
     const limit = Number(url.searchParams.get('limit') ?? 50);
@@ -261,7 +263,8 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const binds: unknown[] = [user.id];
     if (view === 'trash') filters.push('deleted_at IS NOT NULL');
     else if (view === 'archive') filters.push('deleted_at IS NULL', 'archived=1');
-    else if (view === 'all') filters.push('deleted_at IS NULL', 'archived=0');
+    else if (view === 'quick') filters.push('deleted_at IS NULL', 'archived=0', 'is_quick=1');
+    else if (view === 'all') filters.push('deleted_at IS NULL', 'archived=0', ...(tag ? [] : ['is_quick=0']));
     if (ftsQuery) {
       filters.push('notes.rowid IN (SELECT rowid FROM notes_fts WHERE notes_fts MATCH ?)');
       binds.push(ftsQuery);
@@ -275,8 +278,8 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const excerpt = q
       ? `(CASE WHEN instr(lower(content),lower(?))>61 THEN '…' ELSE '' END) ||
         substr(content,max(1,instr(lower(content),lower(?))-60),max(180,length(?)+60))`
-      : 'substr(content,1,180)';
-    const result = await env.DB.prepare(`SELECT id,title,${excerpt} AS content,tags,pinned,archived,folder_id,deleted_at,created_at,updated_at,revision
+      : view === 'quick' ? 'substr(content,1,1200)' : 'substr(content,1,180)';
+    const result = await env.DB.prepare(`SELECT id,title,${excerpt} AS content,tags,pinned,is_quick,archived,folder_id,deleted_at,created_at,updated_at,revision
       FROM notes WHERE ${filters.join(' AND ')} ORDER BY pinned DESC,updated_at DESC,id ASC LIMIT ? OFFSET ?`)
       .bind(...(q ? [q, q, q] : []), ...binds, limit + 1, offset).all<NoteRow>();
     const notes = result.results.slice(0, limit).map((row) => {
@@ -287,13 +290,18 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
   }
   if (path === '/api/tags' && request.method === 'GET') {
     const view = url.searchParams.get('view') ?? 'all';
-    if (!['all', 'archive', 'trash'].includes(view)) throw new ApiError(400, 'Invalid note view.');
+    if (!['all', 'quick', 'archive', 'trash'].includes(view)) throw new ApiError(400, 'Invalid note view.');
     const scope = view === 'trash'
       ? 'deleted_at IS NOT NULL'
-      : `deleted_at IS NULL AND archived=${view === 'archive' ? 1 : 0}`;
-    const result = await env.DB.prepare(`SELECT DISTINCT value AS name FROM notes,json_each(notes.tags)
-      WHERE user_id=? AND ${scope} ORDER BY value LIMIT 200`).bind(user.id).all<{ name: string }>();
-    return json({ tags: result.results.map((row) => row.name) });
+      : view === 'quick'
+        ? 'deleted_at IS NULL AND archived=0 AND is_quick=1'
+        : `deleted_at IS NULL AND archived=${view === 'archive' ? 1 : 0}${view === 'all' ? '' : ' AND is_quick=0'}`;
+    const result = await env.DB.prepare(`SELECT value AS name,COUNT(*) AS count FROM notes,json_each(notes.tags)
+      WHERE user_id=? AND ${scope} GROUP BY value ORDER BY value LIMIT 200`).bind(user.id).all<{ name: string; count: number }>();
+    return json({
+      tags: result.results.map((row) => row.name),
+      counts: Object.fromEntries(result.results.map((row) => [row.name, row.count])),
+    });
   }
   if (path === '/api/notes/duplicates' && request.method === 'POST') {
     const data = await readJson(request, 96 * 1024);
@@ -348,7 +356,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
     if (match[2] === 'backlinks') {
       const escaped = id.replace(/[\\%_]/g, '\\$&');
-      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,archived,folder_id,
+      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,is_quick,archived,folder_id,
         deleted_at,created_at,updated_at,revision FROM notes
         WHERE user_id=? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\\'
         ORDER BY updated_at DESC,id ASC LIMIT 200`).bind(user.id, `%[[${escaped}|%`).all<NoteRow>();

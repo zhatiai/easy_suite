@@ -20,7 +20,7 @@ const ATTACHMENT_MIMES: Record<string, string> = {
 interface Manifest {
   format: 'easynote';
   version: 2;
-  notes: Array<{ id: string; path: string; title: string; tags: string[]; pinned: boolean; archived: boolean; deletedAt: number | null }>;
+  notes: Array<{ id: string; path: string; title: string; tags: string[]; pinned: boolean; quick?: boolean; archived: boolean; deletedAt: number | null }>;
   files: Array<{ id: string; path: string; mime: string; filename: string; sha256: string }>;
 }
 export interface ImportResult {
@@ -97,7 +97,7 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
     add(path, strToU8(note.content));
     manifest.notes.push({
       id, path, title: note.title, tags: note.tags,
-      pinned: note.pinned, archived: note.archived, deletedAt: note.deletedAt,
+      pinned: note.pinned, quick: note.quick, archived: note.archived, deletedAt: note.deletedAt,
     });
     storedFileIds(note.content).forEach((file) => storedFiles.add(file));
     progress(`导出笔记 ${manifest.notes.length}/${ids.size}`);
@@ -418,6 +418,7 @@ async function importExternalEntries(
       content,
       tags: source.tags,
       pinned: false,
+      quick: false,
       archived: false,
       folderId,
       deletedAt: null,
@@ -465,7 +466,7 @@ export async function importArchive(
     }
     await api.save(crypto.randomUUID(), {
       title, content,
-      tags: [], pinned: false, archived: false, folderId, deletedAt: null,
+      tags: [], pinned: false, quick: false, archived: false, folderId, deletedAt: null,
     }, 0, crypto.randomUUID());
     return { imported: 1, skipped: 0 };
   }
@@ -515,7 +516,7 @@ export async function importArchive(
         typeof entry.path !== 'string' || entry.path.length > 160 || !NOTE_PATH.test(entry.path) || notePaths.has(pathKey) || !files[entry.path] ||
         files[entry.path].length > config.maxNoteBytes || typeof entry.title !== 'string' || entry.title.length > 256 ||
         !Array.isArray(entry.tags) || entry.tags.length > 20 || entry.tags.some((t) => typeof t !== 'string' || !t.trim() || t.length > 40) ||
-        typeof entry.pinned !== 'boolean' || typeof entry.archived !== 'boolean' ||
+        typeof entry.pinned !== 'boolean' || !(entry.quick === undefined || typeof entry.quick === 'boolean') || typeof entry.archived !== 'boolean' ||
         !(entry.deletedAt === null || Number.isSafeInteger(entry.deletedAt) && entry.deletedAt > 0)) {
       throw new Error('笔记清单无效或正文缺失。');
     }
@@ -565,7 +566,7 @@ export async function importArchive(
           return kind.toLowerCase() === 'images' ? imagePath(next) : filePath(next);
         });
       await api.save(crypto.randomUUID(), {
-        title: entry.title, content, tags: entry.tags, pinned: entry.pinned,
+        title: entry.title, content, tags: entry.tags, pinned: entry.pinned, quick: entry.quick === true,
         archived: entry.archived, folderId, deletedAt: entry.deletedAt,
       }, 0, crypto.randomUUID());
       imported++;
