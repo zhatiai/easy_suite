@@ -173,7 +173,10 @@ if (tool === 'wrangler' && args[0] === 'secret' && args[1] === 'put') {
     NO_COLOR: '1',
     TERM: 'dumb',
   };
-  for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']) delete env[key];
+  for (const key of [
+    'CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY',
+    'EASYNOTE_DEPLOY_DOMAIN', 'EASYNOTE_DEPLOY_CONFIRMATION',
+  ]) delete env[key];
   return { root, env };
 }
 
@@ -485,12 +488,37 @@ test('new deployments bind a custom domain and verify its public DNS and HTTPS a
   assert.deepEqual(saved.routes, [{pattern: 'share.example.test', custom_domain: true}]);
 });
 
-test('credential environment aliases are rejected and build failure stops deployment before requesting a token', async () => {
+test('deployment reads token, domain and exact confirmation from the environment without prompting', async () => {
   const f = await fixture();
   await dependencies(f);
-  for (const key of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']) {
+  const config = JSON.parse(await readFile(`${f.root}/wrangler.json`, 'utf8'));
+  config.name = 'easynote-env';
+  config.account_id = accountId;
+  config.d1_databases[0].database_id = databaseId;
+  await writeFile(`${f.root}/wrangler.deploy.json`, JSON.stringify(config));
+  const result = await terminal(f, 'deploy.sh', [], [], {
+    CLOUDFLARE_API_TOKEN: apiToken,
+    EASYNOTE_DEPLOY_DOMAIN: 'share.example.test',
+    EASYNOTE_DEPLOY_CONFIRMATION: 'deploy easynote-env',
+    FAKE_REMOTE_WORKER: '1',
+    FAKE_EXISTING_RESOURCES: '1',
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /Deployment complete: https:\/\/share\.example\.test/);
+  assert.ok(!result.output.includes('Cloudflare API token'));
+  assert.ok(!result.output.includes('Custom domain ['));
+  assert.ok(!result.output.includes('Confirmation:'));
+  assert.ok(!result.output.includes(apiToken));
+  const saved = JSON.parse(await readFile(`${f.root}/wrangler.deploy.json`, 'utf8'));
+  assert.deepEqual(saved.routes, [{ pattern: 'share.example.test', custom_domain: true }]);
+});
+
+test('legacy credential aliases are rejected and build failure stops deployment before requesting a token', async () => {
+  const f = await fixture();
+  await dependencies(f);
+  for (const key of ['CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']) {
     const result = await terminal(f, 'deploy.sh', [], [], { [key]: 'test-only-token' });
-    assert.match(result.output, /Environment credentials are not accepted/);
+    assert.match(result.output, /Use CLOUDFLARE_API_TOKEN/);
   }
   const result = await terminal(f, 'deploy.sh', [], [], { FAKE_FAIL: 'npm:run' });
   assert.ok(!result.output.includes('Existing D1'));

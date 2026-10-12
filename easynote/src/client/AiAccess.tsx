@@ -108,7 +108,7 @@ export function AiAccess({ disabled, reportError, notify }: Props) {
               <button className="danger" disabled={working} onClick={() => void revoke(item.id)}><Trash2 size={14} />{t('confirm_revoke')}</button>
               <button aria-label={t('cancel_revoke')} disabled={working} onClick={() => setConfirmRevoke('')}><X size={14} /></button>
             </div> :
-              <button className="icon-button" title={t('revoke_token')} aria-label={item.name} disabled={disabled || working} onClick={() => setConfirmRevoke(item.id)}><Trash2 size={16} /></button>}
+              <button className="icon-button" title={t('revoke_token')} aria-label={`${t('revoke_token')} ${item.name}`} disabled={disabled || working} onClick={() => setConfirmRevoke(item.id)}><Trash2 size={16} /></button>}
           </div>)}
     </div>
   </section>;

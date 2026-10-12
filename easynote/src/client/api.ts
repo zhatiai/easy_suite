@@ -111,13 +111,15 @@ export const api = {
   list: (query: { q?: string; view?: string; tag?: string; folderId?: string; offset?: number } = {}, signal?: AbortSignal) =>
     request<{ notes: NoteSummary[]; nextOffset: number | null }>(`/api/notes?${new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]))}`, 'GET', undefined, signal),
   tags: (view: string, signal?: AbortSignal) =>
-    request<{ tags: string[] }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
+    request<{ tags: string[]; counts: Record<string, number> }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
   blank: (folderId: string | null = null) => request<{ note: Note | null }>(`/api/notes/blank?folderId=${folderId ?? 'root'}`),
   folders: (signal?: AbortSignal) => request<{ folders: Folder[] }>('/api/folders', 'GET', undefined, signal),
   createFolder: (name: string, parentId: string | null) =>
     request<{ folder: Folder }>('/api/folders', 'POST', { id: crypto.randomUUID(), name, parentId }),
   updateFolder: (id: string, patch: { name?: string; parentId?: string | null }) =>
     request<{ folder: Folder }>(`/api/folders/${id}`, 'PATCH', patch),
+  mergeFolder: (id: string, targetId: string) =>
+    request<{ ok: true; movedNotes: number; movedFolders: number }>(`/api/folders/${id}/merge`, 'POST', { targetId }),
   deleteFolder: (id: string) => request<{ ok: true; movedNotes: number }>(`/api/folders/${id}`, 'DELETE', {}),
   duplicates: (fingerprints: string[]) =>
     request<{ matches: Array<{ fingerprint: string; noteId: string }> }>('/api/notes/duplicates', 'POST', { fingerprints }),

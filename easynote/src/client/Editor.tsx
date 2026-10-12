@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
-import { Compartment, EditorState, Facet } from '@codemirror/state';
-import { Decoration, EditorView, keymap, placeholder } from '@codemirror/view';
+import { Compartment, EditorState, Facet, type Range } from '@codemirror/state';
+import { Decoration, EditorView, keymap, placeholder, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import MarkdownIt from 'markdown-it';
@@ -11,8 +11,10 @@ import { t } from './i18n';
 
 interface Props {
   value: string;
+  mode?: 'live' | 'markdown';
   onChange(value: string): void;
-  onImages(files: File[], insertion: string): void;
+  onImages?(files: File[], insertion: string): void;
+  onSubmit?(): void;
   onTogglePreview(): void;
   onShowShortcuts(): void;
   searchQuery?: string;
@@ -44,6 +46,180 @@ const searchHighlights = EditorView.decorations.compute([searchQueryFacet, 'doc'
   }
   return Decoration.set(ranges);
 });
+
+class LiveTextWidget extends WidgetType {
+  constructor(private readonly text: string, private readonly className: string) { super(); }
+  eq(other: LiveTextWidget) { return this.text === other.text && this.className === other.className; }
+  toDOM() {
+    const span = document.createElement('span');
+    span.className = this.className;
+    span.textContent = this.text;
+    span.setAttribute('aria-hidden', 'true');
+    return span;
+  }
+}
+
+class LiveImageWidget extends WidgetType {
+  constructor(private readonly src: string, private readonly alt: string) { super(); }
+  eq(other: LiveImageWidget) { return this.src === other.src && this.alt === other.alt; }
+  toDOM() {
+    const image = document.createElement('img');
+    image.className = 'cm-live-image';
+    image.src = this.src;
+    image.alt = this.alt;
+    image.loading = 'lazy';
+    return image;
+  }
+}
+
+function liveMarkdownDecorations(view: EditorView): { decorations: DecorationSet; replacements: DecorationSet } {
+  const ranges: Range<Decoration>[] = [];
+  const replacementRanges: Range<Decoration>[] = [];
+  let fenced = false;
+  let fenceMarker = '';
+
+  const addReplacement = (from: number, to: number, widget?: WidgetType) => {
+    if (to <= from) return;
+    const range = Decoration.replace(widget ? { widget } : {}).range(from, to);
+    ranges.push(range);
+    replacementRanges.push(range);
+  };
+  const addInline = (lineFrom: number, text: string) => {
+    const addPairs = (pattern: RegExp, className: string) => {
+      for (const match of text.matchAll(pattern)) {
+        const offset = match.index ?? 0;
+        const marker = match[1];
+        const content = match[2];
+        const contentFrom = lineFrom + offset + marker.length;
+        addReplacement(lineFrom + offset, contentFrom);
+        ranges.push(Decoration.mark({ class: className }).range(contentFrom, contentFrom + content.length));
+        addReplacement(contentFrom + content.length, contentFrom + content.length + marker.length);
+      }
+    };
+
+    for (const match of text.matchAll(/!\[([^\]\r\n]*)\]\((\/api\/images\/[0-9a-f-]{36})\)/gi)) {
+      const from = lineFrom + (match.index ?? 0);
+      addReplacement(from, from + match[0].length, new LiveImageWidget(match[2], match[1]));
+    }
+    for (const match of text.matchAll(/\[([^\]\r\n]+)\]\(([^)\r\n]+)\)/g)) {
+      const offset = match.index ?? 0;
+      if (offset > 0 && text[offset - 1] === '!') continue;
+      const labelFrom = lineFrom + offset + 1;
+      addReplacement(lineFrom + offset, labelFrom);
+      ranges.push(Decoration.mark({ class: 'cm-live-link' }).range(labelFrom, labelFrom + match[1].length));
+      addReplacement(labelFrom + match[1].length, lineFrom + offset + match[0].length);
+    }
+    for (const match of text.matchAll(/\[\[([0-9a-f-]{36})\|([^\]\r\n]+)\]\]/gi)) {
+      const offset = match.index ?? 0;
+      const labelFrom = lineFrom + offset + match[1].length + 3;
+      addReplacement(lineFrom + offset, labelFrom);
+      ranges.push(Decoration.mark({ class: 'cm-live-link' }).range(labelFrom, labelFrom + match[2].length));
+      addReplacement(labelFrom + match[2].length, lineFrom + offset + match[0].length);
+    }
+    addPairs(/(\*\*|__)(.+?)\1/g, 'cm-live-strong');
+    addPairs(/(`)([^`\r\n]+)\1/g, 'cm-live-code');
+    addPairs(/(?<!\*)(\*)(?!\*)([^*\r\n]+)\1(?!\*)/g, 'cm-live-emphasis');
+  };
+
+  for (let number = 1; number <= view.state.doc.lines; number++) {
+    const line = view.state.doc.line(number);
+    const text = line.text;
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(text);
+    if (fence) {
+      ranges.push(Decoration.line({ class: 'cm-live-code-fence' }).range(line.from));
+      addReplacement(line.from, line.to, new LiveTextWidget(fenced ? '' : fence[1][0] === '`' ? text.slice(fence[0].length).trim() : '', 'cm-live-code-language'));
+      if (!fenced) { fenced = true; fenceMarker = fence[1][0]; }
+      else if (fence[1][0] === fenceMarker) { fenced = false; fenceMarker = ''; }
+      continue;
+    }
+    if (fenced) {
+      ranges.push(Decoration.line({ class: 'cm-live-code-block' }).range(line.from));
+      continue;
+    }
+    const heading = /^(#{1,6})\s+/.exec(text);
+    if (heading) {
+      addReplacement(line.from, line.from + heading[0].length);
+      ranges.push(Decoration.line({ class: `cm-live-heading cm-live-h${heading[1].length}` }).range(line.from));
+      addInline(line.from + heading[0].length, text.slice(heading[0].length));
+      continue;
+    }
+    const task = /^(\s*)[-+*]\s+\[([ xX])\]\s+/.exec(text);
+    if (task) {
+      const markerFrom = line.from + task[1].length;
+      addReplacement(markerFrom, line.from + task[0].length,
+        new LiveTextWidget(task[2].toLowerCase() === 'x' ? '☑' : '☐', 'cm-live-task'));
+      ranges.push(Decoration.line({ class: 'cm-live-list-line' }).range(line.from));
+      addInline(line.from + task[0].length, text.slice(task[0].length));
+      continue;
+    }
+    const bullet = /^(\s*)[-+*]\s+/.exec(text);
+    if (bullet) {
+      const markerFrom = line.from + bullet[1].length;
+      addReplacement(markerFrom, line.from + bullet[0].length, new LiveTextWidget('•', 'cm-live-bullet'));
+      ranges.push(Decoration.line({ class: 'cm-live-list-line' }).range(line.from));
+      addInline(line.from + bullet[0].length, text.slice(bullet[0].length));
+      continue;
+    }
+    const quote = /^\s{0,3}>\s?/.exec(text);
+    if (quote) {
+      addReplacement(line.from, line.from + quote[0].length);
+      ranges.push(Decoration.line({ class: 'cm-live-quote' }).range(line.from));
+      addInline(line.from + quote[0].length, text.slice(quote[0].length));
+      continue;
+    }
+    if (/^\s{0,3}([-*_])(?:\s*\1){2,}\s*$/.test(text)) {
+      addReplacement(line.from, line.to, new LiveTextWidget('', 'cm-live-rule'));
+      continue;
+    }
+    if (!text.trim()) {
+      ranges.push(Decoration.line({ class: 'cm-live-empty-line' }).range(line.from));
+      continue;
+    }
+    addInline(line.from, text);
+  }
+  return {
+    decorations: Decoration.set(ranges, true),
+    replacements: Decoration.set(replacementRanges, true),
+  };
+}
+
+const liveMarkdown = ViewPlugin.fromClass(class {
+  decorations: DecorationSet;
+  replacements: DecorationSet;
+  constructor(view: EditorView) {
+    const result = liveMarkdownDecorations(view);
+    this.decorations = result.decorations;
+    this.replacements = result.replacements;
+  }
+  update(update: ViewUpdate) {
+    if (update.docChanged) {
+      const result = liveMarkdownDecorations(update.view);
+      this.decorations = result.decorations;
+      this.replacements = result.replacements;
+    }
+  }
+}, {
+  decorations: (value) => value.decorations,
+  provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.replacements ?? Decoration.none),
+});
+
+type LegacyCaretDocument = Document & {
+  caretRangeFromPoint?(x: number, y: number): { startContainer: Node; startOffset: number } | null;
+};
+
+function editorPositionAtPointer(editorView: EditorView, event: MouseEvent): number | null {
+  const owner = editorView.dom.ownerDocument;
+  const caret = owner.caretPositionFromPoint?.(event.clientX, event.clientY);
+  const node = caret?.offsetNode;
+  if (node && editorView.contentDOM.contains(node)) {
+    try { return editorView.posAtDOM(node, caret.offset); } catch { /* Fall back to coordinate mapping. */ }
+  }
+  const range = (owner as LegacyCaretDocument).caretRangeFromPoint?.(event.clientX, event.clientY);
+  if (range && editorView.contentDOM.contains(range.startContainer)) {
+    try { return editorView.posAtDOM(range.startContainer, range.startOffset); } catch { /* Fall back to coordinate mapping. */ }
+  }
+  return editorView.posAtCoords({ x: event.clientX, y: event.clientY });
+}
 
 function toggleEmphasis(marker: '*' | '**') {
   return (editor: EditorView): boolean => {
@@ -87,8 +263,10 @@ function toggleEmphasis(marker: '*' | '**') {
 
 export const Editor = forwardRef<EditorHandle, Props>(function Editor({
   value,
+  mode = 'markdown',
   onChange,
   onImages,
+  onSubmit,
   onTogglePreview,
   onShowShortcuts,
   searchQuery = '',
@@ -96,9 +274,12 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const search = useRef(new Compartment());
-  const callbacks = useRef({ onChange, onImages, onTogglePreview, onShowShortcuts });
+  const presentation = useRef(new Compartment());
+  const callbacks = useRef({ onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts });
+  const modeRef = useRef(mode);
   const insertions = useRef(new Map<string, number>());
-  callbacks.current = { onChange, onImages, onTogglePreview, onShowShortcuts };
+  callbacks.current = { onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts };
+  modeRef.current = mode;
   const external = useRef(false);
 
   const markInsertion = (position?: number) => {
@@ -149,7 +330,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
             { key: 'Mod-i', run: toggleEmphasis('*') },
             { key: 'Ctrl-e', run: () => { callbacks.current.onTogglePreview(); return true; } },
             { key: 'Meta-e', run: () => { callbacks.current.onTogglePreview(); return true; } },
-            { key: 'Mod-Enter', run: () => { callbacks.current.onTogglePreview(); return true; } },
+            { key: 'Mod-Enter', run: () => { (callbacks.current.onSubmit ?? callbacks.current.onTogglePreview)(); return true; } },
             { key: 'Mod-/', run: () => { callbacks.current.onShowShortcuts(); return true; } },
             ...defaultKeymap,
             ...historyKeymap,
@@ -157,6 +338,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
           EditorView.lineWrapping, placeholder(t('start_writing')),
           search.current.of(searchQueryFacet.of(searchQuery)),
           searchHighlights,
+          presentation.current.of(mode === 'live' ? liveMarkdown : []),
           EditorView.contentAttributes.of({
             'aria-label': t('note_content'),
             'aria-keyshortcuts': 'Meta+B Control+B Meta+I Control+I Meta+E Control+E Meta+Enter Control+Enter Meta+/ Control+/',
@@ -171,16 +353,26 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
             if (update.docChanged && !external.current) callbacks.current.onChange(update.state.doc.toString());
           }),
           EditorView.domEventHandlers({
+            mousedown(event, editorView) {
+              if (modeRef.current !== 'live' || event.button !== 0 || event.detail !== 1 ||
+                  event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+              const position = editorPositionAtPointer(editorView, event);
+              if (position === null) return false;
+              event.preventDefault();
+              editorView.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+              editorView.focus();
+              return true;
+            },
             paste(event) {
               const files = Array.from(event.clipboardData?.files ?? []);
-              if (!files.length) return false;
+              if (!files.length || !callbacks.current.onImages) return false;
               event.preventDefault();
               callbacks.current.onImages(files, markInsertion());
               return true;
             },
             drop(event, editorView) {
               const files = Array.from(event.dataTransfer?.files ?? []);
-              if (!files.length) return false;
+              if (!files.length || !callbacks.current.onImages) return false;
               event.preventDefault();
               callbacks.current.onImages(files, markInsertion(editorView.posAtCoords({ x: event.clientX, y: event.clientY }) ?? undefined));
               return true;
@@ -204,7 +396,10 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
   useEffect(() => {
     view.current?.dispatch({ effects: search.current.reconfigure(searchQueryFacet.of(searchQuery)) });
   }, [searchQuery]);
-  return <div className="code-editor" ref={host} />;
+  useEffect(() => {
+    view.current?.dispatch({ effects: presentation.current.reconfigure(mode === 'live' ? liveMarkdown : []) });
+  }, [mode]);
+  return <div className={`code-editor ${mode === 'live' ? 'live-markdown-editor' : 'source-markdown-editor'}`} ref={host} />;
 });
 
 const renderer = new MarkdownIt({ html: true, linkify: true, breaks: true }).use(footnote);

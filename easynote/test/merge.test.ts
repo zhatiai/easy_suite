@@ -9,6 +9,7 @@ const baseNote = (patch: Partial<Note> = {}): Note => ({
   content: '第一段\n第二段\n第三段\n',
   tags: ['工作'],
   pinned: false,
+  quick: false,
   archived: false,
   folderId: null,
   deletedAt: null,

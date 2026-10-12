@@ -145,7 +145,7 @@ easynote/
 
 ## 4. 数据模型和存储边界
 
-`migrations/0001_initial.sql` 建立 D1 基线，后续按编号依次应用 migration；`0002_folders.sql` 增加嵌套文件夹和笔记/版本的文件夹归属：
+`migrations/0001_initial.sql` 建立 D1 基线，后续按编号依次应用 migration；`0002_folders.sql` 增加嵌套文件夹和笔记/版本的文件夹归属，`0003_quick_notes.sql` 增加小记类型标记与独立列表索引：
 
 | 表/对象 | 作用 |
 | --- | --- |
@@ -155,7 +155,7 @@ easynote/
 | `login_attempts` / `account_attempts` | 登录、注册和重置等限流窗口 |
 | `app_state` | 全局注册开关 |
 | `folders` | 用户私有的嵌套文件夹、父子关系和同级唯一名称 |
-| `notes` | 当前笔记状态和并发/幂等字段 |
+| `notes` | 当前笔记/小记状态、类型标记和并发/幂等字段 |
 | `note_versions` | 有上限的手动/AI 内容快照及操作者信息 |
 | `images` | R2 对象元数据；同时表示图片与普通附件 |
 | `image_refs` | 当前或历史 revision 对文件的引用 |
@@ -179,7 +179,7 @@ R2 只保存私有二进制对象；D1 保存对象元数据、哈希、尺寸�
 - 管理员操作保护“至少保留一名可用管理员”，管理员不能禁用、降级或删除自己。
 - Markdown 中的 HTML 经过 DOMPurify；公开分享只读取指定笔记及其当前 revision 引用的文件。
 - Service Worker 只缓存应用壳、PDF 引擎和字体，不缓存 `/api` 响应、Cookie 或私有正文。
-- 远程部署和维护脚本只接受交互式隐藏输入的 Cloudflare Token，不把凭据保存到环境配置。
+- `deploy.sh` 可从当前进程的 `CLOUDFLARE_API_TOKEN` 读取 Cloudflare Token，缺失时交互式隐藏输入；维护脚本仍要求交互式输入，所有脚本都不得把凭据写入环境配置或仓库文件。
 
 涉及这些边界的修改必须同时检查正向路径、越权路径、跨租户路径和过期/撤销路径。
 
@@ -264,7 +264,7 @@ npm run dev:client
 - 不将 WebSocket 通知当作权威数据；通知后必须重新同步。
 - 不把自动保存等同于历史检查点。
 - 不允许 AI 永久删除数据。
-- 不在非交互式参数、环境变量或仓库文件中传递生产密码/Token。
+- 不在命令行参数或仓库文件中传递生产密码/Token；仅 `deploy.sh` 可按文档从当前进程的 `CLOUDFLARE_API_TOKEN` 读取部署 Token，且不得写入 `.env`、配置或日志。
 - 不手工编辑构建产物 `dist/`、依赖目录 `node_modules/` 或本地状态 `.wrangler/`。
 
 理解或修改某个功能时，以本文作为地图，以对应源码和测试作为最终事实来源。

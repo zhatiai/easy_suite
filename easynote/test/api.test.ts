@@ -350,6 +350,27 @@ test('nested folders support create, rename, move, filtering and safe deletion',
   assert.ok(!folders.folders.some((folder: any) => folder.id === childId));
 });
 
+test('folders merge notes and child folders atomically without crossing ownership or creating cycles', async () => {
+  const sourceId = randomUUID();
+  const targetId = randomUUID();
+  const childId = randomUUID();
+  assert.equal((await request('/api/folders', 'POST', { id: sourceId, name: '待合并', parentId: null })).status, 201);
+  assert.equal((await request('/api/folders', 'POST', { id: targetId, name: '目标', parentId: null })).status, 201);
+  assert.equal((await request('/api/folders', 'POST', { id: childId, name: '子目录', parentId: sourceId })).status, 201);
+  const note = await create({ title: '待合并笔记', folderId: sourceId });
+
+  assert.equal((await request(`/api/folders/${sourceId}/merge`, 'POST', { targetId: childId })).status, 409);
+  const merged = await request(`/api/folders/${sourceId}/merge`, 'POST', { targetId });
+  assert.equal(merged.status, 200, await merged.clone().text());
+  assert.deepEqual(await merged.json(), { ok: true, movedNotes: 1, movedFolders: 1 });
+  const folders = (await (await request('/api/folders')).json() as any).folders;
+  assert.ok(!folders.some((folder: any) => folder.id === sourceId));
+  assert.equal(folders.find((folder: any) => folder.id === childId).parentId, targetId);
+  const movedNote = (await (await request(`/api/notes/${note.id}`)).json() as any).note;
+  assert.equal(movedNote.folderId, targetId);
+  assert.equal(movedNote.revision, note.revision + 1);
+});
+
 test('batch duplicate lookup follows content fingerprints and tracks updates', async () => {
   const marker = randomUUID();
   const note = await create({ title: '原始标题', content: marker, tags: [] });
@@ -426,14 +447,41 @@ test('Chinese search, tags, pin order and archive filters work', async () => {
   const longSearch = await request(`/api/notes?q=${encodeURIComponent(longQuery)}&view=all`);
   assert.equal(longSearch.status, 200, await longSearch.clone().text());
   assert.ok((await longSearch.json() as any).notes.some((note: any) => note.id === longSearchNote.id));
-  const allTags = (await (await request('/api/tags?view=all')).json() as any).tags;
+  const allTagData = await (await request('/api/tags?view=all')).json() as any;
+  const allTags = allTagData.tags;
   assert.ok(allTags.includes('验收标签'));
+  assert.equal(allTagData.counts['验收标签'], 2);
   assert.ok(!allTags.includes('仅归档标签'));
   assert.ok(!allTags.includes('仅回收站标签'));
   assert.deepEqual((await (await request('/api/tags?view=archive')).json() as any).tags, ['仅归档标签']);
   assert.deepEqual((await (await request('/api/tags?view=trash')).json() as any).tags, ['仅回收站标签']);
   assert.equal((await request('/api/notes?view=pinned')).status, 400);
   assert.equal((await request('/api/tags?view=export')).status, 400);
+});
+
+test('quick notes are isolated from all notes and can be converted into folder notes', async () => {
+  const folderId = randomUUID();
+  assert.equal((await request('/api/folders', 'POST', { id: folderId, name: `小记转存-${folderId.slice(0, 6)}`, parentId: null })).status, 201);
+  const regular = await create({ title: '普通列表笔记' });
+  const quick = await create({ title: '独立小记', content: '小记正文', tags: ['小记标签'], quick: true });
+
+  const all = await (await request('/api/notes?view=all')).json() as any;
+  assert.ok(all.notes.some((note: any) => note.id === regular.id));
+  assert.ok(!all.notes.some((note: any) => note.id === quick.id));
+  const tagged = await (await request('/api/notes?view=all&tag=小记标签')).json() as any;
+  assert.ok(tagged.notes.some((note: any) => note.id === quick.id && note.quick === true));
+  const allTags = await (await request('/api/tags?view=all')).json() as any;
+  assert.equal(allTags.counts['小记标签'], 1);
+  const quickView = await (await request('/api/notes?view=quick')).json() as any;
+  assert.ok(quickView.notes.some((note: any) => note.id === quick.id && note.quick === true));
+  assert.ok(!quickView.notes.some((note: any) => note.id === regular.id));
+
+  const converted = await save(quick.id, quick.revision, { folderId, quick: false });
+  assert.equal(converted.status, 200, await converted.clone().text());
+  const folder = await (await request(`/api/notes?view=all&folderId=${folderId}`)).json() as any;
+  assert.ok(folder.notes.some((note: any) => note.id === quick.id && note.quick === false));
+  const after = await (await request('/api/notes?view=quick')).json() as any;
+  assert.ok(!after.notes.some((note: any) => note.id === quick.id));
 });
 
 test('trash, restore, permanent deletion and purge tombstones protect old devices', async () => {
@@ -537,6 +585,7 @@ test('another account cannot read, edit or reference private notes and images', 
   const privateFolderId = randomUUID();
   assert.equal((await request('/api/folders', 'POST', { id: privateFolderId, name: '私有目录', parentId: null })).status, 201);
   assert.equal((await request(`/api/folders/${privateFolderId}`, 'PATCH', { name: '越权改名' }, headers)).status, 404);
+  assert.equal((await request(`/api/folders/${privateFolderId}/merge`, 'POST', { targetId: randomUUID() }, headers)).status, 404);
   assert.equal((await request('/api/folders', 'POST', {
     id: randomUUID(), name: '越权子目录', parentId: privateFolderId,
   }, headers)).status, 404);

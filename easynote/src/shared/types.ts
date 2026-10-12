@@ -4,6 +4,7 @@ export interface Note {
   content: string;
   tags: string[];
   pinned: boolean;
+  quick: boolean;
   archived: boolean;
   folderId: string | null;
   deletedAt: number | null;
@@ -12,7 +13,7 @@ export interface Note {
   revision: number;
 }
 
-export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'archived' | 'folderId' | 'deletedAt'>;
+export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'quick' | 'archived' | 'folderId' | 'deletedAt'>;
 export type NoteSummary = Omit<Note, 'content'> & { excerpt: string };
 export interface Folder {
   id: string;
@@ -34,7 +35,7 @@ export type IntegrationNoteSummary = NoteSummary & {
   matches: NoteSearchMatch[];
   uri: string;
 };
-export interface Version extends NoteInput {
+export interface Version extends Omit<NoteInput, 'quick'> {
   revision: number;
   savedAt: number;
   actorType: 'user' | 'ai';
@@ -129,7 +130,7 @@ export interface SyncChange {
 
 export const noteInput = (note: Note): NoteInput => ({
   title: note.title, content: note.content, tags: note.tags,
-  pinned: note.pinned, archived: note.archived, folderId: note.folderId, deletedAt: note.deletedAt,
+  pinned: note.pinned, quick: note.quick, archived: note.archived, folderId: note.folderId, deletedAt: note.deletedAt,
 });
 
 export function sameVersionedInput(left: NoteInput, right: NoteInput): boolean {
@@ -143,7 +144,7 @@ export function sameVersionedInput(left: NoteInput, right: NoteInput): boolean {
 }
 
 export function sameNoteInput(left: NoteInput, right: NoteInput): boolean {
-  return left.pinned === right.pinned && sameVersionedInput(left, right);
+  return left.pinned === right.pinned && left.quick === right.quick && sameVersionedInput(left, right);
 }
 
 export const imagePath = (id: string) => `/api/images/${id}`;

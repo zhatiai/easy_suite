@@ -17,6 +17,7 @@ import { unfinishedTasks } from '../shared/tasks';
 import { api, ApiError, noteEventsUrl } from './api';
 import { mergeNoteChanges, type ConflictPreference, type NoteConflictField } from './merge';
 import { preparePdfExport } from './pdf';
+import { TAG_COLOR_COUNT } from './tagColors';
 import {
   applyMirrorChanges,
   cacheFile,
@@ -33,6 +34,13 @@ import {
   syncCursor,
   type Draft,
 } from './drafts';
+
+export interface ExplorerFolderState {
+  notes: NoteSummary[];
+  nextOffset: number | null;
+  loading: boolean;
+  error: string;
+}
 
 const blankNote = (note: Pick<Note, 'title' | 'content' | 'tags' | 'archived' | 'deletedAt'>) =>
   !note.title && !note.content && !note.tags.length && !note.archived && note.deletedAt === null;
@@ -53,6 +61,7 @@ const noteExcerpt = (content: string, query: string) => {
 };
 
 const customTagsKey = (userId: string) => `easynote-custom-tags-${userId}`;
+const tagColorsKey = (userId: string) => `easynote-tag-colors-${userId}`;
 const foldersKey = (userId: string) => `easynote-folders-${userId}`;
 const loadCachedFolders = (userId: string): Folder[] => {
   try {
@@ -76,6 +85,17 @@ const saveCustomTags = (userId: string, tags: string[]) => {
   } catch {
     // ignore
   }
+};
+const loadTagColors = (userId: string): Record<string, number> => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(tagColorsKey(userId)) ?? '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, number] =>
+      typeof entry[0] === 'string' && typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0 && entry[1] < TAG_COLOR_COUNT));
+  } catch { return {}; }
+};
+const saveTagColors = (userId: string, colors: Record<string, number>) => {
+  try { localStorage.setItem(tagColorsKey(userId), JSON.stringify(colors)); } catch { /* ignore */ }
 };
 
 async function prepareOfflineResources(): Promise<void> {
@@ -123,7 +143,11 @@ export function useNotebook(session: Session) {
   const [tag, setTag] = useState('');
   const [folderId, setFolderId] = useState<string | null | undefined>(undefined);
   const [folders, setFolders] = useState<Folder[]>(() => loadCachedFolders(userId));
+  const [explorerFolders, setExplorerFolders] = useState<Record<string, ExplorerFolderState>>({});
+  const explorerFoldersRef = useRef<Record<string, ExplorerFolderState>>({});
   const [tags, setTags] = useState<string[]>([]);
+  const [tagCounts, setTagCounts] = useState<Record<string, number>>({});
+  const [tagColors, setTagColors] = useState<Record<string, number>>(() => loadTagColors(userId));
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState<{
@@ -159,12 +183,91 @@ export function useNotebook(session: Session) {
   const show = useCallback((value: Note | null) => { current.current = value; setNote(value); }, []);
   const notify = () => { if (alive.current) bump((v) => v + 1); };
   notesRef.current = notes;
+  explorerFoldersRef.current = explorerFolders;
+
+  const explorerFolderKey = useCallback((targetFolderId: string | null) =>
+    `${view}\u0000${tag}\u0000${query}\u0000${targetFolderId ?? 'root'}`, [query, tag, view]);
+
+  const invalidateExplorer = useCallback(() => {
+    explorerFoldersRef.current = {};
+    setExplorerFolders({});
+  }, []);
+
+  const ensureExplorerFolder = useCallback(async (
+    targetFolderId: string | null,
+    options: { append?: boolean; force?: boolean } = {},
+  ): Promise<void> => {
+    const key = explorerFolderKey(targetFolderId);
+    const existing = explorerFoldersRef.current[key];
+    if (!options.force && !options.append && existing && (existing.loading || !existing.error)) return;
+    if (options.append && (!existing || existing.loading || existing.nextOffset === null)) return;
+    const loadingState: ExplorerFolderState = {
+      notes: existing?.notes ?? [],
+      nextOffset: existing?.nextOffset ?? null,
+      loading: true,
+      error: '',
+    };
+    explorerFoldersRef.current = { ...explorerFoldersRef.current, [key]: loadingState };
+    setExplorerFolders(explorerFoldersRef.current);
+    try {
+      let result: { notes: NoteSummary[]; nextOffset: number | null };
+      if (offlineLibraryRef.current || !navigator.onLine || session.offline) {
+        const values = new Map(mirror.current);
+        for (const draft of drafts.current.values()) values.set(draft.note.id, draft.note);
+        const scoped = [...values.values()].filter((item) => {
+          if (item.folderId !== targetFolderId) return false;
+          if (view === 'trash') {
+            if (item.deletedAt === null) return false;
+          } else if (view === 'quick') {
+            if (item.deletedAt !== null || item.archived || !item.quick) return false;
+          } else if (item.deletedAt !== null || item.archived !== (view === 'archive') || view === 'all' && !tag && item.quick) return false;
+          if (tag && !item.tags.includes(tag)) return false;
+          return !query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+        }).sort(compareNoteOrder);
+        result = {
+          notes: scoped.map(({ content, ...item }) => ({ ...item, excerpt: noteExcerpt(content, query) })),
+          nextOffset: null,
+        };
+      } else {
+        result = await api.list({
+          q: query,
+          view,
+          tag,
+          folderId: targetFolderId ?? 'root',
+          offset: options.append ? existing?.nextOffset ?? 0 : 0,
+        });
+      }
+      const currentState = explorerFoldersRef.current[key];
+      const next: ExplorerFolderState = {
+        notes: options.append
+          ? [...(currentState?.notes ?? []), ...result.notes.filter((item) => !currentState?.notes.some((old) => old.id === item.id))]
+          : result.notes,
+        nextOffset: result.nextOffset,
+        loading: false,
+        error: '',
+      };
+      explorerFoldersRef.current = { ...explorerFoldersRef.current, [key]: next };
+      setExplorerFolders(explorerFoldersRef.current);
+    } catch (reason) {
+      const failed: ExplorerFolderState = {
+        notes: explorerFoldersRef.current[key]?.notes ?? [],
+        nextOffset: explorerFoldersRef.current[key]?.nextOffset ?? null,
+        loading: false,
+        error: String(reason),
+      };
+      explorerFoldersRef.current = { ...explorerFoldersRef.current, [key]: failed };
+      setExplorerFolders(explorerFoldersRef.current);
+    }
+  }, [explorerFolderKey, query, session.offline, tag, view]);
 
   const renderMirror = useCallback(() => {
+    invalidateExplorer();
     const scoped = [...mirror.current.values()].filter((item) => {
       if (view === 'trash') {
         if (item.deletedAt === null) return false;
-      } else if (item.deletedAt !== null || item.archived !== (view === 'archive')) return false;
+      } else if (view === 'quick') {
+        if (item.deletedAt !== null || item.archived || !item.quick) return false;
+      } else if (item.deletedAt !== null || item.archived !== (view === 'archive') || view === 'all' && !tag && item.quick) return false;
       if (tag && !item.tags.includes(tag)) return false;
       if (folderId !== undefined && item.folderId !== folderId) return false;
       return !query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase());
@@ -172,16 +275,22 @@ export function useNotebook(session: Session) {
     scoped.sort(compareNoteOrder);
     setNotes(scoped.map(({ content, ...item }) => ({ ...item, excerpt: noteExcerpt(content, query) })));
     const viewTags = new Set<string>();
+    const nextTagCounts: Record<string, number> = {};
     for (const item of mirror.current.values()) {
       const inView = view === 'trash' ? item.deletedAt !== null :
-        item.deletedAt === null && item.archived === (view === 'archive');
-      if (inView) item.tags.forEach((value) => viewTags.add(value));
+        view === 'quick' ? item.deletedAt === null && !item.archived && !!item.quick :
+          item.deletedAt === null && item.archived === (view === 'archive') && (view === 'all' || !item.quick);
+      if (inView) item.tags.forEach((value) => {
+        viewTags.add(value);
+        nextTagCounts[value] = (nextTagCounts[value] ?? 0) + 1;
+      });
     }
     const custom = loadCustomTags(userId);
     setTags([...new Set([...viewTags, ...custom])].sort((left, right) => left.localeCompare(right, 'zh-CN')));
+    setTagCounts(nextTagCounts);
     setNextOffset(null);
     setOfflineCount(mirror.current.size);
-  }, [folderId, query, tag, userId, view]);
+  }, [folderId, invalidateExplorer, query, tag, userId, view]);
 
   const refreshFolders = useCallback(async (signal?: AbortSignal) => {
     if (!navigator.onLine || session.offline) return;
@@ -271,6 +380,7 @@ export function useNotebook(session: Session) {
       onlineCursor.current = cursor;
       return;
     }
+    invalidateExplorer();
     const data = await api.tags(view, signal);
     if (!alive.current) return;
     onlineCursor.current = cursor;
@@ -287,7 +397,9 @@ export function useNotebook(session: Session) {
       const item = change.note;
       const inView = item && (view === 'trash'
         ? item.deletedAt !== null
-        : item.deletedAt === null && item.archived === (view === 'archive'));
+        : view === 'quick'
+          ? item.deletedAt === null && !item.archived && !!item.quick
+          : item.deletedAt === null && item.archived === (view === 'archive') && (view !== 'all' || !!tag || !item.quick));
       const matches = inView && (!tag || item.tags.includes(tag)) &&
         (!query || `${item.title} ${item.content}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
       if (!item || !matches) updated.delete(change.noteId);
@@ -302,7 +414,8 @@ export function useNotebook(session: Session) {
     setNextOffset((value) => value === null ? null : values.length);
     const custom = loadCustomTags(userId);
     setTags([...new Set([...data.tags, ...custom])].sort((left, right) => left.localeCompare(right, 'zh-CN')));
-  }, [query, show, tag, userId, view]);
+    setTagCounts(data.counts);
+  }, [invalidateExplorer, query, show, tag, userId, view]);
   const syncOnlineRef = useRef(syncOnlineChanges);
   syncOnlineRef.current = syncOnlineChanges;
 
@@ -319,7 +432,9 @@ export function useNotebook(session: Session) {
       offset: append ? nextOffset ?? 0 : 0,
     }, signal);
     if (!alive.current || generation !== listGeneration.current) return;
-    const existingBlank = result.notes.find((item) => item.folderId === (folderId ?? null) && blankSummary(item));
+    const existingBlank = view === 'all'
+      ? result.notes.find((item) => item.folderId === (folderId ?? null) && blankSummary(item))
+      : undefined;
     if (existingBlank) {
       const redundant = [...drafts.current.values()]
         .map((draft) => draft.note)
@@ -340,6 +455,7 @@ export function useNotebook(session: Session) {
     const custom = loadCustomTags(userId);
     if (alive.current && generation === listGeneration.current) {
       setTags([...new Set([...data.tags, ...custom])].sort((left, right) => left.localeCompare(right, 'zh-CN')));
+      setTagCounts(data.counts);
     }
   }, [folderId, nextOffset, query, renderMirror, session.offline, syncOfflineMirror, tag, userId, view]);
   const refreshRef = useRef(refresh);
@@ -411,6 +527,7 @@ export function useNotebook(session: Session) {
           blocked.current.delete(id);
           ok = true;
           if (refreshAfter) await refreshRef.current();
+          invalidateExplorer();
           break;
         } catch (error) {
           const latest = drafts.current.get(id);
@@ -568,13 +685,13 @@ export function useNotebook(session: Session) {
   const create = (input: Partial<NoteInput> = {}): Promise<Note> => {
     if (createInFlight.current) return createInFlight.current;
     const operation = (async () => {
+      const destination = input.folderId === undefined ? folderId ?? null : input.folderId;
       const open = (value: Note) => {
         selectionGeneration.current++;
-        setView('all'); setQuery(''); setTag(''); show(value);
+        setView(value.quick ? 'quick' : 'all'); setQuery(''); setTag(''); show(value);
         return value;
       };
-      if (!Object.keys(input).length) {
-        const destination = folderId ?? null;
+      if (Object.keys(input).every((key) => key === 'folderId')) {
         const fullNotes = [
           ...mirror.current.values(),
           ...(current.current ? [current.current] : []),
@@ -593,13 +710,13 @@ export function useNotebook(session: Session) {
         const local = fullNotes.find((item) => item.folderId === destination && item.revision === 0 && blankNote(item));
         if (local) return open(local);
         if (navigator.onLine && !session.offline) {
-          const existing = await api.blank(folderId ?? null);
+          const existing = await api.blank(destination);
           if (existing.note) return open(existing.note);
         }
       }
       const newNote: Note = {
-        id: crypto.randomUUID(), title: '', content: '', tags: [], pinned: false, archived: false, deletedAt: null,
-        folderId: folderId ?? null, createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
+        id: crypto.randomUUID(), title: '', content: '', tags: [], pinned: false, quick: false, archived: false, deletedAt: null,
+        folderId: destination, createdAt: Date.now(), updatedAt: Date.now(), revision: 0, ...input,
       };
       open(newNote);
       edit({}, newNote);
@@ -769,12 +886,34 @@ export function useNotebook(session: Session) {
     if (target === null) {
       saveCustomTags(userId, currentCustom.filter((t) => t !== source));
       setTags((prev) => prev.filter((t) => t !== source));
+      setTagColors((current) => {
+        const next = { ...current };
+        delete next[source];
+        saveTagColors(userId, next);
+        return next;
+      });
     } else {
       const updated = currentCustom.map((t) => t === source ? target : t);
       saveCustomTags(userId, updated);
       setTags((prev) => [...new Set(prev.map((t) => t === source ? target : t))].sort((a, b) => a.localeCompare(b, 'zh-CN')));
+      setTagColors((current) => {
+        const next = { ...current };
+        if (next[target] === undefined && next[source] !== undefined) next[target] = next[source];
+        delete next[source];
+        saveTagColors(userId, next);
+        return next;
+      });
     }
     return count;
+  };
+
+  const setTagColor = (name: string, color: number): void => {
+    if (!Number.isInteger(color) || color < 0 || color >= TAG_COLOR_COUNT) return;
+    setTagColors((current) => {
+      const next = { ...current, [name]: color };
+      saveTagColors(userId, next);
+      return next;
+    });
   };
 
   const addTag = (name: string): void => {
@@ -900,6 +1039,7 @@ export function useNotebook(session: Session) {
 
   useEffect(() => {
     if (!ready.current) return;
+    invalidateExplorer();
     const timer = setTimeout(() => {
       if (offlineLibraryRef.current) {
         listGeneration.current++;
@@ -908,7 +1048,7 @@ export function useNotebook(session: Session) {
       else void refreshRef.current().catch((e: unknown) => setError(String(e)));
     }, 200);
     return () => clearTimeout(timer);
-  }, [initialized, view, query, tag, folderId, renderMirror]);
+  }, [folderId, initialized, invalidateExplorer, query, renderMirror, tag, view]);
 
   useEffect(() => {
     setOnline(navigator.onLine && !session.offline);
@@ -1051,13 +1191,21 @@ export function useNotebook(session: Session) {
     note, notes: filtered, tags, folders, folderId, view, query, tag, setView, setQuery, setTag, setFolderId,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
     online, offlineLibrary, offlineCount,
+    explorerFolders, explorerFolderKey, ensureExplorerFolder, invalidateExplorer,
     busy: running.current.size > 0, select, clearSelection, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, resolveConflict, discardConflict, purge, purgeTrash,
     refresh: () => refreshRef.current(), loadMore: () => refresh(true),
-    configureOffline, cachedFile, backlinks, tasks, searchAll, addTag, manageTag, bulkUpdate, findDuplicates,
+    configureOffline, cachedFile, backlinks, tasks, searchAll, addTag, manageTag, setTagColor, tagColors, tagCounts, bulkUpdate, findDuplicates,
     refreshFolders,
     createFolder: async (name: string, parentId: string | null) => { await api.createFolder(name, parentId); await refreshFolders(); },
     updateFolder: async (id: string, patch: { name?: string; parentId?: string | null }) => { await api.updateFolder(id, patch); await refreshFolders(); },
+    mergeFolder: async (id: string, targetId: string) => {
+      const result = await api.mergeFolder(id, targetId);
+      if (folderId === id) setFolderId(targetId);
+      invalidateExplorer();
+      await Promise.all([refreshFolders(), refreshRef.current()]);
+      return result;
+    },
     deleteFolder: async (id: string) => {
       const result = await api.deleteFolder(id);
       if (folderId === id) setFolderId(undefined);

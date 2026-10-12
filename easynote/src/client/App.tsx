@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronRight, ClipboardList, Command, Download, FileText, FolderOpen, GitMerge, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, Paperclip, PanelLeftClose, PanelLeftOpen, Pencil, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
+import { Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Code2, Command, Download, Eye, FileText, FolderOpen, GitMerge, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, NotebookPen, Paperclip, Pencil, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, ShieldCheck, Square, Sun, Tag, Tags, Trash2, Upload, Users, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
 import type { Folder, ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedNote, Version } from '../shared/types';
 import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
@@ -9,6 +9,11 @@ import { Editor, Preview, toggleMarkdownTask, type EditorHandle } from './Editor
 import { NoteSharing } from './NoteSharing';
 import { ShareManagement } from './ShareManagement';
 import { UserManagement } from './UserManagement';
+import { NavigationRail } from './NavigationRail';
+import { NotebookExplorer } from './NotebookExplorer';
+import { FolderOverview } from './FolderOverview';
+import { DocumentMetaBar } from './DocumentMetaBar';
+import { QuickNotes } from './QuickNotes';
 import { clearAccountStorage, forgetCachedSession, loadOfflineSession, cacheSession } from './drafts';
 import { headings, noteLink } from './knowledge';
 import {
@@ -24,6 +29,7 @@ import { useNotebook } from './useNotebook';
 import { exportArchive, exportLocalDrafts, importExternalFiles } from './transfer';
 import type { NoteConflictField } from './merge';
 import { dateLocale, setUiLanguage, t, translate, uiLanguage } from './i18n';
+import { tagColorIndex } from './tagColors';
 
 interface InstallPromptEvent extends Event {
   prompt(): Promise<void>;
@@ -40,6 +46,21 @@ function BrandIcon({ size }: { size: number }) {
   return <img className="brand-icon" src="/easynote-icon.svg" width={size} height={size} alt="" aria-hidden="true" />;
 }
 
+function mergeTargets(folders: Folder[], sourceId: string): Folder[] {
+  const excluded = new Set([sourceId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const folder of folders) {
+      if (folder.parentId && excluded.has(folder.parentId) && !excluded.has(folder.id)) {
+        excluded.add(folder.id);
+        changed = true;
+      }
+    }
+  }
+  return folders.filter((folder) => !excluded.has(folder.id));
+}
+
 function FolderTree({ folders, selected, disabled, choose, createChild, edit, remove }: {
   folders: Folder[];
   selected: string | null | undefined;
@@ -53,9 +74,7 @@ function FolderTree({ folders, selected, disabled, choose, createChild, edit, re
     .filter((folder) => folder.parentId === parentId)
     .map((folder) => <div key={folder.id} className="folder-tree-branch">
       <div className={`folder-tree-row ${selected === folder.id ? 'active' : ''}`} style={{ paddingLeft: `${8 + depth * 15}px` }}>
-        <button className="folder-tree-select" onClick={() => choose(folder.id)}>
-          <FolderOpen size={15} /><span>{folder.name}</span><small>{folder.noteCount || ''}</small>
-        </button>
+        <button className="folder-tree-select" onClick={() => choose(folder.id)}><FolderOpen size={15} /><span>{folder.name}</span><small>{folder.noteCount || ''}</small></button>
         <IconButton label="新建子文件夹" disabled={disabled} onClick={() => createChild(folder.id)}><Plus size={12} /></IconButton>
         <IconButton label="编辑文件夹" disabled={disabled} onClick={() => edit(folder)}><Pencil size={12} /></IconButton>
         <IconButton label="删除文件夹" disabled={disabled} className="danger-icon" onClick={() => remove(folder)}><Trash2 size={12} /></IconButton>
@@ -123,42 +142,12 @@ function moveButtonFocus(event: ReactKeyboardEvent<HTMLElement>, selector: strin
   buttons[next].focus();
 }
 
-function highlightMatches(text: string, query: string): ReactNode {
-  const needle = query.trim();
-  if (!needle) return text;
-  const haystack = text.toLocaleLowerCase();
-  const normalizedNeedle = needle.toLocaleLowerCase();
-  const parts: ReactNode[] = [];
-  let offset = 0;
-  let match = haystack.indexOf(normalizedNeedle);
-  while (match >= 0) {
-    if (match > offset) parts.push(text.slice(offset, match));
-    parts.push(<mark className="search-highlight" key={`${match}-${parts.length}`}>{text.slice(match, match + needle.length)}</mark>);
-    offset = match + needle.length;
-    match = haystack.indexOf(normalizedNeedle, offset);
-  }
-  if (!parts.length) return text;
-  if (offset < text.length) parts.push(text.slice(offset));
-  return parts;
-}
-
-function noteExcerptText(markdown: string, query: string) {
-  const needle = query.trim().toLocaleLowerCase();
-  return markdown
-    .replace(/!\[([^\]]*)\]\(([^)]*)\)/g, (source, alt: string, href: string) => {
-      const label = alt ? `[${t('图片')}：${alt}]` : `[${t('图片')}]`;
-      return needle && !label.toLocaleLowerCase().includes(needle) && href.toLocaleLowerCase().includes(needle)
-        ? `${label} ${source}`
-        : label;
-    })
-    .replace(/[#*`]/g, '');
-}
-
 const conflictFieldName: Record<NoteConflictField, string> = {
   title: '标题',
   content: '正文',
   tags: '标签',
   pinned: '置顶状态',
+  quick: '笔记类型',
   archived: '归档状态',
   folderId: '所属文件夹',
   deletedAt: '删除状态',
@@ -167,6 +156,7 @@ const conflictFieldName: Record<NoteConflictField, string> = {
 function conflictFieldValue(note: Note, field: NoteConflictField): string {
   if (field === 'tags') return note.tags.join('、') || t('无标签');
   if (field === 'pinned') return note.pinned ? t('已置顶') : t('未置顶');
+  if (field === 'quick') return note.quick ? t('小记') : t('正常笔记');
   if (field === 'archived') return note.archived ? t('已归档') : t('未归档');
   if (field === 'folderId') return note.folderId ?? t('根目录');
   if (field === 'deletedAt') return note.deletedAt ? t('已移入回收站') : t('正常笔记');
@@ -490,22 +480,27 @@ function AccountWorkspace({ session, installApp, logout }: { session: Session; i
 function Notebook({ session, installApp, logout }: { session: Session; installApp?(): Promise<void>; logout(): Promise<void> }) {
   const book = useNotebook(session);
   const [visibleNoteLimit, setVisibleNoteLimit] = useState(50);
-  const [layout, setLayout] = useState<'edit' | 'preview'>('edit');
+  const [layout, setLayout] = useState<'edit' | 'preview'>('preview');
+  const [editMode, setEditMode] = useState<'live' | 'markdown'>('live');
+  const [quickNotes, setQuickNotes] = useState(false);
   const [mobileNote, setMobileNote] = useState(false);
   const [mobileNavigation, setMobileNavigation] = useState(false);
   const [mobileSearch, setMobileSearch] = useState(false);
   const [mobileNoteActions, setMobileNoteActions] = useState(false);
-  const [sidebar, setSidebar] = useState(true);
+  const [noteActionMenu, setNoteActionMenu] = useState<{ left: number; top: number } | null>(null);
+  const [sidebar, setSidebar] = useState(() => localStorage.getItem('easynote-navigation-visible') !== 'false');
+  const [noteListVisible, setNoteListVisible] = useState(() => localStorage.getItem('easynote-note-list-visible') !== 'false');
   const [resizingList, setResizingList] = useState(false);
   const [noteListWidth, setNoteListWidth] = useState(() => {
     const stored = localStorage.getItem('easynote-note-list-width');
-    if (stored === null) return 300;
+    if (stored === null) return 340;
     const saved = Number(stored);
-    return Number.isFinite(saved) ? Math.min(440, Math.max(220, saved)) : 300;
+    return Number.isFinite(saved) ? Math.min(440, Math.max(220, saved)) : 340;
   });
   const noteListWidthRef = useRef(noteListWidth);
   const resizeStart = useRef<{ pointerId: number; x: number; width: number } | null>(null);
   const tagPickerRef = useRef<HTMLDetailsElement>(null);
+  const noteActionMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onPointerDown = (e: PointerEvent) => {
       const el = tagPickerRef.current;
@@ -526,6 +521,23 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       document.removeEventListener('keydown', onKeyDown);
     };
   }, []);
+  useEffect(() => {
+    if (!noteActionMenu) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!noteActionMenuRef.current?.contains(event.target as Node)) setNoteActionMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      setNoteActionMenu(null);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [noteActionMenu]);
   const [settings, setSettings] = useState(false);
   const [accountSecurity, setAccountSecurity] = useState(false);
   const [userManagement, setUserManagement] = useState(false);
@@ -555,7 +567,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [linkNotes, setLinkNotes] = useState<NoteSummary[]>([]);
   const [tagManager, setTagManager] = useState(false);
   const [folderEditor, setFolderEditor] = useState<{ id?: string; name: string; parentId: string | null } | null>(null);
+  const [folderOverviewId, setFolderOverviewId] = useState<string | null>(null);
   const [deletingFolder, setDeletingFolder] = useState<Folder | null>(null);
+  const [mergingFolder, setMergingFolder] = useState<{ folder: Folder; targetId: string } | null>(null);
   const [importFolderId, setImportFolderId] = useState<string | null>(book.folderId ?? null);
   const [newTagInput, setNewTagInput] = useState('');
   const [editingTag, setEditingTag] = useState<string | null>(null);
@@ -583,7 +597,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     const stored = localStorage.getItem('easynote-light-background');
     return stored === 'white' || stored === 'warm' ? stored : 'light';
   });
-  const [wideDocument, setWideDocument] = useState(() => localStorage.getItem('easynote-document-width') === 'wide');
+  const [documentFullscreen, setDocumentFullscreen] = useState(false);
   const editor = useRef<EditorHandle>(null);
   const editorCursor = useRef(0);
   const pendingEditorOffset = useRef<{ noteId: string; offset: number } | null>(null);
@@ -602,6 +616,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setDialogFeedbackTarget(dialogFeedbackTargets.current.at(-1) ?? null);
   }, []);
   const note = book.note;
+  const pendingIds = useMemo(() => new Set(book.pending.map((item) => item.id)), [book.pending]);
   const visibleNotes = book.notes.slice(0, visibleNoteLimit);
   const hasHiddenNotes = visibleNotes.length < book.notes.length;
   const outline = useMemo(() => headings(note?.content ?? ''), [note?.content]);
@@ -612,7 +627,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setNoteListWidth(next);
   };
   const beginNoteListResize = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !noteListVisible || event.target instanceof Element && event.target.closest('button')) return;
     event.preventDefault();
     resizeStart.current = { pointerId: event.pointerId, x: event.clientX, width: noteListWidthRef.current };
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -630,6 +645,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     localStorage.setItem('easynote-note-list-width', String(noteListWidthRef.current));
   };
   const resizeNoteListWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!noteListVisible) return;
     const widths: Record<string, number> = {
       ArrowLeft: noteListWidthRef.current - 12,
       ArrowRight: noteListWidthRef.current + 12,
@@ -641,8 +657,17 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     updateNoteListWidth(widths[event.key]);
     localStorage.setItem('easynote-note-list-width', String(Math.min(440, Math.max(220, widths[event.key]))));
   };
+  const setNavigationVisible = (visible: boolean) => {
+    setSidebar(visible);
+    localStorage.setItem('easynote-navigation-visible', String(visible));
+  };
+  const setExplorerVisible = (visible: boolean) => {
+    setNoteListVisible(visible);
+    localStorage.setItem('easynote-note-list-visible', String(visible));
+  };
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? 'dark' : lightBackground;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', dark ? '#1c1c1e' : lightBackground === 'warm' ? '#fbfaf7' : lightBackground === 'white' ? '#ffffff' : '#f9f9f9');
     localStorage.setItem('easynote-theme', dark ? 'dark' : 'light');
     localStorage.setItem('easynote-light-background', lightBackground);
   }, [dark, lightBackground]);
@@ -722,16 +747,21 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     if (layout === 'edit') showPreview();
     else editAt(Math.min(editorCursor.current, note.content.length));
   };
-  const toggleDocumentWidth = () => setWideDocument((current) => {
-    const next = !current;
-    localStorage.setItem('easynote-document-width', next ? 'wide' : 'readable');
-    return next;
-  });
+  const toggleDocumentFullscreen = () => setDocumentFullscreen((current) => !current);
   const run = async (action: () => Promise<unknown>) => {
     try { await action(); } catch (e) { book.setError(String(e)); }
   };
   const createNote = () => run(async () => {
+    setFolderOverviewId(null);
     await book.create();
+    setMobileNavigation(false);
+    setMobileNoteActions(false);
+    setMobileNote(true);
+    setLayout('edit');
+  });
+  const createNoteInFolder = (folderId: string) => run(async () => {
+    setFolderOverviewId(null);
+    await book.create({ folderId });
     setMobileNavigation(false);
     setMobileNoteActions(false);
     setMobileNote(true);
@@ -764,6 +794,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }
   };
   const chooseView = (view: string, tag = '') => {
+    setFolderOverviewId(null);
+    setQuickNotes(false);
     setShareManagement(false);
     book.setView(view);
     book.setTag(tag);
@@ -774,6 +806,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setSelected(new Set());
   };
   const chooseFolder = (id: string) => {
+    setFolderOverviewId(null);
+    setQuickNotes(false);
     setShareManagement(false);
     book.setView('all');
     book.setTag('');
@@ -806,8 +840,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       setSyncing(false);
     }
   };
-  const openNote = async (id: string) => {
+  const openNote = async (id: string, nextLayout: 'edit' | 'preview' = 'preview') => {
+    setFolderOverviewId(null);
+    setQuickNotes(false);
     await book.select(id);
+    setLayout(nextLayout);
     setMobileNavigation(false);
     setMobileNoteActions(false);
     setMobileNote(true);
@@ -830,20 +867,19 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       return;
     }
     pendingEditorOffset.current = { noteId: task.noteId, offset: task.offset };
-    setLayout('edit');
     setTaskCenter(false);
-    await openNote(task.noteId);
+    await openNote(task.noteId, 'edit');
   };
   const openManagedShare = async (share: ManagedNoteShare) => {
     setShareManagement(false);
     chooseView(share.archived ? 'archive' : 'all');
     await openNote(share.noteId);
   };
-  const openHistory = () => {
-    if (!note || note.revision === 0) return;
+  const openHistory = (target: Pick<Note, 'id' | 'revision'> | null = note) => {
+    if (!target || target.revision === 0) return;
     void run(async () => {
-      const result = await api.versions(note.id);
-      setVersionNoteId(note.id);
+      const result = await api.versions(target.id);
+      setVersionNoteId(target.id);
       setVersionList(result.versions);
       setChosenVersion(null);
     });
@@ -1062,6 +1098,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       setEditingTag(null);
       return;
     }
+    if (book.tags.includes(target)) throw new Error(t('该标签已存在。'));
     const count = await book.manageTag(editingTag, target);
     setEditingTag(null);
     showNotice(count ? t('已将 #{0} 重命名为 #{1}，更新了 {2} 篇笔记', editingTag, target, count) : t('已将 #{0} 重命名为 #{1}', editingTag, target));
@@ -1097,7 +1134,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   };
   const viewName = book.view === 'trash' ? t('trash') : book.view === 'archive' ? t('归档笔记') : t('all_notes');
   const activeFolder = book.folderId ? book.folders.find((folder) => folder.id === book.folderId) : null;
-  const activeView = activeFolder?.name ?? (book.tag ? `${viewName} · #${book.tag}` : viewName);
+  const folderOverview = folderOverviewId ? book.folders.find((folder) => folder.id === folderOverviewId) ?? null : null;
+  const activeView = activeFolder?.name ?? viewName;
   const disabled = !!transfer || uploading || book.busy || syncing;
   const commandMatch = (...labels: string[]) => {
     const query = commandQuery.trim().toLocaleLowerCase();
@@ -1201,172 +1239,230 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const noticeFeedback = notice && <div className="toast" role="status"><Check size={16} />{notice.text}</div>;
   return <DialogFeedbackContext.Provider value={registerDialogFeedback}>
     <div
-      className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector ? 'inspector-open' : ''}`}
+      className={`app-shell ${sidebar ? '' : 'sidebar-hidden'} ${noteListVisible ? '' : 'note-list-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector ? 'inspector-open' : ''} ${documentFullscreen ? 'document-focus-mode' : ''}`}
       style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
     >
-    <aside className="sidebar">
-      <div className="brand"><BrandIcon size={25} /><span>EasyNote</span>
-        <IconButton label="收起侧栏" onClick={() => setSidebar(false)}><PanelLeftClose size={16} /></IconButton>
-      </div>
-      <button className="new-note" disabled={!!transfer || book.loading} onClick={() => void createNote()}><Plus size={17} />{t('new_note')}</button>
-      <nav aria-label={t('note_categories')}>
-        <button className={!shareManagement && book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={17} />{t('all_notes')}</button>
-        <button onClick={() => void openTaskCenter()}><ClipboardList size={17} />{t('task_center')}</button>
-        <button className={!shareManagement && book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={17} />{t('archive')}</button>
-        <button className={shareManagement ? 'active' : ''} disabled={!book.online || !!session.offline}
-          onClick={() => setShareManagement(true)}><Share2 size={17} />{t('sharing')}</button>
-        <button className={!shareManagement && book.view === 'trash' ? 'active' : ''} onClick={() => chooseView('trash')}><Trash2 size={17} />{t('trash')}</button>
-      </nav>
-      <div className="section-label"><span>{t('文件夹')}</span><IconButton label="新建文件夹" disabled={!book.online || !!session.offline}
-        onClick={() => setFolderEditor({ name: '', parentId: null })}><Plus size={14} /></IconButton></div>
-      <FolderTree folders={book.folders} selected={book.folderId} disabled={!book.online || !!session.offline} choose={chooseFolder}
-        createChild={(parentId) => setFolderEditor({ name: '', parentId })}
-        edit={(folder) => setFolderEditor({ id: folder.id, name: folder.name, parentId: folder.parentId })}
-        remove={setDeletingFolder} />
-      <div className="section-label"><span>{t('tags')}</span><IconButton label="管理标签" onClick={() => setTagManager(true)}><Tags size={14} /></IconButton></div>
-      <nav className="tag-nav" aria-label={t('tags')}>{book.tags.map((tag) =>
-        <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-prefix" aria-hidden="true">#</span>{tag}</button>)}
-      </nav>
-      <div className="sidebar-bottom">
-        <button className="account" onClick={() => setSettings(true)}><span className="avatar">{session.user!.username[0].toUpperCase()}</span><span>{session.user!.username}</span><Settings size={16} /></button>
-      </div>
-    </aside>
-    <section className="note-list">
-      <header className="list-header">
-        <div className="list-heading">
-          <IconButton label="打开导航菜单" className="icon-button mobile-menu-trigger" onClick={() => setMobileNavigation(true)}><Menu size={21} /></IconButton>
-          {!sidebar && <IconButton label="展开侧栏" className="sidebar-toggle-action" onClick={() => setSidebar(true)}><PanelLeftOpen size={16} /></IconButton>}
-          <h1 title={activeView}>{activeView}</h1>
-          {!(mobileSearch || book.query) && (
-            <IconButton label="搜索笔记" className="icon-button mobile-search-trigger" onClick={toggleMobileSearch}>
-              <Search size={20} />
-            </IconButton>
-          )}
-          <IconButton label="快速跳转" className="icon-button list-command-action" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
-          {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} className="icon-button list-bulk-action" aria-pressed={selectionMode} onClick={() => {
-            if (selectionMode) exitSelectionMode();
-            else setSelectionMode(true);
-          }}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
-          <IconButton label={syncing ? '正在同步全部' : '同步全部'} className="icon-button list-sync-action" onClick={() => void syncNow(false)} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
-          {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) &&
-            <IconButton label="全部永久删除" className="icon-button danger-icon list-purge-action" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
-          <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
+    <NavigationRail
+      username={session.user!.username}
+      view={book.view}
+      activeTag={book.tag}
+      sharing={shareManagement}
+      quickNotes={quickNotes}
+      tags={book.tags}
+      tagCounts={book.tagCounts}
+      tagColors={book.tagColors}
+      folders={book.folders}
+      activeFolderId={book.folderId}
+      disabled={!!transfer || book.loading}
+      online={book.online && !session.offline}
+      collapsed={!sidebar}
+      createNote={() => void createNote()}
+      openSearch={() => {
+        setExplorerVisible(true);
+        requestAnimationFrame(() => searchInput.current?.focus());
+      }}
+      chooseView={chooseView}
+      chooseFolder={chooseFolder}
+      openTasks={() => void openTaskCenter()}
+      openQuickNotes={() => {
+        setQuickNotes(true);
+        setShareManagement(false);
+        book.setView('quick');
+        book.setTag('');
+        book.setFolderId(undefined);
+        book.setQuery('');
+        setMobileNavigation(false);
+        setMobileNote(false);
+      }}
+      openSharing={() => setShareManagement(true)}
+      openSettings={() => setSettings(true)}
+      createFolder={() => setFolderEditor({ name: '', parentId: null })}
+      manageTags={() => {
+        setEditingTag(null); setMergingTag(null); setDeletingTag(null); setTagManager(true);
+      }}
+      renameTag={(tag) => {
+        setTagManager(false); setEditingTag(tag); setEditingTagValue(tag); setMergingTag(null); setDeletingTag(null);
+      }}
+      mergeTag={(tag) => {
+        const targets = book.tags.filter((value) => value !== tag);
+        setTagManager(false); setMergingTag(tag); setMergingTarget(targets[0] ?? ''); setEditingTag(null); setDeletingTag(null);
+      }}
+      deleteTag={(tag) => {
+        setTagManager(false); setDeletingTag(tag); setEditingTag(null); setMergingTag(null);
+      }}
+      setTagColor={book.setTagColor}
+    />
+    <div className="pane-divider navigation-divider" aria-hidden="false">
+      <button className="pane-toggle" aria-label={t(sidebar ? '收起导航栏' : '展开导航栏')} aria-controls="navigation-rail" aria-expanded={sidebar}
+        onClick={() => setNavigationVisible(!sidebar)}>{sidebar ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
+    </div>
+    {quickNotes ? <QuickNotes
+      notes={book.notes}
+      activeNote={book.note}
+      tags={book.tags}
+      tagCounts={book.tagCounts}
+      folders={book.folders}
+      tagColors={book.tagColors}
+      loading={book.loading}
+      disabled={!book.online || !!session.offline || !!transfer}
+      hasMore={book.nextOffset !== null}
+      create={book.create}
+      select={book.select}
+      edit={book.edit}
+      save={() => book.retry()}
+      loadMore={() => void book.loadMore()}
+      openNavigation={() => setMobileNavigation(true)}
+      details={async (id) => (await api.note(id)).note}
+      togglePin={(item) => run(async () => {
+        await book.bulkUpdate([item.id], () => ({ pinned: !item.pinned }));
+        showNotice(t(item.pinned ? '已取消置顶' : '已置顶'));
+      })}
+      copyLink={(item) => run(async () => {
+        await navigator.clipboard.writeText(noteLink(item.id, item.title));
+        showNotice(t('链接已复制'));
+      })}
+      share={(id) => run(async () => {
+        await book.select(id);
+        setSharing(true);
+      })}
+      moveToFolder={(id, folderId) => run(async () => {
+        const folder = book.folders.find((item) => item.id === folderId);
+        await book.bulkUpdate([id], () => ({ folderId, quick: false }));
+        showNotice(t('已移动到文件夹“{0}”', folder?.name ?? t('文件夹')));
+      })}
+      addTag={(id, tag) => run(async () => {
+        await book.bulkUpdate([id], (item) => ({ tags: [...new Set([...item.tags, tag])] }));
+        showNotice(t('已添加标签 #{0}', tag));
+      })}
+      createTag={book.addTag}
+      reportError={book.setError}
+      archive={(id) => run(async () => {
+        await book.bulkUpdate([id], () => ({ archived: true, deletedAt: null }));
+        showNotice(t('已归档'));
+      })}
+      showHistory={async (item) => { openHistory(item); }}
+      remove={(id) => run(async () => {
+        await moveToTrash([id]);
+        showNotice(t('已移入回收站'));
+      })}
+    /> : <><NotebookExplorer
+      title={activeView}
+      view={book.view}
+      query={book.query}
+      activeTag={book.tag}
+      tagColors={book.tagColors}
+      activeFolderId={book.folderId}
+      folders={book.folders}
+      notes={visibleNotes}
+      currentNote={note}
+      pendingIds={pendingIds}
+      selectionMode={selectionMode}
+      selectedIds={selected}
+      inspectedFolderId={folderOverviewId}
+      loading={book.loading}
+      disabled={!book.online || !!session.offline || !!transfer}
+      nextOffset={book.nextOffset}
+      explorerFolders={book.explorerFolders}
+      explorerFolderKey={book.explorerFolderKey}
+      ensureFolder={book.ensureExplorerFolder}
+      searchInput={searchInput}
+      mobileSearch={mobileSearch}
+      headerActions={<>
+        <IconButton label="打开导航菜单" className="icon-button mobile-menu-trigger" onClick={() => setMobileNavigation(true)}><Menu size={21} /></IconButton>
+        {!(mobileSearch || book.query) && <IconButton label="搜索笔记" className="icon-button mobile-search-trigger" onClick={toggleMobileSearch}><Search size={20} /></IconButton>}
+        <IconButton label="快速跳转" className="icon-button list-command-action" onClick={() => { setCommandQuery(''); setCommandPalette(true); }}><Command size={16} /></IconButton>
+        {book.view !== 'trash' && <IconButton label={selectionMode ? '退出批量选择' : '批量选择'} className="icon-button list-bulk-action" aria-pressed={selectionMode} onClick={() => selectionMode ? exitSelectionMode() : setSelectionMode(true)}>{selectionMode ? <CheckSquare size={16} /> : <Square size={16} />}</IconButton>}
+        <IconButton label={syncing ? '正在同步全部' : '同步全部'} className="icon-button list-sync-action" onClick={() => void syncNow(false)} disabled={book.busy || syncing}>{syncing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}</IconButton>
+        {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) && <IconButton label="全部永久删除" className="icon-button danger-icon list-purge-action" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
+        <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
+      </>}
+      bulkToolbar={selectionMode ? <div className="bulk-toolbar">
+        <div className="bulk-toolbar-header">
+          <span>{uiLanguage() === 'en' ? `${selected.size} selected` : `已选 ${selected.size} 篇`}</span>
+          <button aria-label={allVisibleSelected ? t('clear_selection') : t('select_all')} disabled={!book.notes.length} onClick={toggleSelectAll}>{allVisibleSelected ? <Square size={14} /> : <CheckSquare size={14} />}{allVisibleSelected ? t('clear_selection') : t('select_all')}</button>
+          <button aria-label={t('exit_selection')} onClick={exitSelectionMode}><X size={14} />{t('cancel')}</button>
         </div>
-        {selectionMode && <div className="bulk-toolbar">
-          <div className="bulk-toolbar-header">
-            <span>{uiLanguage() === 'en' ? `${selected.size} selected` : `已选 ${selected.size} 篇`}</span>
-            <button aria-label={allVisibleSelected ? t('clear_selection') : t('select_all')} disabled={!book.notes.length} onClick={toggleSelectAll}>
-              {allVisibleSelected ? <Square size={14} /> : <CheckSquare size={14} />}{allVisibleSelected ? t('clear_selection') : t('select_all')}
-            </button>
-            <button aria-label={t('exit_selection')} onClick={exitSelectionMode}><X size={14} />{t('cancel')}</button>
-          </div>
-          <div className="bulk-toolbar-actions">
-            <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? t('unarchive') : t('archive')}</button>
-            <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />{t('加标签')}</button>
-            <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />{t('delete')}</button>
-          </div>
-        </div>}
-        <div
-          className={`search-field ${mobileSearch || book.query ? 'mobile-open' : ''}`}
-          role="search"
-          onClick={(e) => {
-            if ((e.target as HTMLElement).closest('.search-clear')) return;
-            searchInput.current?.focus();
-          }}
-        >
-          <Search size={15} />
-          <input
-            ref={searchInput}
-            aria-label={t('搜索笔记')}
-            placeholder={t('搜索笔记')}
-            value={book.query}
-            onChange={(e) => {
-              const value = e.target.value;
-              book.setQuery(value);
-              setMobileSearch(!!value);
-            }}
-            onBlur={() => { if (!searchInput.current?.value) setMobileSearch(false); }}
-            onKeyDown={(e) => { if (e.key === 'Escape') { book.setQuery(''); setMobileSearch(false); } }}
-          />
-          {book.query && (
-            <button
-              type="button"
-              className="search-clear"
-              aria-label={t('清空搜索')}
-              title={t('清空搜索')}
-              onMouseDown={(e) => {
-                e.preventDefault();
-              }}
-              onClick={(e) => {
-                e.stopPropagation();
-                book.setQuery('');
-                if (searchInput.current) {
-                  searchInput.current.value = '';
-                  searchInput.current.focus();
-                }
-              }}
-            >
-              <X size={13} />
-            </button>
-          )}
+        <div className="bulk-toolbar-actions">
+          <button disabled={!selected.size || disabled} onClick={applyBulkArchive}>{book.view === 'archive' ? <ArchiveRestore size={14} /> : <Archive size={14} />}{book.view === 'archive' ? t('unarchive') : t('archive')}</button>
+          <button disabled={!selected.size || disabled} onClick={() => setBulkTagOpen(true)}><Tag size={14} />{t('加标签')}</button>
+          <button className="danger" disabled={!selected.size || disabled} onClick={() => setConfirmAction('bulk-trash')}><Trash2 size={14} />{t('delete')}</button>
         </div>
-      </header>
-      <div className="list-scroll" onKeyDown={(event) => moveButtonFocus(event, '.note-row')}>
-        {book.loading ? <div className="empty-state">{t('loading')}</div> : !book.notes.length ? <div className="empty-state"><FileText size={28} /><span>{book.query ? t('no_matching_notes') : t('no_notes')}</span></div> : visibleNotes.map((item) =>
-          <button className={`note-row ${item.id === note?.id ? 'selected' : ''} ${selected.has(item.id) ? 'checked' : ''}`} data-note-row key={item.id}
-            aria-label={`${item.title || t('untitled_note')}，${new Date(item.updatedAt).toLocaleDateString(dateLocale(), { month: 'short', day: 'numeric' })}`}
-            aria-pressed={selectionMode ? selected.has(item.id) : undefined}
-            onClick={() => selectionMode ? toggleSelected(item.id) : void openNote(item.id)}>
-            <div className="note-row-title">{selectionMode && (selected.has(item.id) ? <CheckSquare size={14} /> : <Square size={14} />)}<span>{highlightMatches(item.title || t('untitled_note'), book.query)}</span>{item.pinned && <Pin size={12} />}</div>
-            <div className="note-excerpt" aria-hidden="true">{highlightMatches(noteExcerptText(item.excerpt, book.query) || t('empty_note'), book.query)}</div>
-            <div className="note-row-meta"><time>{new Date(item.updatedAt).toLocaleDateString(dateLocale(), { month: 'short', day: 'numeric' })}</time>{item.tags[0] && <span>#{item.tags[0]}</span>}{book.pending.some((n) => n.id === item.id) && <span className="local-dot" title={t('local_draft')} />}</div>
-          </button>)}
-        {(hasHiddenNotes || book.nextOffset !== null) && <button className="load-more" onClick={() => {
-          setVisibleNoteLimit((value) => value + 50);
-          if (!hasHiddenNotes && book.nextOffset !== null) void run(book.loadMore);
-        }}>{t('加载更多')}<ChevronDown size={14} /></button>}
-      </div>
-      <footer className="list-footer">{book.notes.length} {uiLanguage() === 'en' ? 'notes' : '篇'}{book.nextOffset !== null ? '+' : ''}
-        {(!book.online || session.offline) && <span><WifiOff size={11} />{t('offline')}</span>}
-      </footer>
-      <button className="mobile-compose" aria-label="新建笔记" disabled={!!transfer || book.loading} onClick={() => void createNote()}><PenLine size={23} /></button>
-    </section>
+      </div> : undefined}
+      setQuery={(value) => { book.setQuery(value); setMobileSearch(!!value); }}
+      clearSearch={() => { book.setQuery(''); setMobileSearch(false); requestAnimationFrame(() => searchInput.current?.focus()); }}
+      inspectFolder={(id) => {
+        setFolderOverviewId((current) => current === id ? current : id);
+        setMobileNote(true);
+      }}
+      createChild={(parentId) => setFolderEditor({ name: '', parentId })}
+      createNoteIn={(folderId) => void createNoteInFolder(folderId)}
+      mergeFolder={(folder) => setMergingFolder({ folder, targetId: mergeTargets(book.folders, folder.id)[0]?.id ?? '' })}
+      removeFolder={setDeletingFolder}
+      openNote={(id) => void openNote(id)}
+      toggleSelected={toggleSelected}
+      openNoteMenu={(id, trigger) => {
+        const rect = trigger.getBoundingClientRect();
+        void openNote(id).then(() => {
+          if (window.matchMedia('(max-width: 640px)').matches) { setMobileNoteActions(true); return; }
+          const width = 230;
+          const height = 338;
+          setNoteActionMenu({
+            left: Math.min(Math.max(8, rect.left - 8), window.innerWidth - width - 8),
+            top: Math.min(rect.bottom + 4, window.innerHeight - height - 8),
+          });
+        });
+      }}
+      loadMore={() => { setVisibleNoteLimit((value) => value + 50); if (!hasHiddenNotes && book.nextOffset !== null) void run(book.loadMore); }}
+      createNote={() => void createNote()}
+    />
     <div
-      className="note-list-resizer"
+      className="note-list-resizer pane-divider explorer-divider"
       role="separator"
       aria-label="调整笔记列表宽度"
       aria-orientation="vertical"
       aria-valuemin={220}
       aria-valuemax={440}
-      aria-valuenow={noteListWidth}
-      tabIndex={0}
+      aria-valuenow={noteListVisible ? noteListWidth : 0}
+      aria-disabled={!noteListVisible}
+      tabIndex={noteListVisible ? 0 : -1}
       title="拖动调整宽度，双击恢复默认"
       onPointerDown={beginNoteListResize}
       onPointerMove={moveNoteListResize}
       onPointerUp={finishNoteListResize}
       onPointerCancel={finishNoteListResize}
-      onDoubleClick={() => {
-        updateNoteListWidth(300);
-        localStorage.setItem('easynote-note-list-width', '300');
+      onDoubleClick={(event) => {
+        if (!noteListVisible || event.target instanceof Element && event.target.closest('button')) return;
+        updateNoteListWidth(340);
+        localStorage.setItem('easynote-note-list-width', '340');
       }}
       onKeyDown={resizeNoteListWithKeyboard}
-    />
-    <main className="workspace">
+    >
+      <button className="pane-toggle" aria-label={t(noteListVisible ? '收起笔记列表' : '展开笔记列表')} aria-controls="notebook-explorer" aria-expanded={noteListVisible}
+        onClick={() => setExplorerVisible(!noteListVisible)}>{noteListVisible ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
+    </div>
+    <main id="document-workspace" className="workspace">
       <header className="workspace-toolbar">
         <IconButton label="返回笔记列表" className="icon-button mobile-back" onClick={() => setMobileNote(false)}><ArrowLeft size={18} /></IconButton>
-        <span className={`save-status ${book.pending.length ? 'pending' : ''}`}><span className="status-dot" />{uploading ? t('uploading_files') : syncing ? t('syncing') : note ? book.status : t('note_workspace')}</span>
+        <span className={`save-status ${!book.online || session.offline ? 'offline' : book.pending.length || syncing || uploading ? 'pending' : 'saved'}`} aria-live="polite">
+          <span className="save-status-icon" aria-hidden="true">{!book.online || session.offline ? <WifiOff size={15} /> : syncing || uploading ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}</span>
+          <span>{!book.online || session.offline ? book.status : uploading ? t('uploading_files') : syncing ? t('syncing') : folderOverview ? t('folder_overview') : note ? book.status : t('note_workspace')}</span>
+        </span>
         <div className="toolbar-right">
-          {note && <><div className="segmented" aria-label={t('显示模式')}><button title={t('edit')} aria-label={t('编辑模式')} aria-pressed={layout === 'edit'} onClick={() => editAt(Math.min(editorCursor.current, note.content.length))}><PenLine size={16} /></button><button title={t('preview')} aria-label={t('预览模式')} aria-pressed={layout === 'preview'} onClick={showPreview}><BookOpen size={16} /></button></div>
+          {note && !folderOverview && <><div className="segmented" aria-label={t('显示模式')}><button title={t('edit')} aria-label={t('编辑模式')} aria-pressed={layout === 'edit'} onClick={() => editAt(Math.min(editorCursor.current, note.content.length))}><PenLine size={16} /></button><button title={t('preview')} aria-label={t('预览模式')} aria-pressed={layout === 'preview'} onClick={showPreview}><BookOpen size={16} /></button></div>
+            {layout === 'edit' && <div className="segmented edit-mode-segmented" role="group" aria-label={t('编辑模式选择')}>
+              <button title={t('实时渲染')} aria-label={t('实时渲染')} aria-pressed={editMode === 'live'} onClick={() => setEditMode('live')}><Eye size={14} /><span>{t('实时渲染')}</span></button>
+              <button title={t('MD 语法')} aria-label={t('MD 语法')} aria-pressed={editMode === 'markdown'} onClick={() => setEditMode('markdown')}><Code2 size={14} /><span>{t('MD 语法')}</span></button>
+            </div>}
             <IconButton label="插入内部链接" className="icon-button toolbar-link-action" disabled={!!note.deletedAt || !!transfer} onClick={beginLinkInsertion}><Link2 size={17} /></IconButton>
             <IconButton label="大纲与反向链接" className="icon-button toolbar-outline-action" aria-pressed={inspector} onClick={() => setInspector((value) => !value)}><ListTree size={17} /></IconButton>
-            <IconButton label={wideDocument ? '使用阅读宽度' : '使用宽屏'} className="icon-button document-width-toggle" aria-pressed={wideDocument} onClick={toggleDocumentWidth}>{wideDocument ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</IconButton>
+            <IconButton label={documentFullscreen ? '退出全屏' : '进入全屏'} className="icon-button document-fullscreen-toggle" aria-controls="document-workspace" aria-pressed={documentFullscreen} onClick={toggleDocumentFullscreen}>{documentFullscreen ? <Minimize2 size={17} /> : <Maximize2 size={17} />}</IconButton>
             <IconButton label={syncing ? '正在同步并更新历史版本' : '同步并更新历史版本'} disabled={disabled} onClick={() => void syncNow()}>{syncing ? <LoaderCircle className="spin" size={17} /> : <Save size={17} />}</IconButton>
             <IconButton label={note.pinned ? '取消置顶' : '置顶'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ pinned: !note.pinned })}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} /></IconButton>
             <IconButton label={note.archived ? '取消归档' : '归档'} disabled={!!note.deletedAt || !!transfer} onClick={() => setNoteFields({ archived: !note.archived })}>{note.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}</IconButton>
             <IconButton label="只读分享" className="icon-button toolbar-share-action" disabled={disabled || note.revision === 0 || !!note.deletedAt || book.pending.some((item) => item.id === note.id)}
               onClick={() => setSharing(true)}><Share2 size={17} /></IconButton>
             <IconButton label={pdfProgress || '导出当前笔记为 PDF'} className="icon-button print-action" disabled={printing} onClick={exportCurrentNote}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
-            <IconButton label="历史版本" className="icon-button toolbar-history-action" disabled={disabled || note.revision === 0} onClick={openHistory}><History size={17} /></IconButton>
+            <IconButton label="历史版本" className="icon-button toolbar-history-action" disabled={disabled || note.revision === 0} onClick={() => openHistory()}><History size={17} /></IconButton>
             {!note.deletedAt ? <IconButton label="移入回收站" className="toolbar-trash-action" disabled={disabled} onClick={() => setConfirmAction('trash')}><Trash2 size={17} /></IconButton> :
               <IconButton label="恢复笔记" className="toolbar-trash-action" disabled={disabled} onClick={() => setNoteFields({ deletedAt: null })}><RotateCcw size={17} /></IconButton>}
             <IconButton label="更多笔记操作" className="icon-button mobile-note-menu-trigger" onClick={() => setMobileNoteActions(true)}><MoreHorizontal size={20} /></IconButton>
@@ -1374,18 +1470,33 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         </div>
       </header>
       {!dialogFeedbackTarget && errorFeedback}
-      {note ? <>
+      {folderOverview ? <FolderOverview
+        folder={folderOverview}
+        folders={book.folders}
+        explorerFolders={book.explorerFolders}
+        explorerFolderKey={book.explorerFolderKey}
+        ensureFolder={book.ensureExplorerFolder}
+        openNote={(id) => void openNote(id, 'preview')}
+      /> : note ? <>
         {note.deletedAt && <div className="trash-banner"><span>{t('已移入回收站')}</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>{t('delete_permanently')}</button></div>}
         <div className="workspace-body">
           <div className="document-scroll">
-            <div className={`document ${wideDocument ? 'wide' : ''}`}>
+            <div className={`document ${documentFullscreen ? 'wide' : ''}`}>
               <input className="note-title" aria-label={t('note_title')} placeholder={t('untitled_note')} maxLength={256} value={note.title} readOnly={!!note.deletedAt || !!transfer} onChange={(e) => setNoteFields({ title: e.target.value })} />
-              <div className="document-meta"><time>{new Date(note.createdAt).toLocaleDateString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric' })}</time><span>{uiLanguage() === 'en' ? `Rev ${note.revision}` : `修订 ${note.revision}`}</span>
-                <label className="note-folder-picker"><FolderOpen size={13} /><select aria-label={t('所属文件夹')} value={note.folderId ?? ''}
-                  disabled={!!note.deletedAt || !!transfer} onChange={(event) => setNoteFields({ folderId: event.target.value || null })}>
-                  <option value="">{t('根目录')}</option>{book.folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
-                </select></label>
-              </div>
+              <DocumentMetaBar
+                note={note}
+                folders={book.folders}
+                allTags={book.tags}
+                tagColors={book.tagColors}
+                tagCounts={book.tagCounts}
+                query={noteTagQuery}
+                pickerRef={tagPickerRef}
+                disabled={!!note.deletedAt || !!transfer}
+                setQuery={setNoteTagQuery}
+                setFolder={(folderId) => setNoteFields({ folderId })}
+                setTags={(tags) => setNoteFields({ tags })}
+                reportError={book.setError}
+              />
               {layout === 'preview' || note.deletedAt || transfer
                 ? <Preview content={note.content} onImage={setLightbox} onNote={(id) => void openNote(id)}
                     onFile={(id, href) => void run(() => downloadPrivateFile(id, href))}
@@ -1394,9 +1505,13 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
                     resolveFile={book.offlineLibrary ? book.cachedFile : undefined} dark={dark}
                     searchQuery={book.query}
                     onEditLine={!note.deletedAt && !transfer ? (line) => editAt(sourceLineOffset(note.content, line)) : undefined} />
-                : <Editor ref={editor} key={note.id} value={note.content} onChange={(content) => setNoteFields({ content })}
-                    onImages={(files, insertion) => void insertFiles(files, insertion)}
-                    onTogglePreview={toggleLayout} onShowShortcuts={showShortcutHelp} searchQuery={book.query} />}
+                : <div className={`editing-surface ${editMode === 'live' ? 'live' : 'markdown-only'}`}>
+                    <div className="editing-source" aria-label={t('Markdown 编辑器')}>
+                      <Editor ref={editor} key={note.id} value={note.content} mode={editMode} onChange={(content) => setNoteFields({ content })}
+                        onImages={(files, insertion) => void insertFiles(files, insertion)}
+                        onTogglePreview={toggleLayout} onShowShortcuts={showShortcutHelp} searchQuery={book.query} />
+                    </div>
+                  </div>}
             </div>
           </div>
           {inspector && <aside className="knowledge-panel" aria-label={t('笔记导航')}>
@@ -1410,130 +1525,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           </aside>}
         </div>
         <footer className="document-footer">
-          <div className="note-tags-bar">
-            <Tag size={15} className="note-tags-icon" />
-            <div className="note-tags-list">
-              {note.tags.map((tag) => (
-                <span key={tag} className="note-tag-chip">
-                  <span className="note-tag-name">#{tag}</span>
-                  <button
-                    type="button"
-                    className="note-tag-remove"
-                    title={t('去除标签 #{0}', tag)}
-                    aria-label={t('去除标签 {0}', tag)}
-                    disabled={!!note.deletedAt || !!transfer}
-                    onClick={() => {
-                      const tags = note.tags.filter((t) => t !== tag);
-                      setNoteFields({ tags });
-                    }}
-                  >
-                    <X size={11} />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <details className="tag-picker" ref={tagPickerRef} onToggle={(e) => {
-              if (e.currentTarget.open) e.currentTarget.querySelector('input')?.focus();
-            }}>
-              <summary className="tag-picker-summary" aria-label={t('添加标签')}>
-                <Plus size={13} />
-                <span>{note.tags.length ? t('add') : t('添加标签')}</span>
-              </summary>
-              <div className="tag-picker-popover" role="group" aria-label={t('选择或创建标签')}>
-                <div className="tag-picker-search">
-                  <input
-                    placeholder={t('搜索或回车新建标签…')}
-                    value={noteTagQuery}
-                    onChange={(e) => setNoteTagQuery(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (tagPickerRef.current) tagPickerRef.current.open = false;
-                        return;
-                      }
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        const val = noteTagQuery.trim();
-                        if (!val) return;
-                        if (val.length > 40 || val.includes(',') || val.includes('，')) {
-                          book.setError(t('标签必须为 1-40 个字符，且不能包含逗号。'));
-                          return;
-                        }
-                        if (note.tags.includes(val)) {
-                          setNoteTagQuery('');
-                          return;
-                        }
-                        if (note.tags.length >= 20) {
-                          book.setError(t('最多 20 个标签。'));
-                          return;
-                        }
-                        book.addTag(val);
-                        setNoteFields({ tags: [...note.tags, val] });
-                        setNoteTagQuery('');
-                      }
-                    }}
-                  />
-                  {noteTagQuery.trim() && !book.tags.includes(noteTagQuery.trim()) && !note.tags.includes(noteTagQuery.trim()) && (
-                    <button
-                      type="button"
-                      className="tag-picker-create-btn"
-                      onClick={() => {
-                        const val = noteTagQuery.trim();
-                        if (val.length > 40 || val.includes(',') || val.includes('，')) {
-                          book.setError(t('标签必须为 1-40 个字符，且不能包含逗号。'));
-                          return;
-                        }
-                        if (note.tags.length >= 20) {
-                          book.setError(t('最多 20 个标签。'));
-                          return;
-                        }
-                        book.addTag(val);
-                        setNoteFields({ tags: [...note.tags, val] });
-                        setNoteTagQuery('');
-                      }}
-                    >
-                      {t('新建并打标')}
-                    </button>
-                  )}
-                  <IconButton
-                    type="button"
-                    label="close"
-                    className="icon-button tag-picker-close-btn"
-                    onClick={() => {
-                      if (tagPickerRef.current) tagPickerRef.current.open = false;
-                    }}
-                  >
-                    <X size={14} />
-                  </IconButton>
-                </div>
-                <div className="tag-picker-options">
-                  {[...new Set([...book.tags, ...note.tags])]
-                    .sort((a, b) => a.localeCompare(b, 'zh-CN'))
-                    .filter((t) => !noteTagQuery.trim() || t.toLocaleLowerCase().includes(noteTagQuery.trim().toLocaleLowerCase()))
-                    .map((tag) => (
-                      <label key={tag} className="tag-picker-option">
-                        <input
-                          type="checkbox"
-                          checked={note.tags.includes(tag)}
-                          disabled={!!note.deletedAt || !!transfer || (!note.tags.includes(tag) && note.tags.length >= 20)}
-                          onChange={(event) => {
-                            const tags = event.target.checked
-                              ? [...note.tags, tag]
-                              : note.tags.filter((value) => value !== tag);
-                            setNoteFields({ tags });
-                          }}
-                        />
-                        <span>{tag}</span>
-                      </label>
-                    ))}
-                  {![...new Set([...book.tags, ...note.tags])].filter((t) => !noteTagQuery.trim() || t.toLocaleLowerCase().includes(noteTagQuery.trim().toLocaleLowerCase())).length && (
-                    <span className="tag-picker-empty">{noteTagQuery.trim() ? t('按回车创建新标签') : t('no_tags')}</span>
-                  )}
-                </div>
-              </div>
-            </details>
-          </div>
+          <span className="footer-note-path"><FileText size={14} />{note.title || t('untitled_note')}</span>
           <span className="word-count">{t('{0} 字符', note.content.length.toLocaleString())}</span>
           <IconButton label={pdfProgress || t('导出当前笔记为 PDF')} className="icon-button mobile-pdf-action" disabled={printing}
             onClick={exportCurrentNote}>{printing ? <LoaderCircle className="spin" size={17} /> : <Printer size={17} />}</IconButton>
@@ -1552,7 +1544,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <input hidden ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => void insertFiles(Array.from(e.target.files ?? []))} />
         </footer>
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>{t('你的笔记')}</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void createNote()}><Plus size={16} />{t('新建笔记')}</button></div>}
-    </main>
+    </main></>}
     {!dialogFeedbackTarget && noticeFeedback}
     {dialogFeedbackTarget && createPortal(<>{errorFeedback}{noticeFeedback}</>, dialogFeedbackTarget)}
     <input hidden ref={importInput} type="file" accept=".zip,.md,.markdown,.txt" multiple onChange={(e) => {
@@ -1571,7 +1563,10 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }} />
     {mobileNavigation && <Modal title="EasyNote" className="mobile-navigation-dialog" close={() => setMobileNavigation(false)}>
       <nav className="mobile-navigation-list" aria-label={t('移动端笔记分类')}>
-        <button className={!shareManagement && book.view === 'all' && !book.tag ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />{t('all_notes')}</button>
+        <button className={!quickNotes && !shareManagement && book.view === 'all' && !book.tag && book.folderId === undefined ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />{t('all_notes')}</button>
+        <button className={quickNotes ? 'active' : ''} onClick={() => {
+          setQuickNotes(true); setShareManagement(false); book.setView('quick'); book.setTag(''); book.setFolderId(undefined); book.setQuery(''); setMobileNavigation(false);
+        }}><NotebookPen size={18} />{t('小记')}</button>
         <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />{t('task_center')}</button>
         <button className={!shareManagement && book.view === 'archive' ? 'active' : ''} onClick={() => chooseView('archive')}><Archive size={18} />{t('archive')}</button>
         <button className={shareManagement ? 'active' : ''} disabled={!book.online || !!session.offline}
@@ -1588,7 +1583,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       {book.tags.length > 0 && <>
         <div className="mobile-navigation-label">{t('tags')}</div>
         <nav className="mobile-navigation-list" aria-label={t('mobile_tags')}>{book.tags.map((tag) =>
-          <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className="tag-prefix" aria-hidden="true">#</span>{tag}</button>)}
+          <button key={tag} className={!shareManagement && book.tag === tag ? 'active' : ''} onClick={() => chooseView(book.view, tag)}><span className={`tag-color-dot tag-color-${tagColorIndex(tag, book.tagColors)}`} aria-hidden="true" />{tag}</button>)}
         </nav>
       </>}
       <div className="mobile-navigation-actions">
@@ -1604,6 +1599,18 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         <button onClick={() => { setMobileNavigation(false); setSettings(true); }}><Settings size={18} />{t('settings')}</button>
       </div>
     </Modal>}
+    {noteActionMenu && note && <div className="note-action-popover" role="menu" aria-label={t('笔记操作')} ref={noteActionMenuRef}
+      style={{ left: noteActionMenu.left, top: noteActionMenu.top }}>
+      <button role="menuitem" disabled={disabled} onClick={() => { setNoteActionMenu(null); void syncNow(); }}><Save size={17} />{t('sync_and_save_version')}</button>
+      <button role="menuitem" disabled={!!note.deletedAt || !!transfer} onClick={() => { setNoteActionMenu(null); beginLinkInsertion(); }}><Link2 size={17} />{t('insert_internal_link')}</button>
+      <button role="menuitem" onClick={() => { setNoteActionMenu(null); setInspector((value) => !value); }}><ListTree size={17} />{t('outline_and_links')}</button>
+      <button role="menuitem" disabled={!!note.deletedAt || !!transfer} onClick={() => { setNoteActionMenu(null); setNoteFields({ pinned: !note.pinned }); }}><Pin size={17} fill={note.pinned ? 'currentColor' : 'none'} />{note.pinned ? t('取消置顶') : t('置顶')}</button>
+      <button role="menuitem" disabled={!!note.deletedAt || !!transfer} onClick={() => { setNoteActionMenu(null); setNoteFields({ archived: !note.archived }); }}>{note.archived ? <ArchiveRestore size={17} /> : <Archive size={17} />}{note.archived ? t('取消归档') : t('归档')}</button>
+      <button role="menuitem" disabled={disabled || note.revision === 0} onClick={() => { setNoteActionMenu(null); openHistory(); }}><History size={17} />{t('version_history')}</button>
+      {!note.deletedAt
+        ? <button role="menuitem" className="danger" disabled={disabled} onClick={() => { setNoteActionMenu(null); setConfirmAction('trash'); }}><Trash2 size={17} />{t('move_to_trash')}</button>
+        : <button role="menuitem" onClick={() => { setNoteActionMenu(null); setNoteFields({ deletedAt: null }); }}><RotateCcw size={17} />{t('restore_note')}</button>}
+    </div>}
     {mobileNoteActions && note && <Modal title="笔记操作" className="mobile-actions-dialog" close={() => setMobileNoteActions(false)}>
       <div className="mobile-action-list">
         <button disabled={disabled} onClick={() => { setMobileNoteActions(false); void syncNow(); }}><Save size={18} />{t('sync_and_save_version')}</button>
@@ -1650,6 +1657,27 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         setDeletingFolder(null);
         showNotice(t('文件夹已删除，{0} 篇笔记已移到根目录', moved));
       })}>{t('delete')}</button></div>
+    </Modal>}
+    {mergingFolder && <Modal title="合并文件夹到" close={() => setMergingFolder(null)}>
+      <form className="folder-form" onSubmit={(event) => {
+        event.preventDefault();
+        if (!mergingFolder.targetId) return;
+        const target = book.folders.find((folder) => folder.id === mergingFolder.targetId);
+        if (!target) return;
+        void run(async () => {
+          const result = await book.mergeFolder(mergingFolder.folder.id, target.id);
+          setMergingFolder(null);
+          showNotice(t('文件夹“{0}”已合并到“{1}”，移动了 {2} 篇笔记和 {3} 个子文件夹', mergingFolder.folder.name, target.name, result.movedNotes, result.movedFolders));
+        });
+      }}>
+        <p>{t('合并后，直属笔记和子文件夹会移入目标文件夹，源文件夹会被删除。')}</p>
+        <label>{t('目标文件夹')}<select autoFocus value={mergingFolder.targetId}
+          onChange={(event) => setMergingFolder({ ...mergingFolder, targetId: event.target.value })}>
+          {mergeTargets(book.folders, mergingFolder.folder.id).map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+        </select></label>
+        <div className="dialog-actions"><button type="button" onClick={() => setMergingFolder(null)}>{t('cancel')}</button>
+          <button className="danger" type="submit" disabled={!mergingFolder.targetId}>{t('merge')}</button></div>
+      </form>
     </Modal>}
     {settings && <Modal title="设置" close={() => { if (!transfer) setSettings(false); }}>
       <div className="setting-row"><span>语言/Language</span><select aria-label={t('language')} value={uiLanguage()} onChange={(event) => setUiLanguage(event.target.value as 'zh' | 'en')}>
@@ -1812,6 +1840,30 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <div className="command-list">{linkNotes.map((item) =>
         <button key={item.id} onClick={() => insertNoteLink(item)}><Link2 size={16} /><span>{item.title || t('untitled_note')}</span></button>)}</div>
     </Modal>}
+    {!tagManager && editingTag && <Modal title="重命名标签" className="tag-quick-action-dialog" close={() => setEditingTag(null)}>
+      <form className="tag-quick-action-form" onSubmit={(event) => { event.preventDefault(); handleSaveEditTag(); }}>
+        <label>{t('新标签名称')}
+          <span className="tag-quick-input"><span className={`tag-color-dot tag-color-${tagColorIndex(editingTag, book.tagColors)}`} aria-hidden="true" />
+            <input autoFocus aria-label={t('新标签名称')} maxLength={40} value={editingTagValue} onChange={(event) => setEditingTagValue(event.target.value)} /></span>
+        </label>
+        <div className="dialog-actions"><button type="button" onClick={() => setEditingTag(null)}>{t('cancel')}</button>
+          <button type="submit" className="primary" disabled={disabled || !editingTagValue.trim() || editingTagValue.trim() === editingTag}>{t('save')}</button></div>
+      </form>
+    </Modal>}
+    {!tagManager && mergingTag && <Modal title="合并标签" className="tag-quick-action-dialog" close={() => setMergingTag(null)}>
+      <div className="tag-quick-action-form">
+        <div className="tag-quick-source"><span className={`tag-color-dot tag-color-${tagColorIndex(mergingTag, book.tagColors)}`} aria-hidden="true" /><span>{mergingTag}</span></div>
+        <label>{t('合并至')}<select autoFocus aria-label={t('合并至')} value={mergingTarget} onChange={(event) => setMergingTarget(event.target.value)}>
+          {book.tags.filter((tag) => tag !== mergingTag).map((tag) => <option key={tag} value={tag}>{tag}</option>)}</select></label>
+        <div className="dialog-actions"><button type="button" onClick={() => setMergingTag(null)}>{t('cancel')}</button>
+          <button type="button" className="primary" disabled={disabled || !mergingTarget} onClick={handleConfirmMergeTag}>{t('确认合并')}</button></div>
+      </div>
+    </Modal>}
+    {!tagManager && deletingTag && <Modal title="删除标签" className="tag-quick-action-dialog" close={() => setDeletingTag(null)}>
+      <div className="tag-delete-confirmation"><Trash2 size={20} aria-hidden="true" /><div><strong>{t('删除标签“{0}”？', deletingTag)}</strong><p>{t('标签会从所有笔记中移除，笔记本身不会被删除。')}</p></div></div>
+      <div className="dialog-actions"><button type="button" onClick={() => setDeletingTag(null)}>{t('cancel')}</button>
+        <button type="button" className="danger" disabled={disabled} onClick={handleConfirmDeleteTag}>{t('确认删除')}</button></div>
+    </Modal>}
     {tagManager && <Modal title="管理标签" className="tag-manager-dialog" close={() => {
       setTagManager(false);
       setEditingTag(null);
@@ -1854,16 +1906,20 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
               if (editingTag === tag) {
                 return (
                   <div key={tag} className="tag-manager-row editing" role="listitem">
-                    <input
-                      autoFocus
-                      maxLength={40}
-                      value={editingTagValue}
-                      onChange={(e) => setEditingTagValue(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') void handleSaveEditTag();
-                        if (e.key === 'Escape') setEditingTag(null);
-                      }}
-                    />
+                    <label className="tag-manager-edit-field">
+                      <span className={`tag-color-dot tag-color-${tagColorIndex(tag, book.tagColors)}`} aria-hidden="true" />
+                      <input
+                        autoFocus
+                        aria-label={t('重命名')}
+                        maxLength={40}
+                        value={editingTagValue}
+                        onChange={(e) => setEditingTagValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void handleSaveEditTag();
+                          if (e.key === 'Escape') setEditingTag(null);
+                        }}
+                      />
+                    </label>
                     <div className="tag-manager-row-actions">
                       <button className="primary" disabled={disabled || !editingTagValue.trim()} onClick={() => void handleSaveEditTag()}>{t('save')}</button>
                       <button onClick={() => setEditingTag(null)}>{t('cancel')}</button>
@@ -1899,7 +1955,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
               }
               return (
                 <div key={tag} className="tag-manager-row" role="listitem">
-                  <span className="tag-manager-badge">#{tag}</span>
+                  <span className="tag-manager-badge"><span className={`tag-color-dot tag-color-${tagColorIndex(tag, book.tagColors)}`} aria-hidden="true" /><span>{tag}</span><small>{book.tagCounts[tag] || ''}</small></span>
                   <div className="tag-manager-row-actions">
                     <button
                       type="button"

@@ -129,18 +129,18 @@ git commit -m "发布：EasyNote v0.4.4"
 | 首次运行 `setup.sh` 或 `dev.sh` | 新的本地管理员密码 | 交互式隐藏输入；仅保存验证器 |
 | `backup.sh --local`、`restore.sh --local`、`deploy.sh --check` | 无 Cloudflare 凭据 | 只操作本地资源；写操作仍要求确认 |
 | `reset-password.sh --local` | 新的本地账号密码 | 交互式选择账号并隐藏输入 |
-| `deploy.sh` | Cloudflare 自定义 API Token | 构建通过后隐藏输入，用于资源发现、创建和部署 |
+| `deploy.sh` | Cloudflare 自定义 API Token | 优先读取 `CLOUDFLARE_API_TOKEN`，缺失时在构建通过后隐藏输入，用于资源发现、创建和部署 |
 | `../reset.sh easynote --remote` | Cloudflare 自定义 API Token | 用户确认清空后隐藏输入，Token 仅用于本次进程 |
 | `backup.sh --remote`、`restore.sh --remote`、`reset-password.sh --remote` | Cloudflare 自定义 API Token | 每次运行重新隐藏输入 |
 | Codex `/mcp` | EasyNote AI 集成令牌 | 由已登录用户在应用内创建，与 Cloudflare Token 无关 |
 
-远程部署和维护使用一个具备所需权限、限定到目标账号的 Cloudflare 自定义 API Token。脚本在每次远程操作时通过终端隐藏读取 Token，其生命周期限定在本次运行。`wrangler.deploy.json` 以 `0600` 权限保存 Account ID、Worker 名和 D1/R2 资源标识。
+远程部署和维护使用一个具备所需权限、限定到目标账号的 Cloudflare 自定义 API Token。`deploy.sh` 优先从 `CLOUDFLARE_API_TOKEN` 读取，未设置时通过终端隐藏读取；Token 不写入配置文件。`wrangler.deploy.json` 以 `0600` 权限保存 Account ID、Worker 名和 D1/R2 资源标识。
 
 这些脚本入口都支持 `--help`，也可从任意目录通过脚本路径执行。端口已占用时会报错，不终止已有进程、不悄悄换端口。
 
 依赖按 `package-lock.json` 使用 `npm ci --include=dev` 安装；首次使用脚本，或依赖清单、锁文件、Node 主版本、系统架构变化时会重新安装，其余启动复用现有依赖。安装记录保存在 `node_modules` 内。Node.js 由用户预先安装，脚本负责版本检查和提示。
 
-账号初始化、生产部署、密码恢复和灾备写操作均在交互式终端执行，密码与 Token 输入保持隐藏。脚本保存盐和 PBKDF2/HMAC 验证器；`.dev.vars` 使用 `0600` 权限并按敏感文件管理。已有有效配置直接复用，配置异常时停止并提示。
+账号初始化、生产部署、密码恢复和灾备写操作均在交互式终端执行。密码与未通过环境提供的 Token 输入保持隐藏。脚本保存盐和 PBKDF2/HMAC 验证器；`.dev.vars` 使用 `0600` 权限并按敏感文件管理。已有有效配置直接复用，配置异常时停止并提示。
 
 首次会话请求根据初始化验证器创建管理员。管理员可在“设置 → 用户与注册”创建用户或开启审批式自助注册；重复执行 setup 会保留数据库中的已有账号密码。修改初始化文件后重启开发服务即可生效。
 
@@ -339,7 +339,7 @@ Custom Domain 要求根域名已在同一 Cloudflare 账号中变为 **Active**�
 
 ![EasyNote Cloudflare API Token 最小权限与资源范围](docs/img/cloudflare/cloudflare-api-token.svg)
 
-Token secret 只显示一次，应存入密码管理器。部署、远程备份、恢复和远程密码重置均通过终端隐藏输入同一个 Token，Token 生命周期限定在本次运行。
+Token secret 只显示一次，应存入密码管理器。部署可通过 `CLOUDFLARE_API_TOKEN` 注入，未提供时与远程备份、恢复和远程密码重置一样通过终端隐藏输入。Token 仅存在于当前进程环境，不写入项目配置。
 
 ### 4. 执行部署
 
@@ -347,7 +347,18 @@ Token secret 只显示一次，应存入密码管理器。部署、远程备份�
 bash deploy.sh
 ```
 
-脚本自动准备依赖、检查并构建，然后隐藏输入一次 API Token。首次部署时自动发现账号、询问 Worker 名和公开入口，检查同名资源、Active Zone、Routes 与 Custom Domain；输入 `deploy <Worker 名称>` 确认变更后，创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。
+部署脚本可通过环境变量注入三个交互值；任何未提供的值仍会在终端询问：
+
+```bash
+CLOUDFLARE_API_TOKEN='…' \
+EASYNOTE_DEPLOY_DOMAIN='note.example.com' \
+EASYNOTE_DEPLOY_CONFIRMATION='deploy easynote' \
+bash deploy.sh
+```
+
+`EASYNOTE_DEPLOY_DOMAIN` 设为空字符串或 `workers.dev` 表示使用 workers.dev。环境中的确认短语必须与目标 Worker 完全匹配，否则部署立即停止。
+
+脚本自动准备依赖、检查并构建，然后读取环境中的 API Token 或隐藏输入一次。首次部署时自动发现账号、询问 Worker 名和公开入口，检查同名资源、Active Zone、Routes 与 Custom Domain；输入 `deploy <Worker 名称>` 确认变更后，创建缺少的 D1、私有 R2 bucket 和账号级子域名，再执行 migrations、部署 Worker，并检查 `INITIAL_OWNER`：存在则保留，缺少才交互式初始化。公开入口和确认短语也可分别由 `EASYNOTE_DEPLOY_DOMAIN`、`EASYNOTE_DEPLOY_CONFIRMATION` 提供。
 
 - 后续部署自动复用已保存的 Worker、Account、D1 和 R2，并校验远端绑定一致。
 - 首次发现同名 D1 或 R2 时，必须明确确认它们专用于当前 EasyNote；已有同名 Worker 不会被接管。

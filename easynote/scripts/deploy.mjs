@@ -42,7 +42,11 @@ function ask(prompt, secret = false) {
   });
 }
 
-async function askExactConfirmation(phrase, action) {
+async function askExactConfirmation(phrase, action, provided) {
+  if (provided !== undefined) {
+    if (provided.trim() === phrase) return;
+    throw new Error(`EASYNOTE_DEPLOY_CONFIRMATION must be exactly "${phrase}".`);
+  }
   while (true) {
     process.stdout.write(`\nTo continue, type exactly:\n  \x1b[1m${phrase}\x1b[22m\n`);
     const answer = await ask('Confirmation: ');
@@ -161,9 +165,8 @@ async function main() {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error('An interactive terminal is required. Piped credentials are not supported.');
   }
-  if (['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY']
-    .some((name) => process.env[name])) {
-    throw new Error('Environment credentials are not accepted. Enter the API Token interactively.');
+  if (['CLOUDFLARE_API_KEY', 'CF_API_TOKEN', 'CF_API_KEY'].some((name) => process.env[name])) {
+    throw new Error('Use CLOUDFLARE_API_TOKEN for deployment environment credentials.');
   }
   const template = await loadConfig('wrangler.json');
   if (!template) throw new Error('wrangler.json is missing.');
@@ -179,12 +182,19 @@ async function main() {
     console.log(`Saved target: ${config.name} / ${config.account_id} / ${database.database_name} / ${bucket.bucket_name}`);
   }
 
-  const token = (await ask('Cloudflare API token (hidden, used only for this run): ', true)).trim();
+  const environmentToken = process.env.CLOUDFLARE_API_TOKEN?.trim();
+  const token = environmentToken ||
+    (await ask('Cloudflare API token (hidden, used only for this run): ', true)).trim();
   if (!token) throw new Error('A Cloudflare API Token is required.');
   const api = createCloudflareClient(token);
   const accountId = await selectAccount(api, existing?.account_id, ask);
   const workerName = existing?.name || (await ask(`Worker name [${template.name}]: `)).trim() || template.name;
-  const domain = await selectDeploymentDomain(existing, ask);
+  const environmentDomain = Object.hasOwn(process.env, 'EASYNOTE_DEPLOY_DOMAIN')
+    ? process.env.EASYNOTE_DEPLOY_DOMAIN.trim().toLowerCase()
+    : undefined;
+  const domain = environmentDomain === undefined
+    ? await selectDeploymentDomain(existing, ask)
+    : environmentDomain === 'workers.dev' ? '' : environmentDomain;
   config = deploymentConfig(template, existing, accountId, workerName, domain);
 
   console.log('Checking the deployment target and private storage...');
@@ -217,7 +227,11 @@ async function main() {
     url,
   }, null, 2));
 
-  await askExactConfirmation(`deploy ${config.name}`, 'create/update resources and apply migrations');
+  await askExactConfirmation(
+    `deploy ${config.name}`,
+    'create/update resources and apply migrations',
+    process.env.EASYNOTE_DEPLOY_CONFIRMATION?.trim() || undefined,
+  );
 
   const deployedUrl = await withProgress(
     'Preparing Cloudflare D1, R2 and public entrypoint',
