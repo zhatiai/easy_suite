@@ -78,7 +78,12 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
       (create && data.revision !== 0) || (!create && data.revision === 0)) {
     throw new ApiError(400, 'Invalid revision or operation ID.');
   }
-  const current = await loadNote(env, user.id, id);
+  // One D1 round trip for the current row and the purge tombstone.
+  const [currentResult, purgedResult] = await env.DB.batch([
+    env.DB.prepare('SELECT * FROM notes WHERE id=? AND user_id=?').bind(id, user.id),
+    env.DB.prepare('SELECT id FROM purged_notes WHERE id=?').bind(id),
+  ]);
+  const current = (currentResult.results as NoteRow[])[0] ?? null;
   if (data.folderId === undefined && current) input.folderId = current.folder_id;
   if (data.quick === undefined && current) input.quick = !!current.is_quick;
   if (input.folderId && !await env.DB.prepare('SELECT 1 FROM folders WHERE id=? AND user_id=?')
@@ -90,7 +95,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     if (current.mutation_hash !== hash) throw new ApiError(409, 'Operation ID reused with different content.');
     return json({ note: toNote(current) });
   }
-  if ((!create && !current) || await env.DB.prepare('SELECT id FROM purged_notes WHERE id=?').bind(id).first()) {
+  if ((!create && !current) || purgedResult.results.length) {
     throw new ApiError(410, 'This note no longer exists. Keep a new copy of your draft.');
   }
   if (current && (create || current.revision !== data.revision)) {
@@ -157,14 +162,14 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
       WHERE ${readyCondition}
         AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))
         AND NOT EXISTS(SELECT 1 FROM purged_notes WHERE id=?)
-        AND (SELECT COUNT(*) FROM notes WHERE user_id=?)<?`)
+        AND (SELECT COUNT(*) FROM notes WHERE user_id=?)<? RETURNING *`)
       .bind(id, user.id, ...fields, time, time, revision, mutation, hash, ...readyBinds,
         input.folderId, input.folderId, user.id, id, user.id, numberSetting(env, 'MAX_NOTES', 1, 10000)));
   } else {
     statements.push(env.DB.prepare(`UPDATE notes SET title=?,content=?,dedup_hash=?,tags=?,pinned=?,is_quick=?,archived=?,folder_id=?,deleted_at=?,
       updated_at=?,revision=?,mutation_id=?,mutation_hash=?
       WHERE id=? AND user_id=? AND revision=? AND ${readyCondition}
-        AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?))`)
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM folders WHERE id=? AND user_id=?)) RETURNING *`)
       .bind(...fields, time, revision, mutation, hash, id, user.id, data.revision, ...readyBinds,
         input.folderId, input.folderId, user.id));
   }
@@ -202,17 +207,19 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
     (SELECT MAX(sequence) FROM note_changes WHERE user_id=? AND note_id=?) AND ${guard}`)
     .bind(user.id, id, user.id, id, ...guardBinds));
   const result = await env.DB.batch(statements);
-  const saved = await loadNote(env, user.id, id);
-  if (!result[0].meta.changes) {
+  // The first statement's RETURNING row is the saved note; nothing later in the batch writes notes.
+  const written = (result[0].results as NoteRow[])[0];
+  if (!written) {
     if (create && isBlank(input)) {
       const blank = await loadBlank(env, user.id, input.folderId);
       if (blank) return json({ note: toNote(blank), reused: true });
     }
-    if (saved) throw new ApiError(409, 'The note changed on another device.', { current: toNote(saved) });
+    const latest = await loadNote(env, user.id, id);
+    if (latest) throw new ApiError(409, 'The note changed on another device.', { current: toNote(latest) });
     throw new ApiError(409, 'An image is unavailable, the note was purged, or the note limit was reached.');
   }
   await publishNoteChanges(env, user.id, request);
-  return json({ note: toNote(saved!) }, create ? 201 : 200);
+  return json({ note: toNote(written) }, create ? 201 : 200);
 }
 
 export async function noteRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
