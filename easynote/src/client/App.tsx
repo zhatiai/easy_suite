@@ -1960,7 +1960,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         </div>
       </header>
       {!dialogFeedbackTarget && errorFeedback}
-      {folderOverview ? <FolderOverview
+      {folderOverview ? <div className="workspace-body"><FolderOverview
         folder={folderOverview}
         folders={book.folders}
         explorerFolders={book.explorerFolders}
@@ -1974,7 +1974,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         shareFolder={(folder) => setSharingFolder(folder)}
         copyFolderPath={copyFolderPath}
         copyFolderId={copyFolderId}
-      /> : note ? <>
+      /></div> : note ? <>
         {note.deletedAt && <div className="trash-banner"><span>{t('已移入回收站')}</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>{t('delete_permanently')}</button></div>}
         <div className="workspace-body">
           <div className={`document-scroll ${hasEmbeddedDocs ? 'has-embedded-doc-scroll' : ''}`}>

@@ -3513,6 +3513,38 @@ test('supports uploading files to a folder from folder menu and folder overview'
   const folderOverview = page.locator('.folder-overview');
   await expect(folderOverview).toBeVisible();
 
+  // Verify responsive toolbar is fully visible at top and action buttons do not wrap vertically
+  await page.setViewportSize({ width: 1024, height: 639 });
+  const toolbarBox = await page.locator('.workspace-toolbar').boundingBox();
+  expect(toolbarBox).not.toBeNull();
+  expect(toolbarBox!.y).toBeGreaterThanOrEqual(0);
+  expect(toolbarBox!.height).toBe(48);
+
+  const headingBox = await folderOverview.locator('.folder-overview-heading h1').boundingBox();
+  expect(headingBox).not.toBeNull();
+  expect(headingBox!.height).toBeLessThanOrEqual(42);
+
+  const actionButtons = folderOverview.locator('.folder-overview-actions button');
+  const actionCount = await actionButtons.count();
+  for (let i = 0; i < actionCount; i++) {
+    const btnBox = await actionButtons.nth(i).boundingBox();
+    expect(btnBox).not.toBeNull();
+    expect(btnBox!.height).toBeLessThanOrEqual(38);
+  }
+  await page.screenshot({ path: 'test-results/folder-overview-1024x639.png' });
+
+  // Verify at wider viewport (1440x960), buttons and heading fit with no wrapping
+  await page.setViewportSize({ width: 1440, height: 960 });
+  const wideHeadingBox = await folderOverview.locator('.folder-overview-heading h1').boundingBox();
+  expect(wideHeadingBox).not.toBeNull();
+  expect(wideHeadingBox!.height).toBeLessThanOrEqual(42);
+  for (let i = 0; i < actionCount; i++) {
+    const btnBox = await actionButtons.nth(i).boundingBox();
+    expect(btnBox).not.toBeNull();
+    expect(btnBox!.height).toBeLessThanOrEqual(38);
+  }
+  await page.screenshot({ path: 'test-results/folder-overview-1440x960.png' });
+
   // 4. Test "上传文件" button exists in folder overview header
   const overviewUploadBtn = folderOverview.getByRole('button', { name: '上传文件' });
   await expect(overviewUploadBtn).toBeVisible();

@@ -75,16 +75,18 @@ export function FolderOverview(props: FolderOverviewProps) {
     <div className="folder-overview-scroll">
       <div className="folder-overview-content">
         <header className="folder-overview-header">
-          <FolderOpen size={34} />
-          <h1 id="folder-overview-title">{props.folder.name}</h1>
+          <div className="folder-overview-heading">
+            <FolderOpen size={32} />
+            <h1 id="folder-overview-title" title={props.folder.name}>{props.folder.name}</h1>
+          </div>
           {(props.createChild || props.createNoteIn || props.uploadFileTo || props.moveFolder || props.shareFolder || props.copyFolderPath || props.copyFolderId) && <div className="folder-overview-actions">
-            {props.createChild && <button type="button" className="secondary" onClick={() => props.createChild?.(props.folder.id)}><FolderPlus size={15} />{t('新建子文件夹')}</button>}
-            {props.uploadFileTo && <button type="button" className="secondary" onClick={() => props.uploadFileTo?.(props.folder.id)}><Upload size={15} />{t('上传文件')}</button>}
-            {props.moveFolder && <button type="button" className="secondary" onClick={() => props.moveFolder?.(props.folder)}><FolderInput size={15} />{t('移动文件夹')}</button>}
-            {props.shareFolder && <button type="button" className="secondary" onClick={() => props.shareFolder?.(props.folder)}><Share2 size={15} />{t('分享文件夹')}</button>}
-            {props.copyFolderPath && <button type="button" className="secondary" onClick={() => props.copyFolderPath?.(props.folder)}><Copy size={15} />{t('复制路径')}</button>}
-            {props.copyFolderId && <button type="button" className="secondary" onClick={() => props.copyFolderId?.(props.folder)}><Copy size={15} />{t('复制 ID')}</button>}
-            {props.createNoteIn && <button type="button" className="primary" onClick={() => props.createNoteIn?.(props.folder.id)}><Plus size={15} />{t('new_note')}</button>}
+            {props.createChild && <button type="button" className="secondary folder-action-primary" aria-label={t('新建子文件夹')} data-tooltip={t('新建子文件夹')} onClick={() => props.createChild?.(props.folder.id)}><FolderPlus size={15} /><span className="folder-action-text">{t('新建子文件夹')}</span></button>}
+            {props.uploadFileTo && <button type="button" className="secondary folder-action-primary" aria-label={t('上传文件')} data-tooltip={t('上传文件')} onClick={() => props.uploadFileTo?.(props.folder.id)}><Upload size={15} /><span className="folder-action-text">{t('上传文件')}</span></button>}
+            {props.moveFolder && <button type="button" className="secondary folder-action-secondary" aria-label={t('移动文件夹')} data-tooltip={t('移动文件夹')} onClick={() => props.moveFolder?.(props.folder)}><FolderInput size={15} /><span className="folder-action-text">{t('移动文件夹')}</span></button>}
+            {props.shareFolder && <button type="button" className="secondary folder-action-secondary" aria-label={t('分享文件夹')} data-tooltip={t('分享文件夹')} onClick={() => props.shareFolder?.(props.folder)}><Share2 size={15} /><span className="folder-action-text">{t('分享文件夹')}</span></button>}
+            {props.copyFolderPath && <button type="button" className="secondary folder-action-secondary" aria-label={t('复制路径')} data-tooltip={t('复制路径')} onClick={() => props.copyFolderPath?.(props.folder)}><Copy size={15} /><span className="folder-action-text">{t('复制路径')}</span></button>}
+            {props.copyFolderId && <button type="button" className="secondary folder-action-secondary" aria-label={t('复制 ID')} data-tooltip={t('复制 ID')} onClick={() => props.copyFolderId?.(props.folder)}><Copy size={15} /><span className="folder-action-text">{t('复制 ID')}</span></button>}
+            {props.createNoteIn && <button type="button" className="primary folder-action-primary" aria-label={t('new_note')} data-tooltip={t('new_note')} onClick={() => props.createNoteIn?.(props.folder.id)}><Plus size={15} /><span className="folder-action-text">{t('new_note')}</span></button>}
           </div>}
         </header>
         <dl className="folder-overview-meta">
