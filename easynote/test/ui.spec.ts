@@ -70,7 +70,14 @@ test('nested folders create notes, move notes, and keep notes on deletion', asyn
   const parent = `项目-${suffix}`;
   const child = `资料-${suffix}`;
   await page.goto('/');
-  await page.getByRole('button', { name: '新建文件夹', exact: true }).click();
+  const explorerCreateFolder = page.locator('.explorer-header').getByRole('button', { name: '新建文件夹' });
+  await expect(explorerCreateFolder).toBeVisible();
+  const sidebarCreateFolder = page.locator('.navigation-rail').getByRole('button', { name: '新建文件夹', exact: true });
+  await expect(sidebarCreateFolder).toBeVisible();
+  await explorerCreateFolder.click();
+  const rootFolderDialog = page.getByRole('dialog');
+  await expect(rootFolderDialog.getByRole('heading', { name: '新建文件夹' })).toBeVisible();
+  await expect(rootFolderDialog.getByRole('combobox', { name: '上级文件夹' })).toHaveValue('');
   await page.getByRole('textbox', { name: '文件夹名称' }).fill(parent);
   await page.getByRole('button', { name: '保存', exact: true }).click();
 
@@ -113,6 +120,33 @@ test('nested folders create notes, move notes, and keep notes on deletion', asyn
   await expect(folderPopover).toBeHidden();
   await expect(folderPicker.locator('.folder-picker-summary')).toContainText(parent);
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  const sidebarParent = page.locator('.navigation-rail .folder-nav').getByRole('button', { name: new RegExp(parent) });
+  await sidebarParent.click();
+  await expect(page.locator('.explorer-header h1')).toHaveText(parent);
+  const headerCreateFolder = page.locator('.explorer-header').getByRole('button', { name: '新建子文件夹' });
+  await expect(headerCreateFolder).toBeVisible();
+  await expect(page.locator('.explorer-header').getByRole('button', { name: '新建文件夹' })).toHaveCount(0);
+  await headerCreateFolder.click();
+  const subfolderDialog = page.getByRole('dialog');
+  await expect(subfolderDialog.getByRole('heading', { name: '新建子文件夹' })).toBeVisible();
+  await expect(subfolderDialog.getByRole('combobox', { name: '上级文件夹' })).toHaveValue(/.+/);
+  const headerChild = `顶栏子目录-${suffix}`;
+  await subfolderDialog.getByRole('textbox', { name: '文件夹名称' }).fill(headerChild);
+  await subfolderDialog.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('.folder-tree-row').filter({ hasText: headerChild }).first()).toBeVisible();
+
+  await parentRow.locator('.folder-tree-select').click();
+  const folderOverview = page.locator('.folder-overview');
+  await expect(folderOverview).toBeVisible();
+  const overviewCreateChild = folderOverview.getByRole('button', { name: '新建子文件夹' });
+  await expect(overviewCreateChild).toBeVisible();
+  await overviewCreateChild.click();
+  await expect(page.getByRole('dialog').getByRole('heading', { name: '新建子文件夹' })).toBeVisible();
+  const overviewChild = `概览子目录-${suffix}`;
+  await page.getByRole('textbox', { name: '文件夹名称' }).fill(overviewChild);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.locator('.folder-tree-row').filter({ hasText: overviewChild }).first()).toBeVisible();
 
   await parentRow.getByLabel('文件夹操作').click();
   await parentRow.getByRole('menuitem', { name: '删除文件夹' }).click();
@@ -177,15 +211,15 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await expect(folderMenu).toBeHidden();
   await expect(sourceRow.getByLabel('文件夹操作')).toBeFocused();
   await sourceRow.getByLabel('文件夹操作').click();
-  await expect(folderMenu.getByRole('menuitem')).toHaveText(['新建文件夹', '新建文件', '删除文件夹', '合并文件到...']);
+  await expect(folderMenu.getByRole('menuitem')).toHaveText(['新建文件夹', '新建文件', '移动文件夹', '分享文件夹', '复制路径', '复制 ID', '删除文件夹', '合并文件到...']);
   await expect(folderMenu.getByRole('menuitem', { name: '重命名文件夹' })).toHaveCount(0);
   const [menuBox, menuTriggerBox] = await Promise.all([folderMenu.boundingBox(), sourceRow.getByLabel('文件夹操作').boundingBox()]);
   expect(menuBox).not.toBeNull();
   expect(menuTriggerBox).not.toBeNull();
   expect(menuBox!.width).toBeGreaterThanOrEqual(183);
   expect(menuBox!.width).toBeLessThanOrEqual(185);
-  expect(menuBox!.height).toBeGreaterThanOrEqual(180);
-  expect(menuBox!.height).toBeLessThanOrEqual(192);
+  expect(menuBox!.height).toBeGreaterThanOrEqual(340);
+  expect(menuBox!.height).toBeLessThanOrEqual(370);
   expect(Math.abs(menuBox!.x - (menuTriggerBox!.x - 10))).toBeLessThanOrEqual(1);
   expect(menuBox!.y).toBeGreaterThan(menuTriggerBox!.y);
   await page.screenshot({ path: 'test-results/folder-tree-menu-context.png' });
@@ -302,6 +336,18 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await tagMenu.getByRole('menuitem', { name: '设置颜色' }).click();
   await page.screenshot({ path: 'test-results/tag-action-menu-context.png' });
   await tagMenu.screenshot({ path: 'test-results/tag-action-menu.png' });
+  const dividerBox = await page.locator('.navigation-divider').boundingBox();
+  const renameBox = await tagMenu.getByRole('menuitem', { name: '重命名' }).boundingBox();
+  if (dividerBox && renameBox) {
+    const dividerIntersectionX = dividerBox.x + dividerBox.width / 2;
+    if (dividerIntersectionX >= renameBox.x && dividerIntersectionX <= renameBox.x + renameBox.width) {
+      const isTopElement = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return el?.closest('.tag-action-popover') !== null;
+      }, { x: dividerIntersectionX, y: renameBox.y + renameBox.height / 2 });
+      expect(isTopElement).toBe(true);
+    }
+  }
   await tagMenu.getByRole('button', { name: '设置颜色 5' }).click();
   await expect(tagRow.locator('.tag-color-dot')).toHaveClass(/tag-color-4/);
   await page.reload();
@@ -344,6 +390,117 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await page.setViewportSize({ width: 390, height: 844 });
   await targetRow.getByLabel('文件夹操作').click();
   await page.locator('.notebook-explorer').screenshot({ path: 'test-results/folder-tree-mobile.png' });
+});
+
+test('move actions move notes and folders to target destinations', async ({ page }) => {
+  const suffix = randomUUID().slice(0, 8);
+  const folderAId = randomUUID();
+  const folderBId = randomUUID();
+  const folderAName = `目录A-${suffix}`;
+  const folderBName = `目录B-${suffix}`;
+  const noteTitle1 = `移动笔记1-${suffix}`;
+  const noteTitle2 = `移动笔记2-${suffix}`;
+  const note1Id = randomUUID();
+  const note2Id = randomUUID();
+
+  for (const data of [
+    { id: folderAId, name: folderAName, parentId: null },
+    { id: folderBId, name: folderBName, parentId: null },
+  ]) expect((await page.request.post('/api/folders', { headers, data })).status()).toBe(201);
+
+  expect((await page.request.post(`/api/notes/${note1Id}`, {
+    headers,
+    data: { title: noteTitle1, content: '笔记1内容', tags: [], pinned: false, archived: false, folderId: null, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+
+  expect((await page.request.post(`/api/notes/${note2Id}`, {
+    headers,
+    data: { title: noteTitle2, content: '笔记2内容', tags: [], pinned: false, archived: false, folderId: null, deletedAt: null, revision: 0, operationId: randomUUID() },
+  })).status()).toBe(201);
+
+  await page.setViewportSize({ width: 1447, height: 1087 });
+  await page.goto('/');
+
+  // 1. Move a single note via Note Action Menu (popover)
+  const noteRow1 = page.locator('.explorer-note-item').filter({ hasText: noteTitle1 }).first();
+  await expect(noteRow1).toBeVisible();
+  await noteRow1.getByLabel('更多笔记操作').click();
+  const noteMenu = page.getByRole('menu', { name: '笔记操作' });
+  await expect(noteMenu).toBeVisible();
+  await noteMenu.getByRole('menuitem', { name: '移动到文件夹' }).click();
+
+  const moveNoteDialog = page.getByRole('dialog');
+  await expect(moveNoteDialog.getByRole('heading', { name: '移动到文件夹' })).toBeVisible();
+  await expect(moveNoteDialog).toContainText(`将笔记“${noteTitle1}”移动到目标文件夹：`);
+  await moveNoteDialog.locator('.folder-picker-row').filter({ hasText: folderAName }).click();
+  await moveNoteDialog.screenshot({ path: 'test-results/move-note-dialog.png' });
+  await moveNoteDialog.getByRole('button', { name: '移动', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText(`已移动到文件夹“${folderAName}”`);
+
+  // Verify note1 is now in Folder A
+  await expect(page.locator('.folder-children .explorer-note-item').filter({ hasText: noteTitle1 })).toBeVisible();
+
+  // 2. Move a folder (folderB into folderA)
+  const folderBRow = page.locator('.folder-tree-row').filter({ hasText: folderBName }).first();
+  await folderBRow.getByLabel('文件夹操作').click();
+  const folderBMenu = folderBRow.getByRole('menu');
+  await folderBMenu.getByRole('menuitem', { name: '移动文件夹' }).click();
+
+  const moveFolderDialog = page.getByRole('dialog');
+  await expect(moveFolderDialog.getByRole('heading', { name: '移动文件夹到' })).toBeVisible();
+  await expect(moveFolderDialog).toContainText(`将文件夹“${folderBName}”移动到目标文件夹：`);
+  await moveFolderDialog.locator('.folder-picker-row').filter({ hasText: folderAName }).click();
+  await moveFolderDialog.getByRole('button', { name: '移动', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText(`文件夹“${folderBName}”已移动到“${folderAName}”`);
+
+  // Verify folderB is now nested inside folderA
+  await expect(page.locator('.folder-children .folder-tree-row').filter({ hasText: folderBName })).toBeVisible();
+  await noteRow1.getByLabel('更多笔记操作').click();
+  await page.getByRole('menu', { name: '笔记操作' }).getByRole('menuitem', { name: '移动到文件夹' }).click();
+  const nestedMoveDialog = page.getByRole('dialog');
+  // Folders are collapsed by default: nested folderB is not visible until folderA is expanded
+  await expect(nestedMoveDialog.locator('.folder-picker-row').filter({ hasText: folderBName })).not.toBeVisible();
+  const folderARowInDialog = nestedMoveDialog.locator('.folder-picker-row').filter({ hasText: folderAName });
+  await folderARowInDialog.getByLabel('展开文件夹').click();
+  await expect(nestedMoveDialog.locator('.folder-picker-row').filter({ hasText: folderBName })).toBeVisible();
+  await nestedMoveDialog.screenshot({ path: 'test-results/move-nested-tree-dialog.png' });
+  await nestedMoveDialog.getByRole('button', { name: '取消' }).click();
+
+  // 3. Move folderB back to root
+  const nestedFolderBRow = page.locator('.folder-children .folder-tree-row').filter({ hasText: folderBName }).first();
+  await nestedFolderBRow.getByLabel('文件夹操作').click();
+  const nestedFolderBMenu = nestedFolderBRow.getByRole('menu');
+  await nestedFolderBMenu.getByRole('menuitem', { name: '移动文件夹' }).click();
+  const moveBackDialog = page.getByRole('dialog');
+  await moveBackDialog.locator('.folder-picker-row').filter({ hasText: '根目录' }).click();
+  await moveBackDialog.getByRole('button', { name: '移动', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText(`文件夹“${folderBName}”已移动到“根目录”`);
+
+  // 4. Move note via workspace toolbar
+  await noteRow1.click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(noteTitle1);
+  const toolbarMove = page.locator('.workspace-toolbar').getByLabel('移动到文件夹');
+  await expect(toolbarMove).toBeVisible();
+  await toolbarMove.click();
+  const toolbarMoveDialog = page.getByRole('dialog');
+  await expect(toolbarMoveDialog.getByRole('heading', { name: '移动到文件夹' })).toBeVisible();
+  await toolbarMoveDialog.screenshot({ path: 'test-results/move-nested-folder-dialog.png' });
+  await toolbarMoveDialog.locator('.folder-picker-row').filter({ hasText: folderBName }).click();
+  await toolbarMoveDialog.getByRole('button', { name: '移动', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText(`已移动到文件夹“${folderBName}”`);
+
+  // 5. Bulk move note
+  await page.locator('.explorer-header').getByLabel('批量选择').click();
+  const noteRow2 = page.locator('.explorer-note-item').filter({ hasText: noteTitle2 }).first();
+  await noteRow2.click();
+  const bulkToolbar = page.locator('.bulk-toolbar');
+  await expect(bulkToolbar).toBeVisible();
+  await bulkToolbar.getByRole('button', { name: '移动' }).click();
+  const bulkMoveDialog = page.getByRole('dialog');
+  await expect(bulkMoveDialog.getByRole('heading', { name: '移动到文件夹' })).toBeVisible();
+  await bulkMoveDialog.locator('.folder-picker-row').filter({ hasText: folderBName }).click();
+  await bulkMoveDialog.getByRole('button', { name: '移动', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText(`已移动到文件夹“${folderBName}”`);
 });
 
 test('light background variants persist independently from dark appearance', async ({ page }) => {
@@ -927,8 +1084,11 @@ test('notes open in preview and expose live or Markdown editing modes only while
 test('quick notes publish Markdown, edit rendered text, filter, sort and switch layouts', async ({ page }) => {
   const taggedId = randomUUID();
   const folderId = randomUUID();
+  const childFolderId = randomUUID();
   const folderName = `小记归档-${folderId.slice(0, 6)}`;
+  const childFolderName = `小记子目录-${childFolderId.slice(0, 6)}`;
   expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  expect((await page.request.post('/api/folders', { headers, data: { id: childFolderId, name: childFolderName, parentId: folderId } })).status()).toBe(201);
   expect((await page.request.post(`/api/notes/${taggedId}`, {
     headers,
     data: {
@@ -1051,7 +1211,17 @@ test('quick notes publish Markdown, edit rendered text, filter, sort and switch 
   await page.screenshot({ path: 'test-results/quick-notes-mobile-feed.png', fullPage: true });
   await createdCard.getByLabel('更多小记操作').click();
   await page.getByRole('menuitem', { name: '移动到文件夹', exact: true }).click();
-  await page.getByRole('group', { name: '选择文件夹' }).getByRole('menuitem', { name: folderName }).click();
+  const folderGroup = page.getByRole('group', { name: '选择文件夹' });
+  // Nested child folder should be collapsed by default
+  await expect(folderGroup.getByRole('menuitem', { name: childFolderName })).not.toBeVisible();
+  // Click expand button on parent folder
+  const parentFolderRow = folderGroup.locator('.folder-picker-row').filter({ hasText: folderName });
+  await parentFolderRow.getByLabel('展开文件夹').click();
+  // Child folder is now visible
+  await expect(folderGroup.getByRole('menuitem', { name: childFolderName })).toBeVisible();
+  await page.screenshot({ path: 'test-results/quick-notes-folder-tree.png' });
+  // Click child folder to move note into it
+  await folderGroup.getByRole('menuitem', { name: childFolderName }).click();
   await expect(createdCard).toHaveCount(0);
 });
 
@@ -2774,3 +2944,674 @@ test('account security changes the password and logs out every device', async ({
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
 });
+
+test('live markdown editor renders interactive table and supports adding rows, columns, and deleting', async ({ page }) => {
+  const title = `表格测试-${randomUUID().slice(0, 6)}`;
+  const tableContent = [
+    '# 测试表格',
+    '',
+    '| 维度 | EvokeAgent 的职责边界 |',
+    '|---|---|',
+    '| 谁理解任务 | Upper / Host Agent |',
+    '| 谁管理契约 | EvokeAgent Runtime Core |',
+  ].join('\n');
+
+  page.on('console', (msg) => console.log('PAGE CONSOLE:', msg.text()));
+  page.on('pageerror', (err) => console.log('PAGE ERROR:', err.message));
+  await page.goto('/');
+  await newNote(page, title, tableContent);
+
+  const tableContainer = page.locator('.cm-live-table-container');
+  await expect(tableContainer).toBeVisible();
+  const table = page.locator('.cm-live-table');
+  await expect(table).toBeVisible();
+
+  const headers = table.locator('thead th .cm-live-table-header-input');
+  await expect(headers).toHaveCount(2);
+  await expect(headers.nth(0)).toHaveValue('维度');
+  await expect(headers.nth(1)).toHaveValue('EvokeAgent 的职责边界');
+
+  const rows = table.locator('tbody tr');
+  await expect(rows).toHaveCount(2);
+
+  const addRowBtn = page.getByRole('button', { name: '新增行' });
+  await addRowBtn.click();
+  await expect(table.locator('tbody tr')).toHaveCount(3);
+
+  const addColBtn = page.getByRole('button', { name: '新增列' });
+  await addColBtn.click();
+  await expect(table.locator('thead th .cm-live-table-header-input')).toHaveCount(3);
+
+  const delColBtns = table.locator('.cm-live-table-col-del');
+  await table.locator('thead th').nth(2).hover();
+  await delColBtns.last().click();
+  await expect(table.locator('thead th .cm-live-table-header-input')).toHaveCount(2);
+
+  const delRowBtns = table.locator('.cm-live-table-row-del-btn');
+  await table.locator('tbody tr').last().hover();
+  await delRowBtns.last().click();
+  await expect(table.locator('tbody tr')).toHaveCount(2);
+
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const previewTable = page.locator('.document .markdown table');
+  await expect(previewTable).toBeVisible();
+  await expect(previewTable.locator('th')).toHaveCount(2);
+
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  await page.getByRole('button', { name: 'MD 语法' }).click();
+  await expect(page.locator('.source-markdown-editor')).toBeVisible();
+  await expect(page.locator('.cm-live-table')).toHaveCount(0);
+});
+
+test('renders mathematical formulas and symbols in preview and live editing', async ({ page }) => {
+  const title = `数学公式测试-${randomUUID().slice(0, 6)}`;
+  const mathContent = [
+    '# 计算机与AI核心数学知识图谱',
+    '',
+    '在进入正文前，我们先扫清符号障碍。行内公式测试：$x \\in \\mathbb{R}^d$ 以及维度 $d=4096$。',
+    '',
+    '$$',
+    '\\sum_{i=1}^{n} x_i',
+    '$$',
+    '',
+    '| 符号 | 名称/读法 | 数学含义 |',
+    '|---|---|---|',
+    '| $\\sum_{i=1}^{n} x_i$ | 求和 (Sigma) | $x_1 + x_2 + \\dots + x_n$ |',
+    '| $W \\in \\mathbb{R}^{m \\times n}$ | 实数矩阵空间 | $W$ 是一个 $m$ 行 $n$ 列的矩阵 |',
+    '',
+  ].join('\n');
+
+  await page.goto('/');
+  await newNote(page, title, mathContent);
+
+  // 1. Live mode checks
+  const table = page.locator('.cm-live-table');
+  await expect(table).toBeVisible();
+  const mathPreviews = table.locator('.cm-live-table-cell-math-preview');
+  await expect(mathPreviews.first()).toBeVisible();
+  await expect(table.locator('.katex').first()).toBeVisible();
+
+  const liveInlineMath = page.locator('.cm-live-math-inline');
+  await expect(liveInlineMath.first()).toBeVisible();
+  const liveBlockMath = page.locator('.cm-live-math-block');
+  await expect(liveBlockMath).toBeVisible();
+
+  // 2. Switch to Preview mode
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const doc = page.locator('.document .markdown');
+  await expect(doc).toBeVisible();
+
+  const previewTable = doc.locator('table');
+  await expect(previewTable).toBeVisible();
+  // Row 1 has 2 formulas (\sum, \dots), Row 2 has 4 formulas (W \in ..., W, m, n)
+  await expect(previewTable.locator('.katex')).toHaveCount(6);
+
+  const displayWrapper = doc.locator('.katex-display-wrapper');
+  await expect(displayWrapper).toBeVisible();
+  await expect(displayWrapper.locator('.katex-display')).toBeVisible();
+
+  const inlineWrappers = doc.locator('.katex-inline-wrapper');
+  await expect(inlineWrappers.first()).toBeVisible();
+
+  // 3. Switch to MD syntax mode
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  await page.getByRole('button', { name: 'MD 语法' }).click();
+  await expect(page.locator('.source-markdown-editor')).toBeVisible();
+  await expect(page.locator('.cm-content')).toContainText('\\sum_{i=1}^{n} x_i');
+});
+
+test('copies note markdown content from toolbar and command palette', async ({ page }) => {
+  await page.addInitScript(() => {
+    let copiedText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => { copiedText = value; },
+        readText: async () => copiedText,
+      },
+    });
+  });
+
+  const title = `复制测试-${randomUUID().slice(0, 6)}`;
+  const markdown = '# 标题\n\n- [ ] 待办项目\n\n这是包含 **粗体** 的段落内容。';
+
+  await page.goto('/');
+  await newNote(page, title, markdown);
+
+  const copyButton = page.getByRole('button', { name: '复制 Markdown 内容' });
+  await expect(copyButton).toBeVisible();
+  await expect(copyButton).toBeEnabled();
+
+  await copyButton.click();
+  const copyToast = page.locator('.toolbar-copy-toast');
+  await expect(copyToast).toBeVisible();
+  await expect(copyToast).toHaveText('已复制 Markdown 内容');
+  const buttonBox = await copyButton.boundingBox();
+  const toastBox = await copyToast.boundingBox();
+  expect(buttonBox && toastBox).toBeTruthy();
+  expect(Math.abs((toastBox!.x + toastBox!.width / 2) - (buttonBox!.x + buttonBox!.width / 2))).toBeLessThanOrEqual(5);
+  expect(toastBox!.y).toBeGreaterThan(buttonBox!.y);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(markdown);
+
+  // Clear clipboard and test via command palette
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('');
+
+  await page.keyboard.press('Meta+k');
+  const palette = page.getByRole('dialog');
+  await expect(palette.getByRole('heading', { name: '快速跳转' })).toBeVisible();
+  await palette.getByLabel('快速跳转搜索').fill('复制');
+  const paletteCopyButton = palette.getByRole('button', { name: '复制 Markdown 内容' });
+  await expect(paletteCopyButton).toBeVisible();
+  await paletteCopyButton.click();
+
+  await expect(page.locator('.toast')).toHaveText('已复制 Markdown 内容');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(markdown);
+
+  // 3. Mobile actions dialog
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileDialog = await openMobileNoteActions(page);
+  const mobileCopyButton = mobileDialog.getByRole('button', { name: '复制 Markdown 内容' });
+  await expect(mobileCopyButton).toBeVisible();
+  await mobileCopyButton.click();
+  await expect(page.locator('.toast')).toHaveText('已复制 Markdown 内容');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(markdown);
+});
+
+test('exports PDF with mathematical formulas rendered properly', async ({ page }) => {
+  const title = `数学PDF-${randomUUID().slice(0, 6)}`;
+  const content = [
+    '# 技术论文高频数学符号',
+    '',
+    '| 符号 | 名称/读法 |',
+    '| --- | --- |',
+    '| $\\sum_{i=1}^n x_i$ | 求和 (Sigma) |',
+    '| $\\prod_{i=1}^n x_i$ | 求积 (Pi) |',
+    '| $W \\in \\mathbb{R}^{m \\times n}$ | 实数矩阵空间 |',
+    '',
+    '## 1.2 链式法则（Chain Rule）',
+    '',
+    '承接关系：有了梯度下降，我们知道需要求偏导数；但深度神经网络是几十层函数层层嵌套的复合函数，如何高效求出最里面一层的偏导数？这就需要链式法则。',
+    '',
+    '1. 是什么（定义与直觉理解）',
+    '',
+    '* **数学定义**：若 $z = f(y)$ 且 $y = g(x)$，即 $z = f(g(x))$，则 $z$ 对 $x$ 的导数为：',
+    '  $$\\frac{dz}{dx} = \\frac{dz}{dy} \\cdot \\frac{dy}{dx}$$',
+    '* 直觉理解：齿轮传动效应。如果齿轮 A 转 1 圈带动齿轮 B 转 2 圈 ($\\frac{dy}{dx} = 2$)，齿轮 B 转 1 圈带动齿轮 C 转 3 圈 ($\\frac{dz}{dy} = 3$)，那么齿轮 A 转 1 圈就会带动齿轮 C 转 $2 \\times 3 = 6$ 圈。误差和敏感度是一层一层相乘传递的。',
+    '',
+    '将深度神经网络看作多层复合函数 $L = f_n(f_{n-1}(\\dots f_1(x)\\dots))$。',
+    '利用链式法则，从最后的损失值 $L$ 开始，从后往前逐层计算局部导数并相乘，复用中间计算结果（动态规划思想）。这在计算机中被称为反向传播算法（Backpropagation, BP）。',
+    '',
+    '$$',
+    '\\int_{-\\infty}^{\\infty} e^{-x^2} dx = \\sqrt{\\pi}',
+    '$$',
+  ].join('\n');
+
+  page.on('console', (msg) => console.log('PAGE_LOG:', msg.text()));
+  await page.goto('/');
+  await newNote(page, title, content);
+
+  await page.getByRole('button', { name: '导出当前笔记为 PDF' }).click();
+  const exportDialog = page.getByRole('dialog');
+  await expect(exportDialog.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
+  const preview = exportDialog.getByRole('region', { name: 'PDF 分页预览' });
+  const previewImage = preview.getByRole('img', { name: 'PDF 第 1 页' });
+  await expect(previewImage).toBeVisible({ timeout: 25_000 });
+  await exportDialog.screenshot({ path: 'test-results/math-pdf-dialog.png' });
+
+  const downloadPromise = page.waitForEvent('download');
+  await exportDialog.getByRole('button', { name: '导出 PDF' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(`${title}.pdf`);
+  const downloadedPath = await download.path();
+  expect(downloadedPath).toBeTruthy();
+  const pdfBytes = await readFile(downloadedPath!);
+  expect(pdfBytes.length).toBeGreaterThan(1000);
+
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
+  expect(doc.numPages).toBeGreaterThanOrEqual(1);
+  const firstPage = await doc.getPage(1);
+  const textContent = await firstPage.getTextContent();
+  const compactText = textContent.items.map((it: any) => it.str).join('').replace(/\s+/g, '');
+  expect(compactText).toContain('技术论文高频数学符号');
+  expect(compactText).toContain('求和(Sigma)');
+  expect(compactText).toContain('数学定义：若z=f(y)且y=g(x)，即z=f(g(x))，则z对x的导数为：');
+  expect(compactText).toContain('dy/dx=2');
+  expect(compactText).toContain('2×3=6');
+  expect(compactText).toContain('L=fn(fn−1(');
+});
+
+test('exports full ai.md document with complex formulas to PDF', async ({ page }) => {
+  const aiMdPath = '/Users/loner/Downloads/ai.md';
+  let content = '';
+  try {
+    content = await readFile(aiMdPath, 'utf8');
+  } catch {
+    return;
+  }
+  const title = `AI完整论文-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, content);
+
+  await page.getByRole('button', { name: '导出当前笔记为 PDF' }).click();
+  const exportDialog = page.getByRole('dialog');
+  await expect(exportDialog.getByRole('heading', { name: '导出为 PDF' })).toBeVisible();
+  const preview = exportDialog.getByRole('region', { name: 'PDF 分页预览' });
+  const previewImage = preview.getByRole('img', { name: 'PDF 第 1 页' });
+  await expect(previewImage).toBeVisible({ timeout: 45_000 });
+
+  const downloadPromise = page.waitForEvent('download');
+  await exportDialog.getByRole('button', { name: '导出 PDF' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe(`${title}.pdf`);
+  const downloadedPath = await download.path();
+  expect(downloadedPath).toBeTruthy();
+  const pdfBytes = await readFile(downloadedPath!);
+  expect(pdfBytes.length).toBeGreaterThan(10000);
+
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(pdfBytes) }).promise;
+  expect(doc.numPages).toBeGreaterThanOrEqual(5);
+
+  let foundChainRule = false;
+  for (let i = 1; i <= doc.numPages; i++) {
+    const pageObj = await doc.getPage(i);
+    const textContent = await pageObj.getTextContent();
+    const compactText = textContent.items.map((it: any) => it.str).join('').replace(/\s+/g, '');
+    if (compactText.includes('数学定义：若z=f(y)且y=g(x)，即z=f(g(x))，则z对x的导数为：')) {
+      foundChainRule = true;
+      break;
+    }
+  }
+  expect(foundChainRule).toBe(true);
+});
+
+test('inserts and removes markdown table of contents via top toolbar button', async ({ page }) => {
+  const title = `TOC测试-${randomUUID().slice(0, 8)}`;
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
+  await page.getByRole('textbox', { name: '笔记标题' }).fill(title);
+
+  const tocButton = page.locator('.toolbar-toc-action');
+  await expect(tocButton).toBeVisible();
+  await expect(tocButton).toHaveAttribute('aria-label', '插入目录');
+  await expect(tocButton).toHaveAttribute('aria-pressed', 'false');
+
+  // Clicking without headings shows notice
+  await tocButton.click();
+  await expect(page.getByText('当前笔记没有标题，无法生成目录')).toBeVisible();
+
+  // Add headings to note
+  const editor = page.locator('.cm-content');
+  await editor.fill('# 一级标题\n正文内容\n## 二级标题\n更多内容');
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  // Click to insert TOC
+  await tocButton.click();
+  await expect(page.getByText('已在顶部插入目录')).toBeVisible();
+  await expect(tocButton).toHaveAttribute('aria-label', '移除目录');
+  await expect(tocButton).toHaveAttribute('aria-pressed', 'true');
+
+  // Switch to raw MD syntax mode to inspect markdown
+  await page.getByRole('button', { name: 'MD 语法' }).click();
+  const textWithToc = await editor.innerText();
+  expect(textWithToc).toContain('<!-- toc -->');
+  expect(textWithToc).toContain('- [一级标题](#一级标题)');
+  expect(textWithToc).toContain('- [二级标题](#二级标题)');
+
+  // Switch to Preview mode and verify TOC anchor link exists and targets heading
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const preview = page.locator('.markdown');
+  await expect(preview).toBeVisible();
+  const headingLink = preview.getByRole('link', { name: '二级标题' });
+  await expect(headingLink).toBeVisible();
+  await headingLink.click();
+  const targetHeading = preview.locator('[data-heading-slug="二级标题"]');
+  await expect(targetHeading).toBeVisible();
+
+  // Switch back to edit mode
+  await page.getByRole('button', { name: '编辑模式' }).click();
+
+  // Click again to remove TOC
+  await tocButton.click();
+  await expect(page.getByText('已移除顶部目录')).toBeVisible();
+  await expect(tocButton).toHaveAttribute('aria-label', '插入目录');
+  await expect(tocButton).toHaveAttribute('aria-pressed', 'false');
+
+  const textWithoutToc = await editor.innerText();
+  expect(textWithoutToc).not.toContain('<!-- toc -->');
+  expect(textWithoutToc).toContain('# 一级标题');
+});
+
+test('renders live mode TOC card, supports manual refresh, and auto-updates upon editing headings', async ({ page }) => {
+  const title = `TOC实时渲染测试-${randomUUID().slice(0, 8)}`;
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
+  await page.getByRole('textbox', { name: '笔记标题' }).fill(title);
+
+  // In live mode (default edit mode is live mode)
+  const editor = page.locator('.cm-content');
+  await editor.fill('# 概览\n一些介绍文本\n## 架构设计\n模块拆解');
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  // Insert TOC
+  const tocButton = page.locator('.toolbar-toc-action');
+  await tocButton.click();
+  await expect(page.getByText('已在顶部插入目录')).toBeVisible();
+
+  // Live mode renders the card
+  const liveTocCard = page.locator('.cm-live-toc-container.markdown-toc-card');
+  await expect(liveTocCard).toBeVisible();
+  await expect(liveTocCard.locator('.markdown-toc-title')).toHaveText('笔记目录');
+  await expect(liveTocCard.locator('.markdown-toc-badge')).toHaveText('2');
+
+  // Verify refresh button exists on the live TOC card
+  const refreshBtn = liveTocCard.locator('.markdown-toc-action-btn');
+  await expect(refreshBtn).toBeVisible();
+  await refreshBtn.click();
+  await expect(page.getByText('目录已是最新')).toBeVisible();
+
+  // Now append a new heading in the editor
+  await editor.click();
+  await page.keyboard.press('PageDown');
+  await page.keyboard.type('\n### 数据库设计\n存储详情');
+
+  // Wait for debounced auto-update (1500ms)
+  await expect(liveTocCard.locator('.markdown-toc-badge')).toHaveText('3', { timeout: 4000 });
+  await expect(liveTocCard.getByText('数据库设计')).toBeVisible();
+
+  // Switch to preview mode and check card is rendered there too
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const previewCard = page.locator('.markdown .markdown-toc-card');
+  await expect(previewCard).toBeVisible();
+  await expect(previewCard.getByText('数据库设计')).toBeVisible();
+
+  // Preview card refresh button
+  const previewRefreshBtn = previewCard.locator('.markdown-toc-action-btn');
+  await expect(previewRefreshBtn).toBeVisible();
+  await previewRefreshBtn.click();
+  await expect(page.getByText('目录已是最新')).toBeVisible();
+});
+
+test('copies folder ID and note ID from action menus, overview, and mobile dialog', async ({ page }) => {
+  await page.addInitScript(() => {
+    let copiedText = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => { copiedText = value; },
+        readText: async () => copiedText,
+      },
+    });
+  });
+
+  const suffix = randomUUID().slice(0, 8);
+  const folderName = `测试目录-${suffix}`;
+  const noteTitle = `测试笔记-${suffix}`;
+
+  await page.goto('/');
+  // Create folder
+  const explorerCreateFolder = page.locator('.explorer-header').getByRole('button', { name: '新建文件夹' });
+  await explorerCreateFolder.click();
+  const folderDialog = page.getByRole('dialog');
+  await folderDialog.getByRole('textbox', { name: '文件夹名称' }).fill(folderName);
+  await folderDialog.getByRole('button', { name: '保存', exact: true }).click();
+  const folderRow = page.locator('.folder-tree-row').filter({ hasText: folderName }).first();
+  await expect(folderRow).toBeVisible();
+
+  // 1. Copy Folder ID from folder tree menu
+  await folderRow.getByLabel('文件夹操作').click();
+  const folderMenu = folderRow.getByRole('menu');
+  await expect(folderMenu).toBeVisible();
+  const copyFolderIdBtn = folderMenu.getByRole('menuitem', { name: '复制 ID' });
+  await expect(copyFolderIdBtn).toBeVisible();
+  await copyFolderIdBtn.click();
+  await expect(page.locator('.toast').last()).toHaveText('已复制 ID');
+  const copiedFolderId = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedFolderId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+  // 2. Copy Folder ID from folder overview header
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await folderRow.locator('.folder-tree-select').click();
+  const folderOverview = page.locator('.folder-overview');
+  await expect(folderOverview).toBeVisible();
+  const overviewCopyIdBtn = folderOverview.getByRole('button', { name: '复制 ID' });
+  await expect(overviewCopyIdBtn).toBeVisible();
+  await overviewCopyIdBtn.click();
+  await expect(page.locator('.toast').last()).toHaveText('已复制 ID');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(copiedFolderId);
+
+  // 3. Create a note inside the folder and copy its note ID from note action popover
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  const createNoteInBtn = folderOverview.getByRole('button', { name: '新建笔记' });
+  await createNoteInBtn.click();
+  await page.getByRole('textbox', { name: '笔记标题' }).fill(noteTitle);
+  await page.locator('.cm-content').fill('内容测试');
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  const noteItem = page.locator('.explorer-note-item').filter({ hasText: noteTitle }).first();
+  await expect(noteItem).toBeVisible();
+  await noteItem.getByLabel('更多笔记操作').click();
+  const notePopover = page.locator('.note-action-popover');
+  await expect(notePopover).toBeVisible();
+  const copyNoteIdBtn = notePopover.getByRole('menuitem', { name: '复制 ID' });
+  await expect(copyNoteIdBtn).toBeVisible();
+  await copyNoteIdBtn.click();
+  await expect(page.locator('.toast').last()).toHaveText('已复制 ID');
+  const copiedNoteId = await page.evaluate(() => navigator.clipboard.readText());
+  expect(copiedNoteId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  expect(copiedNoteId).not.toBe(copiedFolderId);
+
+  // 4. Test Mobile note actions dialog
+  await page.evaluate(() => navigator.clipboard.writeText(''));
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileDialog = await openMobileNoteActions(page);
+  const mobileCopyIdBtn = mobileDialog.getByRole('button', { name: '复制 ID' });
+  await expect(mobileCopyIdBtn).toBeVisible();
+  await mobileCopyIdBtn.click();
+  await expect(page.locator('.toast').last()).toHaveText('已复制 ID');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(copiedNoteId);
+});
+
+test('opens document viewer, renders text/pdf, supports quoting and annotations', async ({ page }) => {
+  await page.goto('/');
+
+  // 1. Create a note first
+  await newNote(page, '测试文档笔记', '初始笔记正文');
+
+  // 2. Click "文档阅读与批注" button in footer
+  const docViewerBtn = page.getByRole('button', { name: '文档阅读与批注' });
+  await expect(docViewerBtn).toBeVisible();
+  await docViewerBtn.click();
+
+  // 3. Verify Document Viewer dialog appears
+  const docViewer = page.getByRole('dialog', { name: '文档阅读与批注' });
+  await expect(docViewer).toBeVisible();
+
+  // 4. Test uploading a TXT file into the viewer
+  const fileInput = docViewer.locator('input[type="file"]');
+  await fileInput.setInputFiles({
+    name: 'sample_doc.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('Line 1: EasyNote document viewer\nLine 2: Highlight and annotation support\nLine 3: Note taking made easy'),
+  });
+
+  // Verify TXT is rendered with lines and filename
+  await expect(docViewer.locator('.doc-viewer-filename')).toHaveText('sample_doc.txt');
+  await expect(docViewer.getByText('Line 1: EasyNote document viewer')).toBeVisible();
+  await expect(docViewer.getByText('Line 2: Highlight and annotation support')).toBeVisible();
+
+  // 5. Click "插入全文到笔记"
+  const insertFullTextBtn = docViewer.getByRole('button', { name: '插入全文到笔记' });
+  await expect(insertFullTextBtn).toBeVisible();
+  await insertFullTextBtn.click();
+  await expect(docViewer.locator('.doc-floating-toast')).toHaveText('已将内容追加到当前笔记');
+
+  // 6. Close document viewer
+  const closeBtn = docViewer.locator('.doc-close-btn');
+  await closeBtn.click();
+  await expect(docViewer).not.toBeVisible();
+
+  // 7. Verify the note now contains the quoted text from sample_doc.txt
+  await expect(page.locator('.cm-content')).toContainText('Line 1: EasyNote document viewer');
+
+  // 8. Upload a PDF attachment and test opening via preview link
+  const pdfId = randomUUID();
+  const pdfBuffer = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
+  const uploadResp = await page.request.put(`/api/files/${pdfId}`, {
+    headers: {
+      ...headers,
+      'Content-Type': 'application/pdf',
+      'X-Filename': encodeURIComponent('用户手册.pdf'),
+    },
+    data: pdfBuffer,
+  });
+  expect(uploadResp.status()).toBe(201);
+
+  // Append markdown link to current note and switch to preview mode
+  await page.locator('.cm-content').fill(`[用户手册.pdf](/api/files/${pdfId})`);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  // Switch to preview mode -> embedded viewer renders immediately and redundant link is removed
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const embeddedViewer = page.locator('.document .doc-embed-slot .doc-viewer-embedded');
+  await expect(embeddedViewer).toBeVisible();
+  await expect(embeddedViewer.locator('.doc-viewer-filename')).toHaveText('用户手册.pdf');
+  await expect(embeddedViewer.locator('.doc-viewer-badge')).toHaveText('PDF');
+
+  // Redundant document link pill above embedded viewer is removed
+  await expect(page.locator('.markdown a.doc-link-pdf')).toHaveCount(0);
+});
+
+test('supports uploading files to a folder from folder menu and folder overview', async ({ page }) => {
+  await page.goto('/');
+
+  const suffix = randomUUID().slice(0, 8);
+  const folderName = `资料库-${suffix}`;
+
+  // 1. Create a folder
+  const explorerCreateFolder = page.locator('.explorer-header').getByRole('button', { name: '新建文件夹' });
+  await explorerCreateFolder.click();
+  const folderDialog = page.getByRole('dialog');
+  await folderDialog.getByRole('textbox', { name: '文件夹名称' }).fill(folderName);
+  await folderDialog.getByRole('button', { name: '保存', exact: true }).click();
+
+  const folderRow = page.locator('.folder-tree-row').filter({ hasText: folderName }).first();
+  await expect(folderRow).toBeVisible();
+
+  // 2. Test "上传文件" item exists in folder menu
+  await folderRow.getByLabel('文件夹操作').click();
+  const folderMenu = folderRow.getByRole('menu');
+  await expect(folderMenu).toBeVisible();
+  const uploadMenuItem = folderMenu.getByRole('menuitem', { name: '上传文件' });
+  await expect(uploadMenuItem).toBeVisible();
+
+  // 3. Open folder overview
+  await folderRow.locator('.folder-tree-select').click();
+  const folderOverview = page.locator('.folder-overview');
+  await expect(folderOverview).toBeVisible();
+
+  // 4. Test "上传文件" button exists in folder overview header
+  const overviewUploadBtn = folderOverview.getByRole('button', { name: '上传文件' });
+  await expect(overviewUploadBtn).toBeVisible();
+
+  // 5. Trigger file upload to this folder
+  const fileChooserPromise = page.waitForEvent('filechooser');
+  await overviewUploadBtn.click();
+  const fileChooser = await fileChooserPromise;
+  await fileChooser.setFiles({
+    name: '接口说明.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('API Documentation content for EasyNote'),
+  });
+
+  // Verify file was uploaded and note created in the folder
+  await expect(page.locator('.toast').last()).toHaveText('文件已上传并创建笔记');
+  await expect(page.locator('.markdown')).toContainText('API Documentation content for EasyNote');
+});
+
+test('displays centered upload progress modal and directly renders embedded document viewer in right workspace', async ({ page }) => {
+  await page.goto('/');
+
+  // 1. Upload a valid 1-page PDF attachment to test embedded PDF rendering in right content area
+  const pdfId = randomUUID();
+  const pdfBuffer = Buffer.from(
+    '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%EOF'
+  );
+  const uploadResp = await page.request.put(`/api/files/${pdfId}`, {
+    headers: {
+      ...headers,
+      'Content-Type': 'application/pdf',
+      'X-Filename': encodeURIComponent('工作进展汇报.pdf'),
+    },
+    data: pdfBuffer,
+  });
+  expect(uploadResp.status()).toBe(201);
+
+  // 2. Create note with embedded PDF link
+  await newNote(page, '工作进展汇报', `[工作进展汇报.pdf](/api/files/${pdfId})`);
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+
+  // 3. Switch to preview mode
+  await page.getByRole('button', { name: '预览模式' }).click();
+
+  // 4. Verify embedded document viewer is rendered directly in right workspace (.document .markdown .doc-viewer-embedded)
+  const embeddedViewer = page.locator('.document .doc-embed-slot .doc-viewer-embedded');
+  await expect(embeddedViewer).toBeVisible();
+  await expect(embeddedViewer.locator('.doc-viewer-filename')).toHaveText('工作进展汇报.pdf');
+  await expect(embeddedViewer.locator('.doc-viewer-badge')).toHaveText('PDF');
+
+  // Verify redundant link pill is stripped so viewer seamlessly covers the note body area
+  await expect(page.locator('.markdown a.doc-link-pdf')).toHaveCount(0);
+
+  // Verify it has embedded controls: pagination, zoom, annotations, and fullscreen button with tooltips
+  await expect(embeddedViewer.locator('.doc-page-counter')).toBeVisible();
+  const fullscreenBtn = embeddedViewer.getByRole('button', { name: '全屏阅读' });
+  await expect(fullscreenBtn).toBeVisible();
+  await expect(fullscreenBtn).toHaveAttribute('data-tooltip', '全屏阅读');
+
+  const fitWidthBtn = embeddedViewer.getByRole('button', { name: '适应宽度' });
+  await expect(fitWidthBtn).toBeVisible();
+  await expect(fitWidthBtn).toHaveAttribute('data-tooltip', '适应宽度');
+
+  // Verify single-line toolbar layout: no line wrapping or vertical character breaking
+  const header = embeddedViewer.locator('.doc-viewer-header');
+  await expect(header).toBeVisible();
+  const flexWrap = await header.evaluate((el) => window.getComputedStyle(el).flexWrap);
+  expect(flexWrap).toBe('nowrap');
+
+  // Verify responsive single-line height at tighter widths
+  const initialHeaderHeight = await header.evaluate((el) => el.getBoundingClientRect().height);
+  expect(initialHeaderHeight).toBeLessThanOrEqual(48);
+
+  const modeBtn = embeddedViewer.locator('.doc-mode-btn').first();
+  if (await modeBtn.isVisible()) {
+    const whiteSpace = await modeBtn.evaluate((el) => window.getComputedStyle(el).whiteSpace);
+    expect(whiteSpace).toBe('nowrap');
+  }
+
+  // At compact width, verify toolbar adapts smoothly without height expansion or misalignment
+  await page.setViewportSize({ width: 820, height: 720 });
+  const compactHeaderHeight = await header.evaluate((el) => el.getBoundingClientRect().height);
+  expect(compactHeaderHeight).toBeLessThanOrEqual(48);
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // Verify continuous vertical scroll viewport and page sheet are active
+  await expect(embeddedViewer.locator('.pdf-continuous-scroll-viewport')).toBeVisible();
+  await expect(embeddedViewer.locator('.pdf-pages-column')).toBeVisible();
+  await expect(embeddedViewer.locator('.pdf-page-sheet')).toBeVisible();
+
+  // 5. Click "全屏阅读" in the embedded viewer to expand to modal
+  await embeddedViewer.getByRole('button', { name: '全屏阅读' }).click();
+  const modalViewer = page.locator('.doc-viewer-modal-backdrop');
+  await expect(modalViewer).toBeVisible();
+
+  // Close modal viewer
+  await modalViewer.locator('.doc-close-btn').click();
+  await expect(modalViewer).not.toBeVisible();
+});
+
+
+

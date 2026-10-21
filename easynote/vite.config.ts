@@ -7,8 +7,27 @@ const versions = JSON.parse(readFileSync(new URL('../versions.json', import.meta
   easynote: string;
 };
 
+function mathjaxCleanPlugin() {
+  return {
+    name: 'mathjax-clean',
+    resolveId(id: string) {
+      if (id.includes('components/version.js') || id.endsWith('components/version')) {
+        return '\0virtual:mathjax-version';
+      }
+      return null;
+    },
+    load(id: string) {
+      if (id === '\0virtual:mathjax-version') {
+        return 'export const VERSION = "3.2.2";\nexport default { VERSION: "3.2.2" };\n';
+      }
+      return null;
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
+    mathjaxCleanPlugin(),
     react(),
     VitePWA({
       registerType: 'autoUpdate',
@@ -37,15 +56,16 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         globPatterns: [
-          '**/*.{html,css,svg}',
+          '**/*.{html,css,svg,woff2,woff}',
           'registerSW.js',
           'manifest.webmanifest',
           'assets/index-*.js',
           'assets/editor-*.js',
           'assets/markdown-*.js',
+          'assets/katex-*.js',
         ],
         runtimeCaching: [{
-          urlPattern: /\/(?:assets\/(?:pdfmake|pdfjs|pdf\.worker)[^/]*\.(?:js|mjs)|fonts\/NotoSansSC-(?:Regular|Bold)\.otf)$/,
+          urlPattern: /\/(?:assets\/(?:pdfmake|pdfjs|mathjax|pdf\.worker)[^/]*\.(?:js|mjs)|fonts\/NotoSansSC-(?:Regular|Bold)\.otf)$/,
           handler: 'CacheFirst',
           options: {
             cacheName: 'easynote-pdf-v1',
@@ -53,13 +73,14 @@ export default defineConfig({
           },
         }],
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//],
+        navigateFallbackDenylist: [/^\/api\//, /^\/oauth\//, /^\/\.well-known\//, /^\/mcp/],
         cleanupOutdatedCaches: true,
       },
     }),
   ],
   define: {
     __EASYNOTE_VERSION__: JSON.stringify(versions.easynote),
+    PACKAGE_VERSION: JSON.stringify('3.2.2'),
   },
   server: {
     proxy: {
@@ -81,15 +102,15 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist/client',
-    // Mermaid's ELK layout engine is a lazy-loaded optional chunk (~1.5 MB).
-    // Keep Vite's warning useful for application chunks while allowing this
-    // intentional async vendor dependency.
-    chunkSizeWarningLimit: 1600,
+    // MathJax and Mermaid layout engines are lazy-loaded chunks (~1.5-1.9 MB uncompressed).
+    chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
         manualChunks(id) {
           if (id.includes('/@codemirror/') || id.includes('/@lezer/')) return 'editor';
           if (id.includes('/markdown-it/') || id.includes('/dompurify/')) return 'markdown';
+          if (id.includes('/katex/')) return 'katex';
+          if (id.includes('/mathjax-full/')) return 'mathjax';
           if (id.includes('/pdfjs-dist/')) return 'pdfjs';
           if (id.includes('/pdfmake/') || id.includes('/html-to-pdfmake/')) return 'pdfmake';
         },

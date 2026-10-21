@@ -139,6 +139,338 @@ async function replaceDiagrams(source: HTMLElement, target: HTMLElement, printab
   }));
 }
 
+const BLOCK_TAGS = new Set(['P', 'DIV', 'TABLE', 'UL', 'OL', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'PRE', 'BLOCKQUOTE', 'HR']);
+
+function isBlockNode(node: Node): boolean {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const el = node as HTMLElement;
+  const tag = el.tagName.toUpperCase();
+  if (BLOCK_TAGS.has(tag)) return true;
+  if (tag === 'IMG' && (el.style.display === 'block' || el.classList.contains('pdf-display-math'))) {
+    return true;
+  }
+  return false;
+}
+
+function normalizeContainerInlineBlocks(container: HTMLElement) {
+  const paragraphs = [...container.querySelectorAll<HTMLParagraphElement>('p')];
+  for (const p of paragraphs) {
+    const childNodes = Array.from(p.childNodes);
+    if (!childNodes.some(isBlockNode)) continue;
+
+    const frag = p.ownerDocument.createDocumentFragment();
+    let inlineBatch: Node[] = [];
+
+    const flushInline = () => {
+      if (inlineBatch.length === 0) return;
+      const hasContent = inlineBatch.some((n) =>
+        (n.textContent || '').trim().length > 0 ||
+        (n.nodeType === Node.ELEMENT_NODE && (n as Element).tagName === 'IMG') ||
+        (n.nodeType === Node.ELEMENT_NODE && (n as Element).classList.contains('pdf-inline-math'))
+      );
+      if (hasContent) {
+        const subP = p.ownerDocument.createElement('p');
+        for (const n of inlineBatch) subP.appendChild(n);
+        frag.appendChild(subP);
+      }
+      inlineBatch = [];
+    };
+
+    for (const child of childNodes) {
+      if (isBlockNode(child)) {
+        flushInline();
+        frag.appendChild(child);
+      } else {
+        inlineBatch.push(child);
+      }
+    }
+    flushInline();
+    p.replaceWith(frag);
+  }
+
+  const listItems = [...container.querySelectorAll<HTMLLIElement>('li')];
+  for (const li of listItems) {
+    const childNodes = Array.from(li.childNodes);
+    const hasBlock = childNodes.some(isBlockNode);
+    if (!hasBlock) continue;
+
+    const hasInline = childNodes.some((n) => !isBlockNode(n) && (n.textContent || '').trim().length > 0);
+    if (!hasInline) continue;
+
+    const frag = li.ownerDocument.createDocumentFragment();
+    let inlineBatch: Node[] = [];
+
+    const flushInline = () => {
+      if (inlineBatch.length === 0) return;
+      const hasContent = inlineBatch.some((n) =>
+        (n.textContent || '').trim().length > 0 ||
+        (n.nodeType === Node.ELEMENT_NODE && (n as Element).tagName === 'IMG') ||
+        (n.nodeType === Node.ELEMENT_NODE && (n as Element).classList.contains('pdf-inline-math'))
+      );
+      if (hasContent) {
+        const subP = li.ownerDocument.createElement('p');
+        subP.style.margin = '0 0 6px 0';
+        for (const n of inlineBatch) subP.appendChild(n);
+        frag.appendChild(subP);
+      }
+      inlineBatch = [];
+    };
+
+    for (const child of childNodes) {
+      if (isBlockNode(child)) {
+        flushInline();
+        frag.appendChild(child);
+      } else {
+        inlineBatch.push(child);
+      }
+    }
+    flushInline();
+    li.innerHTML = '';
+    li.appendChild(frag);
+  }
+}
+
+function cleanMathText(text: string): string {
+  return text
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u2061-\u2064]/g, '')
+    .replace(/\u223C/g, '~')
+    .replace(/ℝ/g, 'R')
+    .replace(/𝔼/g, 'E')
+    .replace(/ℂ/g, 'C')
+    .replace(/ℕ/g, 'N')
+    .replace(/ℤ/g, 'Z')
+    .replace(/ℚ/g, 'Q')
+    .replace(/ℙ/g, 'P');
+}
+
+function mathmlNodeToHtml(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return cleanMathText(node.textContent || '');
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+  const el = node as Element;
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'annotation') return '';
+
+  const childrenHtml = Array.from(el.childNodes).map(mathmlNodeToHtml).join('');
+
+  switch (tag) {
+    case 'mi': {
+      const text = cleanMathText(el.textContent || '').trim();
+      if (!text) return '';
+      const mathvariant = el.getAttribute('mathvariant') || '';
+      if (mathvariant === 'bold') {
+        return `<b>${text}</b>`;
+      }
+      if (/^[a-zA-Z]$/.test(text)) {
+        return `<i>${text}</i>`;
+      }
+      return text;
+    }
+    case 'mo': {
+      const text = cleanMathText(el.textContent || '').trim();
+      if (!text) return '';
+      if (['=', '≈', '≠', '≤', '≥', '∈', '→'].includes(text)) {
+        return ` ${text} `;
+      }
+      if (['+', '-', '\u2212', '×', '·'].includes(text)) {
+        const isFirst = !el.previousElementSibling;
+        return isFirst ? text : ` ${text} `;
+      }
+      if (text === ',') {
+        return ', ';
+      }
+      return text;
+    }
+    case 'mn': {
+      return cleanMathText(el.textContent || '').trim();
+    }
+    case 'mfrac': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const num = mathmlNodeToHtml(children[0]).trim();
+        const den = mathmlNodeToHtml(children[1]).trim();
+        const safeNum = /[+\-=×·]/.test(num) ? `(${num})` : num;
+        const safeDen = /[+\-=×·]/.test(den) ? `(${den})` : den;
+        return `${safeNum}/${safeDen}`;
+      }
+      return childrenHtml;
+    }
+    case 'msub': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const base = mathmlNodeToHtml(children[0]);
+        const sub = mathmlNodeToHtml(children[1]);
+        return `${base}<sub>${sub}</sub>`;
+      }
+      return childrenHtml;
+    }
+    case 'msup': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const base = mathmlNodeToHtml(children[0]);
+        const sup = mathmlNodeToHtml(children[1]);
+        return `${base}<sup>${sup}</sup>`;
+      }
+      return childrenHtml;
+    }
+    case 'msubsup': {
+      const children = Array.from(el.children);
+      if (children.length >= 3) {
+        const base = mathmlNodeToHtml(children[0]);
+        const sub = mathmlNodeToHtml(children[1]);
+        const sup = mathmlNodeToHtml(children[2]);
+        return `${base}<sub>${sub}</sub><sup>${sup}</sup>`;
+      }
+      return childrenHtml;
+    }
+    case 'msqrt': {
+      return `√(${childrenHtml.trim()})`;
+    }
+    case 'mroot': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const base = mathmlNodeToHtml(children[0]);
+        const idx = mathmlNodeToHtml(children[1]);
+        return `${idx}√(${base.trim()})`;
+      }
+      return `√(${childrenHtml.trim()})`;
+    }
+    case 'mover': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const base = mathmlNodeToHtml(children[0]);
+        const over = mathmlNodeToHtml(children[1]);
+        if (over.includes('^')) return `${base}^`;
+        if (over.includes('¯')) return `${base}̄`;
+        return `${base}`;
+      }
+      return childrenHtml;
+    }
+    case 'munder': {
+      const children = Array.from(el.children);
+      if (children.length >= 2) {
+        const base = mathmlNodeToHtml(children[0]);
+        const under = mathmlNodeToHtml(children[1]);
+        return `${base}<sub>${under}</sub>`;
+      }
+      return childrenHtml;
+    }
+    case 'munderover': {
+      const children = Array.from(el.children);
+      if (children.length >= 3) {
+        const base = mathmlNodeToHtml(children[0]);
+        const under = mathmlNodeToHtml(children[1]);
+        const over = mathmlNodeToHtml(children[2]);
+        return `${base}<sub>${under}</sub><sup>${over}</sup>`;
+      }
+      return childrenHtml;
+    }
+    case 'mtext': {
+      return cleanMathText(el.textContent || '');
+    }
+    case 'mspace': {
+      return ' ';
+    }
+    default: {
+      return childrenHtml;
+    }
+  }
+}
+
+function mathmlToInlineHtml(element: HTMLElement, fallbackSource: string): string {
+  const math = element.querySelector('math');
+  if (math) {
+    const converted = mathmlNodeToHtml(math).trim();
+    if (converted) return converted;
+  }
+  return cleanMathText(fallbackSource);
+}
+
+function isStandaloneTableCellMath(element: HTMLElement): boolean {
+  const cell = element.closest('td, th');
+  if (!cell) return false;
+  for (const child of Array.from(cell.childNodes)) {
+    if (child === element) continue;
+    if (child.nodeType === Node.TEXT_NODE) {
+      if ((child.textContent || '').trim().length > 0) return false;
+    } else if (child.nodeType === Node.ELEMENT_NODE) {
+      const el = child as HTMLElement;
+      if ((el.textContent || '').trim().length > 0) return false;
+    }
+  }
+  return true;
+}
+
+async function replaceMath(target: HTMLElement, printable: { width: number; height: number }, scale: number) {
+  const mathElements = [...target.querySelectorAll<HTMLElement>('[data-katex-source]')];
+  if (mathElements.length === 0) return;
+
+  const { renderMathImage } = await import('./mathSvg');
+  const cache = new Map<string, { dataUrl: string; widthPt: number; heightPt: number } | null>();
+
+  await Promise.all(mathElements.map(async (element) => {
+    const source = element.getAttribute('data-katex-source') || '';
+    const isDisplay = element.getAttribute('data-katex-display') === 'true' || element.classList.contains('katex-display-wrapper');
+    const isTableStandalone = !isDisplay && isStandaloneTableCellMath(element);
+    const trimmed = source.trim();
+    if (!trimmed) {
+      element.remove();
+      return;
+    }
+
+    if (isDisplay) {
+      const cacheKey = `D:${trimmed}`;
+      let result = cache.get(cacheKey);
+      if (result === undefined) {
+        result = await renderMathImage(trimmed, true, scale, printable.width);
+        cache.set(cacheKey, result);
+      }
+
+      if (result) {
+        const div = document.createElement('div');
+        div.className = 'pdf-display-math';
+        const img = document.createElement('img');
+        img.src = result.dataUrl;
+        img.alt = trimmed;
+        img.setAttribute('width', String(result.widthPt));
+        img.setAttribute('height', String(result.heightPt));
+        div.appendChild(img);
+        element.replaceWith(div);
+        return;
+      }
+      element.replaceWith(document.createTextNode(`$$${trimmed}$$`));
+      return;
+    }
+
+    if (isTableStandalone) {
+      const cacheKey = `T:${trimmed}`;
+      let result = cache.get(cacheKey);
+      if (result === undefined) {
+        result = await renderMathImage(trimmed, false, scale, printable.width * 0.5);
+        cache.set(cacheKey, result);
+      }
+
+      if (result) {
+        const img = document.createElement('img');
+        img.className = 'pdf-table-math';
+        img.src = result.dataUrl;
+        img.alt = trimmed;
+        img.setAttribute('width', String(result.widthPt));
+        img.setAttribute('height', String(result.heightPt));
+        element.replaceWith(img);
+        return;
+      }
+    }
+
+    const span = document.createElement('span');
+    span.innerHTML = mathmlToInlineHtml(element, trimmed);
+    element.replaceWith(span);
+  }));
+}
+
 async function exportHtml(source: HTMLElement, options: PdfExportOptions): Promise<string> {
   const article = source.querySelector<HTMLElement>('.markdown');
   if (!article) throw new Error('PDF 正文尚未准备完成。');
@@ -146,6 +478,7 @@ async function exportHtml(source: HTMLElement, options: PdfExportOptions): Promi
   const sourceImages = [...article.querySelectorAll<HTMLImageElement>('img')];
   const clonedImages = [...clone.querySelectorAll<HTMLImageElement>('img')];
   const printable = printableDimensions(options);
+  const scale = Math.min(125, Math.max(75, options.scale)) / 100;
 
   await Promise.all(clonedImages.map(async (image, index) => {
     const original = sourceImages[index];
@@ -180,6 +513,11 @@ async function exportHtml(source: HTMLElement, options: PdfExportOptions): Promi
     });
   });
   await replaceDiagrams(article, clone, printable);
+  await replaceMath(clone, printable, scale);
+  clone.querySelectorAll('.katex-mathml').forEach((mathml) => {
+    mathml.remove();
+  });
+  normalizeContainerInlineBlocks(clone);
   clone.querySelectorAll<HTMLElement>('pre').forEach((pre) => {
     pre.style.backgroundColor = '#f5f6f7';
     pre.style.border = '1px solid #d7d9dc';
@@ -244,10 +582,11 @@ export async function renderPdfPreviewPages(file: File): Promise<Blob[]> {
 }
 
 export async function preparePdfExport() {
-  const [, , , { default: workerUrl }] = await Promise.all([
+  const [, , , , { default: workerUrl }] = await Promise.all([
     import('pdfmake/build/pdfmake'),
     import('html-to-pdfmake'),
     import('pdfjs-dist'),
+    import('./mathSvg'),
     import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
   ]);
   await Promise.all([...PDF_FONT_PATHS.map(pdfResourceUrl), workerUrl].map(async (url) => {
@@ -270,6 +609,32 @@ export async function createPdfFile(
     window,
     tableAutoSize: false,
     removeExtraBlanks: true,
+    customTag: function ({ element, ret }: { element: Element; ret: Record<string, unknown> }) {
+      if (element.classList && element.classList.contains('pdf-table-math')) {
+        const img = element as HTMLImageElement;
+        return {
+          nodeName: 'IMG',
+          image: img.src || img.getAttribute('src') || '',
+          width: Number(img.getAttribute('width')) || 60,
+          height: Number(img.getAttribute('height')) || 24,
+          alignment: 'center',
+          margin: [0, 2, 0, 2],
+        };
+      }
+      if (element.classList && element.classList.contains('pdf-display-math')) {
+        const img = element.querySelector('img');
+        if (img) {
+          return {
+            image: img.src || img.getAttribute('src') || '',
+            width: Number(img.getAttribute('width')) || 200,
+            height: Number(img.getAttribute('height')) || 40,
+            alignment: 'center',
+            margin: [0, 8, 0, 8],
+          };
+        }
+      }
+      return ret;
+    },
     defaultStyles: {
       h1: { fontSize: 21 * scale, bold: true, margin: [0, 14, 0, 8] },
       h2: { fontSize: 17 * scale, bold: true, margin: [0, 12, 0, 7] },

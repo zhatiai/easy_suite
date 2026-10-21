@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import type { Folder, Note, NoteInput, NoteSummary } from '../shared/types';
 import { Editor, Preview, type EditorHandle } from './Editor';
+import { FolderTreePicker } from './FolderTreePicker';
 import { dateLocale, t } from './i18n';
 import { tagColorIndex } from './tagColors';
 
@@ -117,7 +118,10 @@ export function QuickNotes(props: QuickNotesProps) {
     if (!menu || !menuElement.current || window.innerWidth <= 1100) return;
     const bounds = menuElement.current.getBoundingClientRect();
     const top = Math.max(8, Math.min(menu.top, window.innerHeight - bounds.height - 8));
-    if (Math.abs(top - menu.top) > 1) setMenu((current) => current ? { ...current, top } : null);
+    const left = Math.max(8, Math.min(menu.left, window.innerWidth - bounds.width - 8));
+    if (Math.abs(top - menu.top) > 1 || Math.abs(left - menu.left) > 1) {
+      setMenu((current) => current ? { ...current, top, left } : null);
+    }
   }, [menu]);
 
   const reset = () => {
@@ -281,14 +285,21 @@ export function QuickNotes(props: QuickNotesProps) {
         </div>
       </section>
     </div>
-  </main>{menu && menuNote && createPortal(<div ref={menuElement} className="quick-card-menu" data-quick-menu-root role="menu" aria-label={t('小记操作')}
+  </main>{menu && menuNote && createPortal(<div ref={menuElement} className={`quick-card-menu ${menu.panel === 'folders' ? 'quick-card-menu-folders' : ''}`} data-quick-menu-root role="menu" aria-label={t('小记操作')}
     style={{ left: menu.left, top: menu.top }}>
     {menu.panel === 'folders' ? <>
       <button role="menuitem" onClick={() => setMenuPanel(null)}><ChevronLeft size={16} />{t('移动到文件夹')}</button>
       <div className="quick-card-submenu" role="group" aria-label={t('选择文件夹')}>
-        {props.folders.length ? props.folders.map((folder) => <button key={folder.id} role="menuitem"
-          onClick={() => invoke(() => props.moveToFolder(menuNote.id, folder.id))}><FolderInput size={16} /><span>{folder.name}</span></button>)
-          : <span>{t('暂无文件夹')}</span>}
+        {props.folders.length ? (
+          <FolderTreePicker
+            folders={props.folders}
+            allowRoot={false}
+            itemRole="menuitem"
+            onSelect={(folder) => invoke(() => props.moveToFolder(menuNote.id, folder.id))}
+          />
+        ) : (
+          <span>{t('暂无文件夹')}</span>
+        )}
       </div>
     </> : menu.panel === 'tags' ? <>
       <button role="menuitem" onClick={() => setMenuPanel(null)}><ChevronLeft size={16} />{t('添加标签')}</button>

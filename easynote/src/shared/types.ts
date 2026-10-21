@@ -90,6 +90,64 @@ export interface SharedNote {
   expiresAt: number | null;
 }
 
+export type FolderShare = NoteShare;
+
+export interface ManagedFolderShare extends NoteShare {
+  folderId: string;
+  name: string;
+  folderUpdatedAt: number;
+}
+
+export interface SharedFolderNote {
+  id: string;
+  folderId: string | null;
+  title: string;
+  content: string;
+  tags: string[];
+  updatedAt: number;
+}
+
+export interface SharedFolderItem {
+  id: string;
+  parentId: string | null;
+  name: string;
+}
+
+export interface SharedFolder {
+  id: string;
+  name: string;
+  expiresAt: number | null;
+  folders: SharedFolderItem[];
+  notes: SharedFolderNote[];
+}
+
+export function folderRelativePath(
+  folderId: string | null | undefined,
+  folders: Array<{ id: string; name: string; parentId: string | null }>
+): string {
+  if (!folderId) return '';
+  const folderMap = new Map(folders.map((f) => [f.id, f]));
+  const segments: string[] = [];
+  let current = folderMap.get(folderId);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    segments.unshift(current.name);
+    current = current.parentId ? folderMap.get(current.parentId) : undefined;
+  }
+  return segments.join('/');
+}
+
+export function noteRelativePath(
+  note: { title: string; folderId?: string | null },
+  folders: Array<{ id: string; name: string; parentId: string | null }>,
+  untitledFallback = '未命名笔记'
+): string {
+  const title = note.title.trim() || untitledFallback;
+  const folderPath = folderRelativePath(note.folderId, folders);
+  return folderPath ? `${folderPath}/${title}` : title;
+}
+
 export interface ClientConfig {
   maxNoteBytes: number;
   maxImageBytes: number;
@@ -121,6 +179,27 @@ export interface StoredFile {
 }
 
 export type ImageRecord = StoredFile;
+
+export interface StorageStats {
+  usedBytes: number;
+  quotaBytes: number;
+  remainingBytes: number;
+  usedPercent: number;
+  notesBytes: number;
+  noteCount: number;
+  versionsBytes: number;
+  versionCount: number;
+  trashBytes: number;
+  trashCount: number;
+  filesBytes: number;
+  fileCount: number;
+  d1DatabaseBytes?: number | null;
+}
+
+export interface StorageAlertConfig {
+  enabled: boolean;
+  thresholdPercent: number;
+}
 
 export interface SyncChange {
   sequence: number;

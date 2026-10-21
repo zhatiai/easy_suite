@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { ArrowRightLeft, CheckSquare, ChevronDown, ChevronRight, FilePlus2, FileText, Folder as FolderIcon, FolderOpen, FolderPlus, LoaderCircle, MoreHorizontal, Plus, Search, Square, Trash2, X } from 'lucide-react';
+import { ArrowRightLeft, CheckSquare, ChevronDown, ChevronRight, Copy, FilePlus2, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, LoaderCircle, MoreHorizontal, Plus, Search, Share2, Square, Trash2, Upload, X } from 'lucide-react';
 import type { Folder, Note, NoteSummary } from '../shared/types';
 import type { ExplorerFolderState } from './useNotebook';
 import { dateLocale, t, uiLanguage } from './i18n';
@@ -34,8 +34,13 @@ interface NotebookExplorerProps {
   inspectFolder(id: string): void;
   createChild(id: string): void;
   createNoteIn(id: string): void;
+  uploadFileTo?(id: string): void;
+  moveFolder(folder: Folder): void;
   mergeFolder(folder: Folder): void;
   removeFolder(folder: Folder): void;
+  shareFolder(folder: Folder): void;
+  copyFolderPath(folder: Folder): void;
+  copyFolderId(folder: Folder): void;
   openNote(id: string): void;
   toggleSelected(id: string): void;
   openNoteMenu(id: string, trigger: HTMLElement): void;
@@ -184,7 +189,7 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
         aria-label={`${title}，${new Date(live.updatedAt).toLocaleDateString(dateLocale(), { month: 'short', day: 'numeric' })}`}
         aria-pressed={props.selectionMode ? props.selectedIds.has(item.id) : undefined}
         onClick={() => props.selectionMode ? props.toggleSelected(item.id) : props.openNote(item.id)}>
-        {props.selectionMode ? props.selectedIds.has(item.id) ? <CheckSquare size={17} /> : <Square size={17} /> : <FileText size={17} />}
+        {props.selectionMode ? props.selectedIds.has(item.id) ? <CheckSquare size={18} /> : <Square size={18} /> : <FileText size={18} />}
         <span className="explorer-note-copy">
           <strong className="note-row-title">{highlightedText(title, props.query)}</strong>
           <small className="note-excerpt" aria-hidden="true">{highlightedText(compactExcerpt(live.excerpt) || t('empty_note'), props.query)}</small>
@@ -214,14 +219,23 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
           const trigger = event.currentTarget.querySelector('summary')?.getBoundingClientRect();
           if (!trigger) return;
           const menuWidth = 184;
+          const menuHeight = 350;
           const left = Math.min(Math.max(8, trigger.left - 10), window.innerWidth - menuWidth - 8);
+          const top = Math.min(trigger.bottom + 3, window.innerHeight - menuHeight - 8);
           event.currentTarget.style.setProperty('--folder-menu-left', `${left}px`);
-          event.currentTarget.style.setProperty('--folder-menu-top', `${trigger.bottom + 3}px`);
+          event.currentTarget.style.setProperty('--folder-menu-top', `${top}px`);
         }}>
           <summary className="explorer-row-more" aria-label={t('文件夹操作')}><MoreHorizontal size={16} /></summary>
           <div className="folder-action-popover" role="menu">
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); toggleFolder(folder.id, true); props.createChild(folder.id); }}><FolderPlus size={17} /><span className="folder-action-label">{t('新建文件夹')}</span></button>
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.createNoteIn(folder.id); }}><FilePlus2 size={17} /><span className="folder-action-label">{t('新建文件')}</span></button>
+            {props.uploadFileTo && (
+              <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.uploadFileTo?.(folder.id); }}><Upload size={17} /><span className="folder-action-label">{t('上传文件')}</span></button>
+            )}
+            <button role="menuitem" disabled={props.disabled || (!folder.parentId && props.folders.length <= 1)} onClick={(event) => { closeFolderMenu(event.currentTarget); props.moveFolder(folder); }}><FolderInput size={17} /><span className="folder-action-label">{t('移动文件夹')}</span></button>
+            <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.shareFolder(folder); }}><Share2 size={17} /><span className="folder-action-label">{t('分享文件夹')}</span></button>
+            <button role="menuitem" onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyFolderPath(folder); }}><Copy size={17} /><span className="folder-action-label">{t('复制路径')}</span></button>
+            <button role="menuitem" onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyFolderId(folder); }}><Copy size={17} /><span className="folder-action-label">{t('复制 ID')}</span></button>
             <button role="menuitem" className="danger" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.removeFolder(folder); }}><Trash2 size={17} /><span className="folder-action-label">{t('删除文件夹')}</span></button>
             <button role="menuitem" disabled={props.disabled || props.folders.length < 2} onClick={(event) => { closeFolderMenu(event.currentTarget); props.mergeFolder(folder); }}><ArrowRightLeft size={17} /><span className="folder-action-label">{t('合并文件到...')}</span><ChevronRight className="folder-action-chevron" size={15} /></button>
           </div>

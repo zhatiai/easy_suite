@@ -1,5 +1,5 @@
 import { useEffect, useMemo, type ReactNode } from 'react';
-import { FileText, FolderOpen, LoaderCircle } from 'lucide-react';
+import { Copy, FileText, FolderInput, FolderOpen, FolderPlus, LoaderCircle, Plus, Share2, Upload } from 'lucide-react';
 import type { Folder } from '../shared/types';
 import type { ExplorerFolderState } from './useNotebook';
 import { dateLocale, t } from './i18n';
@@ -11,6 +11,13 @@ interface FolderOverviewProps {
   explorerFolderKey(folderId: string | null): string;
   ensureFolder(folderId: string | null, options?: { append?: boolean; force?: boolean }): Promise<void>;
   openNote(id: string): void;
+  createChild?(parentId: string): void;
+  createNoteIn?(folderId: string): void;
+  uploadFileTo?(folderId: string): void;
+  moveFolder?(folder: Folder): void;
+  shareFolder?(folder: Folder): void;
+  copyFolderPath?(folder: Folder): void;
+  copyFolderId?(folder: Folder): void;
 }
 
 export function FolderOverview(props: FolderOverviewProps) {
@@ -67,7 +74,19 @@ export function FolderOverview(props: FolderOverviewProps) {
   return <section className="folder-overview" aria-labelledby="folder-overview-title">
     <div className="folder-overview-scroll">
       <div className="folder-overview-content">
-        <header className="folder-overview-header"><FolderOpen size={34} /><h1 id="folder-overview-title">{props.folder.name}</h1></header>
+        <header className="folder-overview-header">
+          <FolderOpen size={34} />
+          <h1 id="folder-overview-title">{props.folder.name}</h1>
+          {(props.createChild || props.createNoteIn || props.uploadFileTo || props.moveFolder || props.shareFolder || props.copyFolderPath || props.copyFolderId) && <div className="folder-overview-actions">
+            {props.createChild && <button type="button" className="secondary" onClick={() => props.createChild?.(props.folder.id)}><FolderPlus size={15} />{t('新建子文件夹')}</button>}
+            {props.uploadFileTo && <button type="button" className="secondary" onClick={() => props.uploadFileTo?.(props.folder.id)}><Upload size={15} />{t('上传文件')}</button>}
+            {props.moveFolder && <button type="button" className="secondary" onClick={() => props.moveFolder?.(props.folder)}><FolderInput size={15} />{t('移动文件夹')}</button>}
+            {props.shareFolder && <button type="button" className="secondary" onClick={() => props.shareFolder?.(props.folder)}><Share2 size={15} />{t('分享文件夹')}</button>}
+            {props.copyFolderPath && <button type="button" className="secondary" onClick={() => props.copyFolderPath?.(props.folder)}><Copy size={15} />{t('复制路径')}</button>}
+            {props.copyFolderId && <button type="button" className="secondary" onClick={() => props.copyFolderId?.(props.folder)}><Copy size={15} />{t('复制 ID')}</button>}
+            {props.createNoteIn && <button type="button" className="primary" onClick={() => props.createNoteIn?.(props.folder.id)}><Plus size={15} />{t('new_note')}</button>}
+          </div>}
+        </header>
         <dl className="folder-overview-meta">
           <div><dt>{t('created_at')}</dt><dd>{new Date(props.folder.createdAt).toLocaleString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</dd></div>
           <div><dt>{t('total_files')}</dt><dd>{t('{0} 个文件', totalFiles)}</dd></div>

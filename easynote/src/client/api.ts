@@ -1,7 +1,9 @@
 import type {
   Folder,
+  FolderShare,
   ImageRecord,
   IntegrationToken,
+  ManagedFolderShare,
   ManagedNoteShare,
   Note,
   NoteInput,
@@ -9,8 +11,10 @@ import type {
   NoteSummary,
   NoteTask,
   Session,
+  SharedFolder,
   SharedNote,
   StoredFile,
+  StorageStats,
   SyncChange,
   UserAccount,
   Version,
@@ -133,15 +137,24 @@ export const api = {
   versions: (id: string) => request<{ versions: Version[] }>(`/api/notes/${id}/versions`),
   backlinks: (id: string) => request<{ notes: NoteSummary[] }>(`/api/notes/${id}/backlinks`),
   tasks: () => request<{ tasks: NoteTask[] }>('/api/tasks'),
-  noteShares: () => request<{ shares: ManagedNoteShare[] }>('/api/shares'),
+  shares: () => request<{ shares: ManagedNoteShare[]; folderShares: ManagedFolderShare[] }>('/api/shares'),
+  noteShares: () => request<{ shares: ManagedNoteShare[]; folderShares: ManagedFolderShare[] }>('/api/shares'),
   noteShare: (id: string) => request<{ share: NoteShare | null }>(`/api/notes/${id}/share`),
   createNoteShare: (id: string, expiresInHours: number | null) =>
     request<{ share: NoteShare; url: string }>(`/api/notes/${id}/share`, 'POST', { expiresInHours }),
   extendNoteShare: (id: string, expiresInHours: number | null) =>
     request<{ share: NoteShare }>(`/api/notes/${id}/share`, 'PATCH', { expiresInHours }),
   revokeNoteShare: (id: string) => request<{ ok: true }>(`/api/notes/${id}/share`, 'DELETE', {}),
+  folderShare: (id: string) => request<{ share: FolderShare | null }>(`/api/folders/${id}/share`),
+  createFolderShare: (id: string, expiresInHours: number | null) =>
+    request<{ share: FolderShare; url: string }>(`/api/folders/${id}/share`, 'POST', { expiresInHours }),
+  extendFolderShare: (id: string, expiresInHours: number | null) =>
+    request<{ share: FolderShare }>(`/api/folders/${id}/share`, 'PATCH', { expiresInHours }),
+  revokeFolderShare: (id: string) => request<{ ok: true }>(`/api/folders/${id}/share`, 'DELETE', {}),
   sharedNote: (shareToken: string) =>
     request<{ note: SharedNote }>(`/api/public/shares/${shareToken}`),
+  sharedItem: (shareToken: string) =>
+    request<{ note?: SharedNote; folder?: SharedFolder }>(`/api/public/shares/${shareToken}`),
   sync: (after: number, signal?: AbortSignal) =>
     request<{ changes: SyncChange[]; cursor: number; hasMore: boolean }>(`/api/sync?after=${after}&limit=200`, 'GET', undefined, signal),
   syncHead: (signal?: AbortSignal) =>
@@ -150,16 +163,56 @@ export const api = {
   createIntegrationToken: (name: string, access: IntegrationToken['access'], expiresInDays: number | null) =>
     request<{ token: IntegrationToken; secret: string }>('/api/integrations/tokens', 'POST', { name, access, expiresInDays }),
   revokeIntegrationToken: (id: string) => request(`/api/integrations/tokens/${encodeURIComponent(id)}`, 'DELETE', {}),
+  storage: () => request<StorageStats>('/api/storage'),
 };
 
 async function uploadStoredFile<T extends 'image' | 'file'>(
   file: File,
   route: T,
   maxBytes: number,
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<T extends 'image' ? ImageRecord : StoredFile> {
   if (file.size > maxBytes) throw new Error(`文件不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
   const path = `/api/${route === 'image' ? 'images' : 'files'}/${crypto.randomUUID()}`;
   const requestCsrf = csrf;
+
+  if (typeof XMLHttpRequest !== 'undefined') {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', path);
+      xhr.timeout = UPLOAD_TIMEOUT_MS;
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.setRequestHeader('X-Filename', encodeURIComponent(file.name));
+      xhr.setRequestHeader('X-CSRF-Token', requestCsrf ?? '');
+      xhr.setRequestHeader('X-EasyNote-Client', clientId);
+
+      if (xhr.upload && onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(e.loaded, e.total);
+        };
+      }
+
+      xhr.onload = () => {
+        handleUnauthorized(xhr.status, requestCsrf);
+        let body: any;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          return reject(new Error(`PUT ${path} [${xhr.status}]\n${xhr.responseText}`));
+        }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          return reject(new ApiError(xhr.status, body, 'PUT', path));
+        }
+        resolve(body[route] as T extends 'image' ? ImageRecord : StoredFile);
+      };
+
+      xhr.onerror = () => reject(new Error('Network error during file upload'));
+      xhr.ontimeout = () => reject(new Error('Upload request timed out'));
+      xhr.send(file);
+    });
+  }
+
   const { response, raw } = await timedFetch(path, {
     method: 'PUT', credentials: 'same-origin',
     headers: {
@@ -177,17 +230,17 @@ async function uploadStoredFile<T extends 'image' | 'file'>(
   return body[route] as T extends 'image' ? ImageRecord : StoredFile;
 }
 
-export async function uploadImage(file: File, maxBytes: number, maxPixels: number): Promise<ImageRecord> {
+export async function uploadImage(file: File, maxBytes: number, maxPixels: number, onProgress?: (loaded: number, total: number) => void): Promise<ImageRecord> {
   if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('仅支持 JPEG、PNG、WebP 图片。');
   if (file.size > maxBytes) throw new Error(`图片不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
   const bitmap = await createImageBitmap(file);
   const pixels = bitmap.width * bitmap.height;
   bitmap.close();
   if (pixels > maxPixels) throw new Error('图片尺寸超过限制。');
-  return uploadStoredFile(file, 'image', maxBytes);
+  return uploadStoredFile(file, 'image', maxBytes, onProgress);
 }
 
-export async function uploadAttachment(file: File, maxBytes: number): Promise<StoredFile> {
+export async function uploadAttachment(file: File, maxBytes: number, onProgress?: (loaded: number, total: number) => void): Promise<StoredFile> {
   const allowed = new Set(['application/pdf', 'text/plain', 'text/markdown', 'text/csv', 'application/json']);
   const extension = file.name.toLocaleLowerCase().split('.').pop() ?? '';
   const inferred = ({ pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain', csv: 'text/csv', json: 'application/json' } as Record<string, string>)[extension];
@@ -195,5 +248,5 @@ export async function uploadAttachment(file: File, maxBytes: number): Promise<St
   if (!mime) throw new Error('仅支持 PDF、Markdown、TXT、CSV 和 JSON 附件。');
   const normalized = file.type === mime ? file : new File([file], file.name, { type: mime });
   if (normalized.size > maxBytes) throw new Error(`附件不能超过 ${Math.round(maxBytes / 1024 ** 2)} MiB。`);
-  return uploadStoredFile(normalized, 'file', maxBytes);
+  return uploadStoredFile(normalized, 'file', maxBytes, onProgress);
 }

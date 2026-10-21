@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CalendarPlus, FileText, Infinity as InfinityIcon, LoaderCircle, Trash2 } from 'lucide-react';
-import type { ManagedNoteShare } from '../shared/types';
+import { CalendarPlus, FileText, FolderOpen, Infinity as InfinityIcon, LoaderCircle, Trash2 } from 'lucide-react';
+import type { ManagedFolderShare, ManagedNoteShare } from '../shared/types';
 import { api } from './api';
 import { dateLocale, t } from './i18n';
 
@@ -21,14 +21,20 @@ const dateTime = (value: number) => new Date(value).toLocaleString(dateLocale(),
 
 export function ShareManagement({ disabled, notify, openNote, reportError }: Props) {
   const [shares, setShares] = useState<ManagedNoteShare[]>([]);
+  const [folderShares, setFolderShares] = useState<ManagedFolderShare[]>([]);
   const [loading, setLoading] = useState(true);
   const [workingId, setWorkingId] = useState('');
   const [extensions, setExtensions] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let active = true;
-    void api.noteShares()
-      .then((result) => { if (active) setShares(result.shares); })
+    void api.shares()
+      .then((result) => {
+        if (active) {
+          setShares(result.shares || []);
+          setFolderShares(result.folderShares || []);
+        }
+      })
       .catch((error: unknown) => reportError(String(error)))
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -65,10 +71,86 @@ export function ShareManagement({ disabled, notify, openNote, reportError }: Pro
     }
   };
 
+  const extendFolder = async (item: ManagedFolderShare) => {
+    const selected = extensions[item.folderId] ?? '168';
+    setWorkingId(item.folderId);
+    try {
+      const result = await api.extendFolderShare(
+        item.folderId,
+        selected === 'permanent' ? null : Number(selected),
+      );
+      setFolderShares((current) => current.map((share) =>
+        share.folderId === item.folderId ? { ...share, ...result.share } : share));
+      notify(selected === 'permanent' ? t('share_permanent_set') : t('share_extended'));
+    } catch (error) {
+      reportError(String(error));
+    } finally {
+      setWorkingId('');
+    }
+  };
+
+  const revokeFolder = async (item: ManagedFolderShare) => {
+    setWorkingId(item.folderId);
+    try {
+      await api.revokeFolderShare(item.folderId);
+      setFolderShares((current) => current.filter((share) => share.folderId !== item.folderId));
+      notify(t('share_cancelled'));
+    } catch (error) {
+      reportError(String(error));
+    } finally {
+      setWorkingId('');
+    }
+  };
+
+  const hasAnyShares = shares.length > 0 || folderShares.length > 0;
+
   return <div className="share-management">
     {loading ? <div className="panel-empty"><LoaderCircle className="spin" size={16} />{t('share_reading')}</div>
-      : !shares.length ? <div className="panel-empty">{t('no_shared_notes')}</div>
+      : !hasAnyShares ? <div className="panel-empty">{t('no_shared_notes')}</div>
         : <div className="share-management-list">
+          {folderShares.map((item) => {
+            const working = workingId === item.folderId;
+            return <section className="share-management-row" key={item.folderId}>
+              <div className="share-management-main">
+                <div className="share-management-note share-management-folder-title">
+                  <FolderOpen size={16} />
+                  <strong>{item.name}</strong>
+                  <span className="share-item-type-badge">{t('文件夹')}</span>
+                </div>
+                <span>
+                  {t('share_shared_at', dateTime(item.createdAt))} · {item.expiresAt === null
+                    ? t('never_expires')
+                    : t('share_until', dateTime(item.expiresAt))}
+                </span>
+              </div>
+              <div className="share-management-actions">
+                {item.expiresAt === null
+                  ? <span className="share-permanent"><InfinityIcon size={14} />{t('permanent')}</span>
+                  : <>
+                    <select aria-label={t('share_extend_duration_aria', item.name)}
+                      value={extensions[item.folderId] ?? '168'}
+                      disabled={disabled || working}
+                      onChange={(event) => setExtensions((current) => ({
+                        ...current,
+                        [item.folderId]: event.target.value,
+                      }))}>
+                      <option value="24">{t('延长 1 天')}</option>
+                      <option value="168">{t('延长 7 天')}</option>
+                      <option value="720">{t('延长 30 天')}</option>
+                      <option value="permanent">{t('设为永久')}</option>
+                    </select>
+                    <button aria-label={t('share_extend_aria', item.name)} disabled={disabled || working}
+                      onClick={() => void extendFolder(item)}>
+                      {working ? <LoaderCircle className="spin" size={15} /> : <CalendarPlus size={15} />}{t('extend')}
+                    </button>
+                  </>}
+                <button className="danger" aria-label={t('share_cancel_aria', item.name)}
+                  disabled={disabled || working} onClick={() => void revokeFolder(item)}>
+                  {working ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{t('stop_sharing')}
+                </button>
+              </div>
+            </section>;
+          })}
           {shares.map((item) => {
             const working = workingId === item.noteId;
             return <section className="share-management-row" key={item.noteId}>

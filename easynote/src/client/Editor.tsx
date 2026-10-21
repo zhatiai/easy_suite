@@ -1,13 +1,29 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
-import { Compartment, EditorState, Facet, type Range } from '@codemirror/state';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Compartment, EditorState, Facet, StateField, type Range } from '@codemirror/state';
 import { Decoration, EditorView, keymap, placeholder, ViewPlugin, type DecorationSet, type ViewUpdate, WidgetType } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { markdown } from '@codemirror/lang-markdown';
 import MarkdownIt from 'markdown-it';
 import footnote from 'markdown-it-footnote';
 import DOMPurify from 'dompurify';
+import katex from 'katex';
 import { idPattern } from '../shared/types';
 import { t } from './i18n';
+import { slugify, updateToc } from './toc';
+import { headings } from './knowledge';
+import { DocumentViewer } from './DocumentViewer';
+import {
+  type ParsedTable,
+  parseMarkdownTable,
+  serializeMarkdownTable,
+  insertRow,
+  deleteRow,
+  insertColumn,
+  deleteColumn,
+  setCell,
+  isDelimiterLine,
+} from './table';
 
 interface Props {
   value: string;
@@ -18,6 +34,7 @@ interface Props {
   onTogglePreview(): void;
   onShowShortcuts(): void;
   searchQuery?: string;
+  onRefreshToc?(): void;
 }
 
 export interface EditorHandle {
@@ -29,6 +46,9 @@ export interface EditorHandle {
   focus(): void;
 }
 
+const tocRefreshFacet = Facet.define<() => void, () => void>({
+  combine: (values) => values.at(-1) ?? (() => {}),
+});
 const searchQueryFacet = Facet.define<string, string>({
   combine: (values) => values.at(-1) ?? '',
 });
@@ -69,6 +89,534 @@ class LiveImageWidget extends WidgetType {
     image.alt = this.alt;
     image.loading = 'lazy';
     return image;
+  }
+}
+
+export function renderInlineMath(text: string): string {
+  if (!text.includes('$')) return text;
+  let result = text.replace(/(?<!\\)\$\$(.+?)(?<!\\)\$\$/g, (fullMatch, formula) => {
+    try {
+      return katex.renderToString(formula.trim(), { displayMode: true, throwOnError: false });
+    } catch {
+      return fullMatch;
+    }
+  });
+  result = result.replace(/(?<!\\)\$(?!\$|\s)([^\$\r\n]+?)(?<!\s)\$(?!\$)/g, (fullMatch, formula) => {
+    try {
+      return katex.renderToString(formula.trim(), { displayMode: false, throwOnError: false });
+    } catch {
+      return fullMatch;
+    }
+  });
+  return result;
+}
+
+class LiveMathWidget extends WidgetType {
+  constructor(private readonly formula: string, private readonly display: boolean) { super(); }
+  eq(other: LiveMathWidget) { return this.formula === other.formula && this.display === other.display; }
+  toDOM() {
+    const el = document.createElement(this.display ? 'div' : 'span');
+    el.className = this.display ? 'cm-live-math-block' : 'cm-live-math-inline';
+    el.title = this.display ? `$$${this.formula}$$` : `$${this.formula}$`;
+    try {
+      el.innerHTML = katex.renderToString(this.formula, {
+        displayMode: this.display,
+        throwOnError: false,
+      });
+    } catch {
+      el.textContent = this.formula;
+    }
+    return el;
+  }
+}
+
+class LiveTableWidget extends WidgetType {
+  private static pendingFocus: { tableFrom: number; row: number; col: number } | null = null;
+
+  constructor(
+    private readonly rawText: string,
+    private readonly table: ParsedTable,
+    private readonly from: number,
+    private readonly to: number,
+  ) {
+    super();
+  }
+
+  eq(other: LiveTableWidget) {
+    return this.rawText === other.rawText;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+
+  private dispatchUpdate(view: EditorView, newMarkdown: string, nextFocus?: { row: number; col: number }) {
+    if (newMarkdown === this.rawText) return;
+    if (nextFocus) {
+      LiveTableWidget.pendingFocus = { tableFrom: this.from, row: nextFocus.row, col: nextFocus.col };
+    }
+    view.dispatch({
+      changes: { from: this.from, to: this.to, insert: newMarkdown },
+      scrollIntoView: false,
+    });
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const container = document.createElement('div');
+    container.className = 'cm-live-table-container';
+
+    container.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) return;
+      e.stopPropagation();
+    });
+
+    const scroll = document.createElement('div');
+    scroll.className = 'cm-live-table-scroll';
+
+    const tableEl = document.createElement('table');
+    tableEl.className = 'cm-live-table';
+
+    let localTable = { ...this.table };
+    const inputs: HTMLInputElement[][] = [];
+
+    const createInput = (value: string, r: number, c: number, placeholderText = ''): { input: HTMLInputElement; mathPreview: HTMLDivElement | null } => {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'cm-live-table-cell-input';
+      if (r === -1) input.classList.add('cm-live-table-header-input');
+      input.value = value;
+      input.placeholder = placeholderText;
+      const align = this.table.alignments[c];
+      if (align) input.style.textAlign = align;
+
+      let mathPreview: HTMLDivElement | null = null;
+      const setupMathPreview = () => {
+        if (!mathPreview) {
+          mathPreview = document.createElement('div');
+          mathPreview.className = 'cm-live-table-cell-math-preview';
+          if (align) mathPreview.style.justifyContent = align === 'right' ? 'flex-end' : align === 'center' ? 'center' : 'flex-start';
+          mathPreview.addEventListener('mousedown', (e) => e.stopPropagation());
+          mathPreview.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (mathPreview) mathPreview.style.display = 'none';
+            input.style.display = 'block';
+            input.focus();
+            input.select();
+          });
+          input.parentElement?.appendChild(mathPreview);
+        }
+        return mathPreview;
+      };
+
+      const initialMath = renderInlineMath(value);
+      if (initialMath !== value) {
+        input.style.display = 'none';
+        mathPreview = document.createElement('div');
+        mathPreview.className = 'cm-live-table-cell-math-preview';
+        if (align) mathPreview.style.justifyContent = align === 'right' ? 'flex-end' : align === 'center' ? 'center' : 'flex-start';
+        mathPreview.innerHTML = initialMath;
+        mathPreview.addEventListener('mousedown', (e) => e.stopPropagation());
+        mathPreview.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (mathPreview) mathPreview.style.display = 'none';
+          input.style.display = 'block';
+          input.focus();
+          input.select();
+        });
+      }
+
+      input.addEventListener('focus', () => {
+        if (mathPreview) mathPreview.style.display = 'none';
+        input.style.display = 'block';
+      });
+
+      let committed = false;
+      const commit = () => {
+        if (committed) return;
+        const currentVal = r === -1 ? this.table.headers[c] : this.table.rows[r]?.[c] ?? '';
+        if (input.value !== currentVal) {
+          committed = true;
+          localTable = setCell(localTable, r, c, input.value);
+          const newMd = serializeMarkdownTable(localTable);
+          this.dispatchUpdate(view, newMd);
+        }
+      };
+
+      input.addEventListener('input', () => {
+        localTable = setCell(localTable, r, c, input.value);
+      });
+
+      input.addEventListener('blur', () => {
+        commit();
+        const updatedMath = renderInlineMath(input.value);
+        if (updatedMath !== input.value) {
+          const el = setupMathPreview();
+          el.innerHTML = updatedMath;
+          el.style.display = 'flex';
+          input.style.display = 'none';
+        } else if (mathPreview) {
+          mathPreview.style.display = 'none';
+          input.style.display = 'block';
+        }
+      });
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          commit();
+          if (!e.shiftKey) {
+            if (c < this.table.headers.length - 1) {
+              const nextInput = inputs[r + 1]?.[c + 1];
+              nextInput?.focus();
+              nextInput?.select();
+            } else if (r < this.table.rows.length - 1) {
+              const nextInput = inputs[r + 2]?.[0];
+              nextInput?.focus();
+              nextInput?.select();
+            } else {
+              const updated = insertRow(localTable);
+              const newMd = serializeMarkdownTable(updated);
+              this.dispatchUpdate(view, newMd, { row: this.table.rows.length, col: 0 });
+            }
+          } else {
+            if (c > 0) {
+              const prevInput = inputs[r + 1]?.[c - 1];
+              prevInput?.focus();
+              prevInput?.select();
+            } else if (r >= 0) {
+              const prevInput = inputs[r]?.[this.table.headers.length - 1];
+              prevInput?.focus();
+              prevInput?.select();
+            }
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          commit();
+          if (r < this.table.rows.length - 1) {
+            const nextInput = inputs[r + 2]?.[c];
+            nextInput?.focus();
+            nextInput?.select();
+          } else {
+            const updated = insertRow(localTable);
+            const newMd = serializeMarkdownTable(updated);
+            this.dispatchUpdate(view, newMd, { row: this.table.rows.length, col: c });
+          }
+        } else if (e.key === 'ArrowUp') {
+          if (r >= 0) {
+            e.preventDefault();
+            commit();
+            const aboveInput = inputs[r]?.[c];
+            aboveInput?.focus();
+            aboveInput?.select();
+          }
+        } else if (e.key === 'ArrowDown') {
+          if (r < this.table.rows.length - 1) {
+            e.preventDefault();
+            commit();
+            const belowInput = inputs[r + 2]?.[c];
+            belowInput?.focus();
+            belowInput?.select();
+          }
+        }
+      });
+
+      return { input, mathPreview };
+    };
+
+    // Header
+    const thead = document.createElement('thead');
+    const headerTr = document.createElement('tr');
+    const headerInputs: HTMLInputElement[] = [];
+
+    this.table.headers.forEach((headerText, c) => {
+      const th = document.createElement('th');
+      const wrapper = document.createElement('div');
+      wrapper.className = 'cm-live-table-cell-wrapper';
+
+      const { input, mathPreview } = createInput(headerText, -1, c, t('table_header'));
+      headerInputs.push(input);
+      wrapper.appendChild(input);
+      if (mathPreview) wrapper.appendChild(mathPreview);
+
+      if (this.table.headers.length > 1) {
+        const delColBtn = document.createElement('button');
+        delColBtn.className = 'cm-live-table-col-del';
+        delColBtn.type = 'button';
+        delColBtn.title = t('delete_column');
+        delColBtn.setAttribute('aria-label', t('delete_column'));
+        delColBtn.textContent = '✕';
+        delColBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+        delColBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const updated = deleteColumn(localTable, c);
+          const newMd = serializeMarkdownTable(updated);
+          this.dispatchUpdate(view, newMd);
+        });
+        wrapper.appendChild(delColBtn);
+      }
+
+      th.appendChild(wrapper);
+      headerTr.appendChild(th);
+    });
+
+    inputs.push(headerInputs);
+
+    // Header action cell (+ column)
+    const addColTh = document.createElement('th');
+    addColTh.className = 'cm-live-table-add-col-th';
+    const addColBtn = document.createElement('button');
+    addColBtn.className = 'cm-live-table-add-col-btn';
+    addColBtn.type = 'button';
+    addColBtn.title = t('add_column');
+    addColBtn.setAttribute('aria-label', t('add_column'));
+    addColBtn.textContent = '+ ' + t('add_column');
+    addColBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    addColBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const updated = insertColumn(localTable);
+      const newMd = serializeMarkdownTable(updated);
+      this.dispatchUpdate(view, newMd, { row: -1, col: this.table.headers.length });
+    });
+    addColTh.appendChild(addColBtn);
+    headerTr.appendChild(addColTh);
+    thead.appendChild(headerTr);
+    tableEl.appendChild(thead);
+
+    // Body
+    const tbody = document.createElement('tbody');
+    this.table.rows.forEach((row, r) => {
+      const tr = document.createElement('tr');
+      const rowInputs: HTMLInputElement[] = [];
+
+      this.table.headers.forEach((_, c) => {
+        const td = document.createElement('td');
+        const wrapper = document.createElement('div');
+        wrapper.className = 'cm-live-table-cell-wrapper';
+
+        const cellValue = row[c] ?? '';
+        const { input, mathPreview } = createInput(cellValue, r, c);
+        rowInputs.push(input);
+        wrapper.appendChild(input);
+        if (mathPreview) wrapper.appendChild(mathPreview);
+        td.appendChild(wrapper);
+        tr.appendChild(td);
+      });
+
+      // Delete row button
+      const delRowTd = document.createElement('td');
+      delRowTd.className = 'cm-live-table-row-del-td';
+      const delRowBtn = document.createElement('button');
+      delRowBtn.className = 'cm-live-table-row-del-btn';
+      delRowBtn.type = 'button';
+      delRowBtn.title = t('delete_row');
+      delRowBtn.setAttribute('aria-label', t('delete_row'));
+      delRowBtn.textContent = '✕';
+      delRowBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+      delRowBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const updated = deleteRow(localTable, r);
+        const newMd = serializeMarkdownTable(updated);
+        this.dispatchUpdate(view, newMd);
+      });
+      delRowTd.appendChild(delRowBtn);
+      tr.appendChild(delRowTd);
+
+      inputs.push(rowInputs);
+      tbody.appendChild(tr);
+    });
+    tableEl.appendChild(tbody);
+    scroll.appendChild(tableEl);
+    container.appendChild(scroll);
+
+    // Footer (+ row)
+    const footer = document.createElement('div');
+    footer.className = 'cm-live-table-footer';
+    const addRowBtn = document.createElement('button');
+    addRowBtn.className = 'cm-live-table-add-row-btn';
+    addRowBtn.type = 'button';
+    addRowBtn.title = t('add_row');
+    addRowBtn.setAttribute('aria-label', t('add_row'));
+    addRowBtn.textContent = '+ ' + t('add_row');
+    addRowBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    addRowBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const updated = insertRow(localTable);
+      const newMd = serializeMarkdownTable(updated);
+      this.dispatchUpdate(view, newMd, { row: this.table.rows.length, col: 0 });
+    });
+    footer.appendChild(addRowBtn);
+    container.appendChild(footer);
+
+    if (LiveTableWidget.pendingFocus && LiveTableWidget.pendingFocus.tableFrom === this.from) {
+      const { row, col } = LiveTableWidget.pendingFocus;
+      LiveTableWidget.pendingFocus = null;
+      setTimeout(() => {
+        const targetInput = inputs[row + 1]?.[col];
+        if (targetInput) {
+          targetInput.style.display = 'block';
+          const preview = targetInput.parentElement?.querySelector<HTMLElement>('.cm-live-table-cell-math-preview');
+          if (preview) preview.style.display = 'none';
+          targetInput.focus();
+          targetInput.select();
+        }
+      }, 0);
+    }
+
+    return container;
+  }
+}
+
+class LiveTocWidget extends WidgetType {
+  constructor(
+    private readonly rawToc: string,
+    private readonly from: number,
+    private readonly to: number,
+  ) {
+    super();
+  }
+
+  eq(other: LiveTocWidget) {
+    return this.rawToc === other.rawToc && this.from === other.from && this.to === other.to;
+  }
+
+  ignoreEvent() {
+    return false;
+  }
+
+  toDOM(view: EditorView): HTMLElement {
+    const card = document.createElement('nav');
+    card.className = 'cm-live-toc-container markdown-toc-card';
+    card.setAttribute('aria-label', t('note_toc'));
+
+    const header = document.createElement('div');
+    header.className = 'markdown-toc-header';
+
+    const titleWrapper = document.createElement('div');
+    titleWrapper.className = 'markdown-toc-title-wrapper';
+
+    const icon = document.createElement('span');
+    icon.className = 'markdown-toc-icon';
+    icon.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h14"/><path d="M11 18h10"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>';
+
+    const title = document.createElement('span');
+    title.className = 'markdown-toc-title';
+    title.textContent = t('note_toc');
+
+    titleWrapper.appendChild(icon);
+    titleWrapper.appendChild(title);
+
+    const actions = document.createElement('div');
+    actions.className = 'markdown-toc-actions';
+
+    const refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button';
+    refreshBtn.className = 'markdown-toc-action-btn';
+    refreshBtn.title = t('update_toc');
+    refreshBtn.setAttribute('aria-label', t('update_toc'));
+    refreshBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>';
+
+    refreshBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+    refreshBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const onRefresh = view.state.facet(tocRefreshFacet);
+      if (onRefresh) {
+        onRefresh();
+      } else {
+        const { content: updated, changed } = updateToc(view.state.doc.toString());
+        if (changed) {
+          view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: updated } });
+        }
+      }
+    });
+
+    actions.appendChild(refreshBtn);
+    header.appendChild(titleWrapper);
+    header.appendChild(actions);
+    card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'markdown-toc-body';
+
+    const list = document.createElement('ul');
+    list.className = 'markdown-toc-list';
+
+    const lines = this.rawToc.split(/\r?\n/);
+    const itemRegex = /^(\s*)[-+*]\s+\[([^\]]+)\]\((#[^)]+)\)/;
+
+    const items: { depth: number; text: string; hash: string }[] = [];
+    for (const line of lines) {
+      const match = itemRegex.exec(line);
+      if (match) {
+        const indent = match[1].length;
+        const itemText = match[2].replace(/\\([\[\]])/g, '$1');
+        const hash = match[3];
+        items.push({ depth: Math.floor(indent / 2), text: itemText, hash });
+      }
+    }
+
+    if (items.length) {
+      const badge = document.createElement('span');
+      badge.className = 'markdown-toc-badge';
+      badge.textContent = `${items.length}`;
+      titleWrapper.appendChild(badge);
+    }
+
+    for (const item of items) {
+      const li = document.createElement('li');
+      li.className = `markdown-toc-item markdown-toc-depth-${item.depth}`;
+      li.style.paddingLeft = `${item.depth * 16 + 8}px`;
+
+      const dot = document.createElement('span');
+      dot.className = 'markdown-toc-dot';
+
+      const a = document.createElement('a');
+      a.className = 'markdown-toc-link';
+      a.href = item.hash;
+      a.textContent = item.text;
+
+      const clickHandler = (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const rawSlug = item.hash.slice(1);
+        const slug = decodeURIComponent(rawSlug);
+        const allHeadings = headings(view.state.doc.toString());
+        const slugCounts = new Map<string, number>();
+        let targetOffset: number | null = null;
+        for (const h of allHeadings) {
+          const base = slugify(h.text);
+          const count = slugCounts.get(base) ?? 0;
+          slugCounts.set(base, count + 1);
+          const hSlug = count === 0 ? base : `${base}-${count}`;
+          if (hSlug === slug || hSlug === rawSlug) {
+            targetOffset = h.offset;
+            break;
+          }
+        }
+        if (targetOffset === null) {
+          const fallback = allHeadings.find((h) => h.text === item.text);
+          if (fallback) targetOffset = fallback.offset;
+        }
+        if (targetOffset !== null) {
+          view.dispatch({
+            selection: { anchor: targetOffset },
+            scrollIntoView: true,
+          });
+          view.focus();
+        }
+      };
+
+      li.addEventListener('mousedown', (e) => e.stopPropagation());
+      li.addEventListener('click', clickHandler);
+
+      li.appendChild(dot);
+      li.appendChild(a);
+      list.appendChild(li);
+    }
+
+    body.appendChild(list);
+    card.appendChild(body);
+    return card;
   }
 }
 
@@ -119,6 +667,12 @@ function liveMarkdownDecorations(view: EditorView): { decorations: DecorationSet
     addPairs(/(\*\*|__)(.+?)\1/g, 'cm-live-strong');
     addPairs(/(`)([^`\r\n]+)\1/g, 'cm-live-code');
     addPairs(/(?<!\*)(\*)(?!\*)([^*\r\n]+)\1(?!\*)/g, 'cm-live-emphasis');
+    for (const match of text.matchAll(/(?<!\\|\$)\$(?!\$|\s)([^\$\r\n]+?)(?<!\s)\$(?!\$)/g)) {
+      const offset = match.index ?? 0;
+      const from = lineFrom + offset;
+      const to = from + match[0].length;
+      addReplacement(from, to, new LiveMathWidget(match[1], false));
+    }
   };
 
   for (let number = 1; number <= view.state.doc.lines; number++) {
@@ -135,6 +689,51 @@ function liveMarkdownDecorations(view: EditorView): { decorations: DecorationSet
     if (fenced) {
       ranges.push(Decoration.line({ class: 'cm-live-code-block' }).range(line.from));
       continue;
+    }
+    const trimmedLine = text.trim();
+    if (!fenced && /^<!--\s*toc\s*-->/i.test(trimmedLine)) {
+      let endLineNumber = number;
+      while (endLineNumber <= view.state.doc.lines) {
+        if (/<!--\s*(?:\/toc|tocstop)\s*-->/i.test(view.state.doc.line(endLineNumber).text.trim())) {
+          break;
+        }
+        endLineNumber++;
+      }
+      number = endLineNumber;
+      continue;
+    }
+    if (!fenced && number < view.state.doc.lines) {
+      const lineText = text.trim();
+      const nextLineText = view.state.doc.line(number + 1).text.trim();
+      if (lineText.includes('|') && isDelimiterLine(nextLineText)) {
+        let endLineNumber = number + 1;
+        while (endLineNumber + 1 <= view.state.doc.lines) {
+          const candidateLine = view.state.doc.line(endLineNumber + 1).text;
+          const candidateTrimmed = candidateLine.trim();
+          if (!candidateTrimmed || !candidateTrimmed.includes('|') ||
+              /^(?:#{1,6}\s|[-*+]\s|>|`{3,}|~{3,})/.test(candidateTrimmed)) {
+            break;
+          }
+          endLineNumber++;
+        }
+        number = endLineNumber;
+        continue;
+      }
+    }
+    const trimmedMathLine = text.trim();
+    if (!fenced && trimmedMathLine.startsWith('$$')) {
+      if (trimmedMathLine.length > 2 && trimmedMathLine.endsWith('$$')) {
+        continue;
+      }
+      let endLineNumber = number + 1;
+      while (endLineNumber <= view.state.doc.lines) {
+        if (view.state.doc.line(endLineNumber).text.trim().endsWith('$$')) break;
+        endLineNumber++;
+      }
+      if (endLineNumber <= view.state.doc.lines && view.state.doc.line(endLineNumber).text.trim().endsWith('$$')) {
+        number = endLineNumber;
+        continue;
+      }
     }
     const heading = /^(#{1,6})\s+/.exec(text);
     if (heading) {
@@ -182,6 +781,196 @@ function liveMarkdownDecorations(view: EditorView): { decorations: DecorationSet
     replacements: Decoration.set(replacementRanges, true),
   };
 }
+
+function buildTableDecorations(state: EditorState): DecorationSet {
+  const decorations: Range<Decoration>[] = [];
+  let fenced = false;
+  let fenceMarker = '';
+
+  for (let number = 1; number <= state.doc.lines; number++) {
+    const line = state.doc.line(number);
+    const text = line.text;
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(text);
+    if (fence) {
+      if (!fenced) { fenced = true; fenceMarker = fence[1][0]; }
+      else if (fence[1][0] === fenceMarker) { fenced = false; fenceMarker = ''; }
+      continue;
+    }
+    if (fenced) continue;
+
+    if (number < state.doc.lines) {
+      const lineText = text.trim();
+      const nextLineText = state.doc.line(number + 1).text.trim();
+      if (lineText.includes('|') && isDelimiterLine(nextLineText)) {
+        const tableLines = [text, state.doc.line(number + 1).text];
+        let endLineNumber = number + 1;
+        while (endLineNumber + 1 <= state.doc.lines) {
+          const candidateLine = state.doc.line(endLineNumber + 1).text;
+          const candidateTrimmed = candidateLine.trim();
+          if (!candidateTrimmed || !candidateTrimmed.includes('|') ||
+              /^(?:#{1,6}\s|[-*+]\s|>|`{3,}|~{3,})/.test(candidateTrimmed)) {
+            break;
+          }
+          tableLines.push(candidateLine);
+          endLineNumber++;
+        }
+        const parsed = parseMarkdownTable(tableLines);
+        if (parsed) {
+          const tableStart = line.from;
+          const tableEnd = state.doc.line(endLineNumber).to;
+          const rawText = state.sliceDoc(tableStart, tableEnd);
+          const widget = new LiveTableWidget(rawText, parsed, tableStart, tableEnd);
+          decorations.push(Decoration.replace({ widget, block: true }).range(tableStart, tableEnd));
+          number = endLineNumber;
+          continue;
+        }
+      }
+    }
+  }
+
+  return Decoration.set(decorations, true);
+}
+
+const tableField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildTableDecorations(state);
+  },
+  update(decorations, transaction) {
+    if (transaction.docChanged) {
+      return buildTableDecorations(transaction.state);
+    }
+    return decorations;
+  },
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field)),
+  ],
+});
+
+function buildMathDecorations(state: EditorState): DecorationSet {
+  const decorations: Range<Decoration>[] = [];
+  let fenced = false;
+  let fenceMarker = '';
+
+  for (let number = 1; number <= state.doc.lines; number++) {
+    const line = state.doc.line(number);
+    const text = line.text;
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(text);
+    if (fence) {
+      if (!fenced) { fenced = true; fenceMarker = fence[1][0]; }
+      else if (fence[1][0] === fenceMarker) { fenced = false; fenceMarker = ''; }
+      continue;
+    }
+    if (fenced) continue;
+
+    const trimmed = text.trim();
+    if (trimmed.startsWith('$$')) {
+      if (trimmed.length > 2 && trimmed.endsWith('$$')) {
+        const formula = trimmed.slice(2, -2).trim();
+        if (formula) {
+          const widget = new LiveMathWidget(formula, true);
+          decorations.push(Decoration.replace({ widget, block: true }).range(line.from, line.to));
+          continue;
+        }
+      }
+      const startLine = number;
+      let endLine = number;
+      while (endLine + 1 <= state.doc.lines) {
+        endLine++;
+        if (state.doc.line(endLine).text.trim().endsWith('$$')) break;
+      }
+      if (endLine > startLine && state.doc.line(endLine).text.trim().endsWith('$$')) {
+        const from = line.from;
+        const to = state.doc.line(endLine).to;
+        const formulaLines: string[] = [];
+        for (let l = startLine + 1; l < endLine; l++) {
+          formulaLines.push(state.doc.line(l).text);
+        }
+        const formula = formulaLines.join('\n').trim();
+        if (formula) {
+          const widget = new LiveMathWidget(formula, true);
+          decorations.push(Decoration.replace({ widget, block: true }).range(from, to));
+        }
+        number = endLine;
+        continue;
+      }
+    }
+  }
+
+  return Decoration.set(decorations, true);
+}
+
+const mathField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildMathDecorations(state);
+  },
+  update(decorations, transaction) {
+    if (transaction.docChanged) {
+      return buildMathDecorations(transaction.state);
+    }
+    return decorations;
+  },
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field)),
+  ],
+});
+
+function buildTocDecorations(state: EditorState): DecorationSet {
+  const decorations: Range<Decoration>[] = [];
+  let fenced = false;
+  let fenceMarker = '';
+
+  for (let number = 1; number <= state.doc.lines; number++) {
+    const line = state.doc.line(number);
+    const text = line.text;
+    const fence = /^\s{0,3}(`{3,}|~{3,})/.exec(text);
+    if (fence) {
+      if (!fenced) { fenced = true; fenceMarker = fence[1][0]; }
+      else if (fence[1][0] === fenceMarker) { fenced = false; fenceMarker = ''; }
+      continue;
+    }
+    if (fenced) continue;
+
+    const trimmed = text.trim();
+    if (/^<!--\s*toc\s*-->/i.test(trimmed)) {
+      let endLine = number;
+      while (endLine <= state.doc.lines) {
+        if (/<!--\s*(?:\/toc|tocstop)\s*-->/i.test(state.doc.line(endLine).text.trim())) {
+          break;
+        }
+        endLine++;
+      }
+      if (endLine <= state.doc.lines) {
+        const from = line.from;
+        const to = state.doc.line(endLine).to;
+        const rawToc = state.sliceDoc(from, to);
+        const widget = new LiveTocWidget(rawToc, from, to);
+        decorations.push(Decoration.replace({ widget, block: true }).range(from, to));
+        number = endLine;
+        continue;
+      }
+    }
+  }
+
+  return Decoration.set(decorations, true);
+}
+
+const tocField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildTocDecorations(state);
+  },
+  update(decorations, transaction) {
+    if (transaction.docChanged) {
+      return buildTocDecorations(transaction.state);
+    }
+    return decorations;
+  },
+  provide: (field) => [
+    EditorView.decorations.from(field),
+    EditorView.atomicRanges.of((view) => view.state.field(field)),
+  ],
+});
 
 const liveMarkdown = ViewPlugin.fromClass(class {
   decorations: DecorationSet;
@@ -270,15 +1059,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
   onTogglePreview,
   onShowShortcuts,
   searchQuery = '',
+  onRefreshToc,
 }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
   const search = useRef(new Compartment());
   const presentation = useRef(new Compartment());
-  const callbacks = useRef({ onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts });
+  const callbacks = useRef({ onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts, onRefreshToc });
   const modeRef = useRef(mode);
   const insertions = useRef(new Map<string, number>());
-  callbacks.current = { onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts };
+  callbacks.current = { onChange, onImages, onSubmit, onTogglePreview, onShowShortcuts, onRefreshToc };
   modeRef.current = mode;
   const external = useRef(false);
 
@@ -338,7 +1128,8 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
           EditorView.lineWrapping, placeholder(t('start_writing')),
           search.current.of(searchQueryFacet.of(searchQuery)),
           searchHighlights,
-          presentation.current.of(mode === 'live' ? liveMarkdown : []),
+          tocRefreshFacet.of(() => callbacks.current.onRefreshToc?.()),
+          presentation.current.of(mode === 'live' ? [liveMarkdown, tableField, mathField, tocField] : []),
           EditorView.contentAttributes.of({
             'aria-label': t('note_content'),
             'aria-keyshortcuts': 'Meta+B Control+B Meta+I Control+I Meta+E Control+E Meta+Enter Control+Enter Meta+/ Control+/',
@@ -356,6 +1147,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
             mousedown(event, editorView) {
               if (modeRef.current !== 'live' || event.button !== 0 || event.detail !== 1 ||
                   event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+              if (event.target instanceof Element && event.target.closest('.cm-live-table-container, .cm-live-toc-container')) return false;
               const position = editorPositionAtPointer(editorView, event);
               if (position === null) return false;
               event.preventDefault();
@@ -390,22 +1182,218 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
     const editor = view.current;
     if (!editor || editor.state.doc.toString() === value) return;
     external.current = true;
-    editor.dispatch({ changes: { from: 0, to: editor.state.doc.length, insert: value } });
+    const prevSel = editor.state.selection;
+    const oldText = editor.state.doc.toString();
+    let prefix = 0;
+    while (prefix < oldText.length && prefix < value.length && oldText[prefix] === value[prefix]) {
+      prefix++;
+    }
+    let suffixOld = oldText.length;
+    let suffixNew = value.length;
+    while (suffixOld > prefix && suffixNew > prefix && oldText[suffixOld - 1] === value[suffixNew - 1]) {
+      suffixOld--;
+      suffixNew--;
+    }
+    const changes = {
+      from: prefix,
+      to: suffixOld,
+      insert: value.slice(prefix, suffixNew),
+    };
+    editor.dispatch({
+      changes,
+      selection: prevSel.map(editor.state.changes(changes)),
+    });
     external.current = false;
   }, [value]);
   useEffect(() => {
     view.current?.dispatch({ effects: search.current.reconfigure(searchQueryFacet.of(searchQuery)) });
   }, [searchQuery]);
   useEffect(() => {
-    view.current?.dispatch({ effects: presentation.current.reconfigure(mode === 'live' ? liveMarkdown : []) });
+    view.current?.dispatch({ effects: presentation.current.reconfigure(mode === 'live' ? [liveMarkdown, tableField, mathField, tocField] : []) });
   }, [mode]);
   return <div className={`code-editor ${mode === 'live' ? 'live-markdown-editor' : 'source-markdown-editor'}`} ref={host} />;
 });
 
-const renderer = new MarkdownIt({ html: true, linkify: true, breaks: true }).use(footnote);
+function mathPlugin(md: MarkdownIt) {
+  md.inline.ruler.after('backticks', 'math_inline', (state, silent) => {
+    if (state.src.charCodeAt(state.pos) !== 0x24 /* $ */) return false;
+
+    const isDouble = state.src.charCodeAt(state.pos + 1) === 0x24;
+    const delim = isDouble ? '$$' : '$';
+    const delimLen = delim.length;
+    const start = state.pos + delimLen;
+
+    if (!isDouble) {
+      const nextChar = state.src.charCodeAt(start);
+      if (nextChar === 0x20 || nextChar === 0x09 || nextChar === 0x0a || nextChar === 0x0d) {
+        return false;
+      }
+    }
+
+    let match = -1;
+    let pos = start;
+    while ((pos = state.src.indexOf(delim, pos)) !== -1) {
+      let backslashes = 0;
+      let checkPos = pos - 1;
+      while (checkPos >= start && state.src.charCodeAt(checkPos) === 0x5c /* \ */) {
+        backslashes++;
+        checkPos--;
+      }
+      if (backslashes % 2 === 0) {
+        if (!isDouble) {
+          const prevChar = state.src.charCodeAt(pos - 1);
+          if (prevChar === 0x20 || prevChar === 0x09 || prevChar === 0x0a || prevChar === 0x0d) {
+            pos += delimLen;
+            continue;
+          }
+        }
+        match = pos;
+        break;
+      }
+      pos += delimLen;
+    }
+
+    if (match === -1) return false;
+
+    const content = state.src.slice(start, match).trim();
+    if (!content) return false;
+    if (!isDouble && content.includes('\n')) return false;
+
+    if (!silent) {
+      const token = state.push(isDouble ? 'math_block' : 'math_inline', 'math', 0);
+      token.content = content;
+      token.markup = delim;
+    }
+    state.pos = match + delimLen;
+    return true;
+  });
+
+  md.block.ruler.after('blockquote', 'math_block', (state, startLine, endLine, silent) => {
+    let pos = state.bMarks[startLine] + state.tShift[startLine];
+    let max = state.eMarks[startLine];
+
+    if (pos + 2 > max) return false;
+    if (state.src.slice(pos, pos + 2) !== '$$') return false;
+
+    pos += 2;
+    const firstLine = state.src.slice(pos, max);
+
+    if (silent) return true;
+
+    let haveEndMarker = false;
+    let nextLine = startLine;
+
+    const trimmedFirst = firstLine.trim();
+    if (trimmedFirst.length >= 2 && trimmedFirst.endsWith('$$')) {
+      haveEndMarker = true;
+    }
+
+    while (!haveEndMarker) {
+      nextLine++;
+      if (nextLine >= endLine) break;
+
+      pos = state.bMarks[nextLine] + state.tShift[nextLine];
+      max = state.eMarks[nextLine];
+
+      if (pos < max && state.tShift[nextLine] < state.blkIndent) break;
+
+      const lineContent = state.src.slice(pos, max).trim();
+      if (lineContent === '$$' || lineContent.endsWith('$$')) {
+        haveEndMarker = true;
+      }
+    }
+
+    state.line = nextLine + (haveEndMarker ? 1 : 0);
+
+    const token = state.push('math_block', 'math', 0);
+    token.block = true;
+    if (haveEndMarker && nextLine === startLine) {
+      token.content = trimmedFirst.slice(0, -2).trim();
+    } else {
+      token.content = state.getLines(startLine + 1, nextLine, state.tShift[startLine], false).trim();
+    }
+    token.map = [startLine, state.line];
+    token.markup = '$$';
+    return true;
+  }, {
+    alt: ['paragraph', 'reference', 'blockquote', 'list'],
+  });
+
+  md.renderer.rules.math_inline = (tokens, index) => {
+    const source = md.utils.escapeHtml(tokens[index].content);
+    return `<span data-katex-source="${source}"></span>`;
+  };
+  md.renderer.rules.math_block = (tokens, index) => {
+    const source = md.utils.escapeHtml(tokens[index].content);
+    return `<div data-katex-display="true" data-katex-source="${source}"></div>\n`;
+  };
+}
+
+function tocMarkdownPlugin(md: MarkdownIt) {
+  md.block.ruler.before('html_block', 'toc_block', (state, startLine, endLine, silent) => {
+    const pos = state.bMarks[startLine] + state.tShift[startLine];
+    const max = state.eMarks[startLine];
+    const line = state.src.slice(pos, max).trim();
+    if (!/^<!--\s*toc\s*-->/i.test(line)) return false;
+
+    if (silent) return true;
+
+    let nextLine = startLine + 1;
+    let haveEnd = false;
+    while (nextLine < endLine) {
+      const p = state.bMarks[nextLine] + state.tShift[nextLine];
+      const m = state.eMarks[nextLine];
+      const l = state.src.slice(p, m).trim();
+      if (/<!--\s*(?:\/toc|tocstop)\s*-->/i.test(l)) {
+        haveEnd = true;
+        break;
+      }
+      nextLine++;
+    }
+
+    const endLineNum = haveEnd ? nextLine + 1 : nextLine;
+
+    const openToken = state.push('toc_container_open', 'nav', 1);
+    openToken.attrSet('data-toc-container', 'true');
+    openToken.block = true;
+
+    const oldParentType = state.parentType;
+    state.parentType = 'root';
+    state.md.block.tokenize(state, startLine + 1, nextLine);
+    state.parentType = oldParentType;
+
+    const closeToken = state.push('toc_container_close', 'nav', -1);
+    closeToken.block = true;
+
+    state.line = endLineNum;
+    return true;
+  });
+
+  md.renderer.rules.toc_container_open = (tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options);
+  md.renderer.rules.toc_container_close = (tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options);
+}
+
+const renderer = new MarkdownIt({ html: true, linkify: true, breaks: true })
+  .use(footnote)
+  .use(mathPlugin)
+  .use(tocMarkdownPlugin);
 renderer.core.ruler.after('block', 'source_lines', (state) => {
   for (const token of state.tokens) {
     if (token.map && token.nesting === 1) token.attrSet('data-source-line', String(token.map[0]));
+  }
+});
+renderer.core.ruler.push('heading_slugs', (state) => {
+  const slugCounts = new Map<string, number>();
+  for (let i = 0; i < state.tokens.length; i++) {
+    if (state.tokens[i].type === 'heading_open') {
+      const inlineToken = state.tokens[i + 1];
+      const text = inlineToken ? inlineToken.content : '';
+      const base = slugify(text);
+      const count = slugCounts.get(base) ?? 0;
+      slugCounts.set(base, count + 1);
+      const slug = count === 0 ? base : `${base}-${count}`;
+      state.tokens[i].attrSet('data-heading-slug', slug);
+    }
   }
 });
 const defaultText = renderer.renderer.rules.text;
@@ -488,7 +1476,7 @@ function highlightRenderedText(root: HTMLElement, query: string) {
   let current = walker.nextNode();
   while (current) {
     const text = current as Text;
-    if (text.parentElement && !text.parentElement.closest('svg, .search-highlight') &&
+    if (text.parentElement && !text.parentElement.closest('svg, .katex, .search-highlight') &&
         text.data.toLocaleLowerCase().includes(normalizedNeedle)) matches.push(text);
     current = walker.nextNode();
   }
@@ -511,14 +1499,17 @@ function highlightRenderedText(root: HTMLElement, query: string) {
   }
 }
 
-function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery: string): string {
+function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery: string, canRefreshToc = false): string {
   const clean = DOMPurify.sanitize(renderer.render(content), {
     USE_PROFILES: { html: true },
+    ADD_TAGS: ['nav'],
     ADD_ATTR: [
       'target', 'download', 'data-source-line', 'data-code-language', 'data-mermaid-source',
       'data-note-id', 'data-private-image', 'data-private-file', 'data-footnotes',
       'data-footnotes-separator', 'data-footnote-id', 'data-footnote-ref',
       'data-footnote-reference', 'data-footnote-backref',
+      'data-katex-source', 'data-katex-display', 'data-heading-slug',
+      'data-toc-container', 'data-toc-action',
     ],
     ALLOW_DATA_ATTR: false,
     FORBID_TAGS: [
@@ -528,6 +1519,60 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
     FORBID_ATTR: ['style', 'srcset', 'id', 'name', 'class'],
   });
   const parsed = new DOMParser().parseFromString(clean, 'text/html');
+  parsed.body.querySelectorAll<HTMLElement>('[data-toc-container]').forEach((container) => {
+    container.className = 'markdown-toc-card';
+    const header = parsed.createElement('div');
+    header.className = 'markdown-toc-header';
+
+    const titleWrapper = parsed.createElement('div');
+    titleWrapper.className = 'markdown-toc-title-wrapper';
+
+    const icon = parsed.createElement('span');
+    icon.className = 'markdown-toc-icon';
+    icon.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M7 12h14"/><path d="M11 18h10"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>';
+
+    const title = parsed.createElement('span');
+    title.className = 'markdown-toc-title';
+    title.textContent = t('note_toc');
+
+    titleWrapper.appendChild(icon);
+    titleWrapper.appendChild(title);
+
+    const itemsCount = container.querySelectorAll('li').length;
+    if (itemsCount > 0) {
+      const badge = parsed.createElement('span');
+      badge.className = 'markdown-toc-badge';
+      badge.textContent = `${itemsCount}`;
+      titleWrapper.appendChild(badge);
+    }
+
+    header.appendChild(titleWrapper);
+
+    if (canRefreshToc) {
+      const actions = parsed.createElement('div');
+      actions.className = 'markdown-toc-actions';
+
+      const refreshBtn = parsed.createElement('button');
+      refreshBtn.type = 'button';
+      refreshBtn.className = 'markdown-toc-action-btn';
+      refreshBtn.setAttribute('data-toc-action', 'refresh');
+      refreshBtn.title = t('update_toc');
+      refreshBtn.setAttribute('aria-label', t('update_toc'));
+      refreshBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 21h5v-5"/></svg>';
+
+      actions.appendChild(refreshBtn);
+      header.appendChild(actions);
+    }
+
+    const body = parsed.createElement('div');
+    body.className = 'markdown-toc-body';
+    while (container.firstChild) {
+      body.appendChild(container.firstChild);
+    }
+
+    container.appendChild(header);
+    container.appendChild(body);
+  });
   parsed.body.querySelectorAll('img').forEach((image) => {
     const src = image.getAttribute('src') ?? '';
     const id = /^(?:\/api\/images\/|\/api\/public\/shares\/[a-f0-9]{64}\/images\/)([0-9a-f-]{36})$/i.exec(src)?.[1];
@@ -561,6 +1606,21 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
       link.setAttribute('download', '');
       link.removeAttribute('target');
       link.removeAttribute('rel');
+      const text = link.textContent?.trim() || '';
+      const href = link.getAttribute('href') || '';
+      const isPdf = /\.pdf$/i.test(text) || /\.pdf$/i.test(href);
+      const isTxt = /\.txt$/i.test(text) || /\.txt$/i.test(href);
+      if (isPdf || isTxt) {
+        link.classList.add(isPdf ? 'doc-link-pdf' : 'doc-link-txt');
+        link.dataset.docType = isPdf ? 'pdf' : 'txt';
+        link.dataset.docFilename = text;
+      }
+      return;
+    }
+    const href = link.getAttribute('href') ?? '';
+    if (href.startsWith('#')) {
+      link.removeAttribute('target');
+      link.removeAttribute('rel');
       return;
     }
     link.setAttribute('target', '_blank');
@@ -588,6 +1648,23 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
     item.parentElement?.classList.add('task-list');
     holder.insertBefore(checkbox, holder.firstChild);
   });
+  parsed.body.querySelectorAll<HTMLElement>('[data-katex-source]').forEach((node) => {
+    const source = node.getAttribute('data-katex-source') ?? '';
+    const isDisplay = node.getAttribute('data-katex-display') === 'true';
+    const wrapper = parsed.createElement(isDisplay ? 'div' : 'span');
+    wrapper.className = isDisplay ? 'katex-display-wrapper' : 'katex-inline-wrapper';
+    wrapper.setAttribute('data-katex-source', source);
+    wrapper.setAttribute('data-katex-display', isDisplay ? 'true' : 'false');
+    try {
+      wrapper.innerHTML = katex.renderToString(source, {
+        displayMode: isDisplay,
+        throwOnError: false,
+      });
+    } catch {
+      wrapper.textContent = source;
+    }
+    node.replaceWith(wrapper);
+  });
   highlightRenderedText(parsed.body, searchQuery);
   return parsed.body.innerHTML;
 }
@@ -607,35 +1684,114 @@ function fitDiagramToContainer(element: HTMLElement) {
   svg.style.height = 'auto';
 }
 
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function Preview({
   content,
+  userId,
   onImage,
   onNote,
   onFile,
+  onViewDocument,
+  onInsertToNote,
+  onCreateNoteFromContent,
   onTask,
   resolveFile,
   dark = false,
   eagerImages = false,
   onEditLine,
   searchQuery = '',
+  onRefreshToc,
 }: {
   content: string;
+  userId?: string;
   onImage(src: string): void;
   onNote?(id: string): void;
   onFile?(id: string, href: string): void;
+  onViewDocument?(file: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }): void;
+  onInsertToNote?(markdown: string): void;
+  onCreateNoteFromContent?(title: string, markdown: string): void;
   onTask?(index: number, checked: boolean): void;
   resolveFile?(id: string): Promise<string | null>;
   dark?: boolean;
   eagerImages?: boolean;
   onEditLine?(line: number): void;
   searchQuery?: string;
+  onRefreshToc?(): void;
 }) {
   const host = useRef<HTMLElement>(null);
-  const html = useMemo(() => renderMarkdown(content, !!onTask, searchQuery), [content, !!onTask, searchQuery]);
+  const embeddedDocs = useMemo(() => {
+    const matches = Array.from(content.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g));
+    const docs: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }[] = [];
+    for (const m of matches) {
+      const filename = m[1]?.trim() || '';
+      const href = m[2]?.trim() || '';
+      const isPdf = /\.pdf$/i.test(filename) || /\.pdf$/i.test(href);
+      const isTxt = /\.txt$/i.test(filename) || /\.txt$/i.test(href);
+      if (!isPdf && !isTxt) continue;
+      const fileId = /^(?:\/api\/files\/|\/api\/public\/shares\/[a-f0-9]{64}\/files\/)([0-9a-f-]{36})$/i
+        .exec(href)?.[1];
+      docs.push({
+        id: fileId && idPattern.test(fileId) ? fileId : undefined,
+        url: href,
+        filename,
+        type: isPdf ? 'pdf' : 'txt',
+      });
+    }
+    return docs;
+  }, [content]);
+
+  // Strip duplicate H1 heading matching document name and embedded doc links from preview
+  const { cleanedContent, hasOtherText } = useMemo(() => {
+    if (!embeddedDocs.length) return { cleanedContent: content, hasOtherText: true };
+    let res = content;
+    for (const doc of embeddedDocs) {
+      const rawTitle = doc.filename.replace(/\.[^.]+$/, '').trim();
+      const headingRegex = new RegExp(`^#\\s+${escapeRegex(rawTitle)}\\s*\\r?\\n*`, 'im');
+      res = res.replace(headingRegex, '');
+      const headingRegexFull = new RegExp(`^#\\s+${escapeRegex(doc.filename)}\\s*\\r?\\n*`, 'im');
+      res = res.replace(headingRegexFull, '');
+
+      // Strip document links corresponding to embedded documents so the preview moves up and removes redundant link pill
+      if (doc.id) {
+        const idRegex = new RegExp(`\\[[^\\]]*\\]\\([^)]*${escapeRegex(doc.id)}[^)]*\\)\\r?\\n*`, 'gi');
+        res = res.replace(idRegex, '');
+      }
+      if (doc.url) {
+        const urlRegex = new RegExp(`\\[[^\\]]*\\]\\(${escapeRegex(doc.url)}\\)\\r?\\n*`, 'gi');
+        res = res.replace(urlRegex, '');
+      }
+      const fileRegex = new RegExp(`\\[\\s*${escapeRegex(doc.filename)}\\s*\\]\\([^)]+\\)\\r?\\n*`, 'gi');
+      res = res.replace(fileRegex, '');
+    }
+    const remainingText = res.trim();
+    return {
+      cleanedContent: res,
+      hasOtherText: remainingText.length > 0,
+    };
+  }, [content, embeddedDocs]);
+
+  const html = useMemo(
+    () => renderMarkdown(cleanedContent, !!onTask, searchQuery, !!onRefreshToc),
+    [cleanedContent, !!onTask, searchQuery, !!onRefreshToc]
+  );
   useEffect(() => {
     const elements = [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source]') ?? [])];
     const codeBlocks = [...(host.current?.querySelectorAll<HTMLElement>('code[data-code-language]') ?? [])];
     const privateImages = [...(host.current?.querySelectorAll<HTMLImageElement>('img[data-private-image]') ?? [])];
+    const docLinks = [...(host.current?.querySelectorAll<HTMLAnchorElement>('a.doc-link-pdf, a.doc-link-txt') ?? [])];
+    for (const link of docLinks) {
+      const href = link.getAttribute('href') || '';
+      const pId = link.dataset.privateFile || '';
+      const isEmbedded = embeddedDocs.some(
+        (d) => (d.id && d.id === pId) || d.url === href || d.filename === (link.dataset.docFilename || link.textContent?.trim())
+      );
+      if (isEmbedded) {
+        link.classList.add('doc-link-embedded');
+      }
+    }
     const objectUrls: string[] = [];
     let cancelled = false;
     if (eagerImages) privateImages.forEach((image) => { image.loading = 'eager'; });
@@ -730,7 +1886,7 @@ export function Preview({
     };
   }, [html, dark, resolveFile, eagerImages]);
 
-  return <article ref={host} className="markdown" onDoubleClick={(event) => {
+  return (<>{hasOtherText && html.trim() ? <article ref={host} className="markdown" onDoubleClick={(event) => {
     if (!onEditLine) return;
     const target = event.target as HTMLElement;
     if (target.closest('a, button, input, img, summary')) return;
@@ -739,6 +1895,12 @@ export function Preview({
     if (Number.isInteger(line) && line >= 0) onEditLine(line);
   }} onClick={(event) => {
     const target = event.target as HTMLElement;
+    const refreshBtn = target.closest<HTMLElement>('[data-toc-action="refresh"]');
+    if (refreshBtn) {
+      event.preventDefault();
+      onRefreshToc?.();
+      return;
+    }
     const footnoteRef = target.closest<HTMLAnchorElement>('a[data-footnote-ref]');
     if (footnoteRef) {
       event.preventDefault();
@@ -768,9 +1930,63 @@ export function Preview({
       return;
     }
     const file = target.closest<HTMLAnchorElement>('a[data-private-file]');
-    if (file?.dataset.privateFile && onFile) {
-      event.preventDefault();
-      onFile(file.dataset.privateFile, file.href);
+    if (file?.dataset.privateFile) {
+      const filename = file.dataset.docFilename || file.textContent?.trim() || 'document';
+      const docType = file.dataset.docType as ('pdf' | 'txt' | undefined);
+      if ((docType === 'pdf' || docType === 'txt' || /\.pdf$/i.test(filename) || /\.txt$/i.test(filename))) {
+        event.preventDefault();
+        const isEmbedded = embeddedDocs.some(
+          (d) => (d.id && d.id === file.dataset.privateFile) || d.url === file.getAttribute('href') || d.filename === filename
+        );
+        if (isEmbedded) {
+          // Document is already rendered directly on the page! Never close or open disruptive modal popup
+          const targetSlot = host.current?.parentElement?.querySelector('.doc-embed-slot');
+          targetSlot?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        if (onViewDocument) {
+          onViewDocument({
+            id: file.dataset.privateFile,
+            url: file.href,
+            filename,
+            type: docType || (/\.pdf$/i.test(filename) ? 'pdf' : 'txt'),
+          });
+          return;
+        }
+      }
+      if (onFile) {
+        event.preventDefault();
+        onFile(file.dataset.privateFile, file.href);
+        return;
+      }
     }
-  }} dangerouslySetInnerHTML={{ __html: html }} />;
+    const headingAnchor = target.closest<HTMLAnchorElement>('a[href^="#"]');
+    if (headingAnchor) {
+      const href = headingAnchor.getAttribute('href') ?? '';
+      if (!href.startsWith('#note-') && !href.startsWith('#footnote-') && !href.startsWith('#footnote-ref-')) {
+        event.preventDefault();
+        const rawSlug = href.slice(1);
+        const slug = decodeURIComponent(rawSlug);
+        const escapeSelector = (val: string) =>
+          typeof CSS !== 'undefined' && typeof CSS.escape === 'function' ? CSS.escape(val) : val.replace(/["\\]/g, '\\$&');
+        const targetElement = host.current?.querySelector<HTMLElement>(`[data-heading-slug="${escapeSelector(slug)}"]`)
+          || host.current?.querySelector<HTMLElement>(`[data-heading-slug="${escapeSelector(rawSlug)}"]`);
+        targetElement?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    }
+  }} dangerouslySetInnerHTML={{ __html: html }} /> : null}
+  {embeddedDocs.map((doc, index) => (
+    <div key={`${doc.url}-${index}`} className="doc-embed-slot">
+      <DocumentViewer
+        embedded={true}
+        file={doc}
+        userId={userId || ''}
+        onExpandFullscreen={() => onViewDocument?.(doc)}
+        onInsertToNote={onInsertToNote}
+        onCreateNoteFromContent={onCreateNoteFromContent}
+        resolveFile={resolveFile}
+      />
+    </div>
+  ))}
+  </>);
 }

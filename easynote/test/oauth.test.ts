@@ -140,6 +140,7 @@ test('consent page renders with a restrictive CSP and rejects wrong passwords', 
   })}`);
   assert.equal(consent.status, 200);
   assert.match(consent.headers.get('Content-Security-Policy') ?? '', /default-src 'none'/);
+  assert.equal(consent.headers.get('Referrer-Policy'), 'same-origin');
   assert.match(await consent.text(), /name="password"/);
 
   const wrong = await dispatch('/oauth/authorize', {
@@ -149,6 +150,37 @@ test('consent page renders with a restrictive CSP and rejects wrong passwords', 
   });
   assert.equal(wrong.status, 401);
   assert.equal(wrong.headers.get('Location'), null);
+
+  const crossOrigin = await dispatch('/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'https://evil.example', ...nextIp() },
+    body: authorizeBody(clientId),
+  });
+  assert.equal(crossOrigin.status, 403);
+  assert.match(await crossOrigin.text(), /Cross-origin request rejected/);
+
+  const badReferer = await dispatch('/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: 'https://evil.example/fake', ...nextIp() },
+    body: authorizeBody(clientId),
+  });
+  assert.equal(badReferer.status, 403);
+
+  // ChatGPT opens the consent page in a popup, setting Sec-Fetch-Site: cross-site.
+  const popupSubmit = await dispatch('/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: origin, 'Sec-Fetch-Site': 'cross-site', ...nextIp() },
+    body: authorizeBody(clientId),
+  });
+  assert.equal(popupSubmit.status, 302);
+
+  // Safari does not send an Origin header on same-origin POST form navigations.
+  const safariSubmit = await dispatch('/oauth/authorize', {
+    method: 'POST', redirect: 'manual',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Referer: `${origin}/oauth/authorize`, ...nextIp() },
+    body: authorizeBody(clientId),
+  });
+  assert.equal(safariSubmit.status, 302);
 });
 
 test('PKCE code exchange issues a token that works on MCP and is single use', async () => {

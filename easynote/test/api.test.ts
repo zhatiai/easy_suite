@@ -5,7 +5,7 @@ import { createRuntime, testCsrf, testToken, testUserId, testPassword } from './
 import { digest } from '../src/worker/core';
 import { cleanup } from '../src/worker/images';
 import { passwordVerifier } from '../src/worker/auth';
-import { noteFingerprint } from '../src/shared/types';
+import { folderRelativePath, noteFingerprint, noteRelativePath } from '../src/shared/types';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
 const origin = 'https://easynote.example.test';
@@ -771,6 +771,31 @@ test('task center aggregates unfinished tasks with source positions', async () =
   assert.equal(tasks.find((item: any) => item.noteId === archived.id).archived, true);
 });
 
+test('storage endpoint returns used and remaining storage stats', async () => {
+  assert.equal((await request('/api/storage', 'GET', undefined, { Cookie: '' })).status, 401);
+  const response = await request('/api/storage');
+  assert.equal(response.status, 200);
+  const data = await response.json() as any;
+  assert.equal(typeof data.usedBytes, 'number');
+  assert.equal(typeof data.quotaBytes, 'number');
+  assert.equal(typeof data.remainingBytes, 'number');
+  assert.equal(typeof data.usedPercent, 'number');
+  assert.equal(typeof data.notesBytes, 'number');
+  assert.equal(typeof data.noteCount, 'number');
+  assert.equal(typeof data.versionsBytes, 'number');
+  assert.equal(typeof data.versionCount, 'number');
+  assert.equal(typeof data.trashBytes, 'number');
+  assert.equal(typeof data.trashCount, 'number');
+  assert.equal(typeof data.filesBytes, 'number');
+  assert.equal(typeof data.fileCount, 'number');
+  assert.equal(data.usedBytes, data.notesBytes + data.trashBytes + data.versionsBytes + data.filesBytes);
+  assert.equal(data.remainingBytes, data.quotaBytes - data.usedBytes);
+  assert.ok(data.quotaBytes > 0);
+  assert.ok(data.noteCount > 0);
+  assert.ok(data.notesBytes > 0);
+  assert.ok(data.usedPercent >= 0 && data.usedPercent <= 100);
+});
+
 test('read-only note shares can be listed, extended, made permanent and revoked', async () => {
   const note = await create({ title: '公开只读笔记', content: '仅可阅读' });
   const created = await request(`/api/notes/${note.id}/share`, 'POST', { expiresInHours: 24 });
@@ -828,6 +853,118 @@ test('read-only note shares can be listed, extended, made permanent and revoked'
   assert.equal((await request(`/api/public/shares/${permanentToken}`, 'GET', undefined, {
     Cookie: '', 'X-CSRF-Token': '',
   })).status, 404);
+});
+
+test('folderRelativePath and noteRelativePath calculate hierarchical relative paths accurately', () => {
+  const folders = [
+    { id: 'f1', name: '技术', parentId: null },
+    { id: 'f2', name: '云原生', parentId: 'f1' },
+    { id: 'f3', name: 'k8s', parentId: 'f2' },
+  ];
+  assert.equal(folderRelativePath(null, folders), '');
+  assert.equal(folderRelativePath('f1', folders), '技术');
+  assert.equal(folderRelativePath('f2', folders), '技术/云原生');
+  assert.equal(folderRelativePath('f3', folders), '技术/云原生/k8s');
+  assert.equal(folderRelativePath('unknown', folders), '');
+
+  // Cycle safety
+  const cyclic = [
+    { id: 'c1', name: 'A', parentId: 'c2' },
+    { id: 'c2', name: 'B', parentId: 'c1' },
+  ];
+  assert.equal(folderRelativePath('c1', cyclic), 'B/A');
+
+  // noteRelativePath
+  assert.equal(noteRelativePath({ title: 'Pod详解', folderId: 'f3' }, folders), '技术/云原生/k8s/Pod详解');
+  assert.equal(noteRelativePath({ title: '随记', folderId: null }, folders), '随记');
+  assert.equal(noteRelativePath({ title: '   ', folderId: 'f1' }, folders), '技术/未命名笔记');
+  assert.equal(noteRelativePath({ title: '   ', folderId: null }, folders, '无标题'), '无标题');
+});
+
+test('read-only folder shares can be listed, extended, recursively viewed and revoked', async () => {
+  const parentFolderId = randomUUID();
+  const childFolderId = randomUUID();
+  assert.equal((await request('/api/folders', 'POST', { id: parentFolderId, name: '父目录', parentId: null })).status, 201);
+  assert.equal((await request('/api/folders', 'POST', { id: childFolderId, name: '子目录', parentId: parentFolderId })).status, 201);
+
+  const parentNote = await create({ title: '父目录笔记', content: '父目录正文', folderId: parentFolderId });
+  const childNote = await create({ title: '子目录笔记', content: '子目录正文', folderId: childFolderId });
+
+  // 1. Create folder share
+  const created = await request(`/api/folders/${parentFolderId}/share`, 'POST', { expiresInHours: 24 });
+  assert.equal(created.status, 201, await created.clone().text());
+  const share = await created.json() as any;
+  assert.match(share.url, /^https:\/\/easynote\.example\.test\/shared\/[a-f0-9]{64}$/);
+  const rawToken = share.url.split('/').at(-1);
+
+  // 2. List shares
+  const listed = await (await request('/api/shares')).json() as any;
+  const foundFolderShare = listed.folderShares.find((item: any) => item.folderId === parentFolderId);
+  assert.ok(foundFolderShare);
+  assert.equal(foundFolderShare.name, '父目录');
+  assert.equal(foundFolderShare.createdAt, share.share.createdAt);
+  assert.equal(foundFolderShare.expiresAt, share.share.expiresAt);
+
+  // 3. Get folder share
+  const getShare = await (await request(`/api/folders/${parentFolderId}/share`)).json() as any;
+  assert.equal(getShare.share.createdAt, share.share.createdAt);
+  assert.equal(getShare.share.expiresAt, share.share.expiresAt);
+
+  // 4. Extend folder share
+  const extendedResponse = await request(`/api/folders/${parentFolderId}/share`, 'PATCH', { expiresInHours: 24 });
+  assert.equal(extendedResponse.status, 200, await extendedResponse.clone().text());
+  const extended = await extendedResponse.json() as any;
+  assert.equal(extended.share.createdAt, share.share.createdAt);
+  assert.equal(extended.share.expiresAt, share.share.expiresAt + 24 * 3600_000);
+
+  // 5. Public access
+  const publicResponse = await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  });
+  assert.equal(publicResponse.status, 200);
+  const publicData = await publicResponse.json() as any;
+  assert.equal(publicData.folder.name, '父目录');
+  assert.ok(publicData.folder.folders.some((f: any) => f.id === childFolderId && f.name === '子目录'));
+  assert.ok(publicData.folder.notes.some((n: any) => n.id === parentNote.id && n.title === '父目录笔记'));
+  assert.ok(publicData.folder.notes.some((n: any) => n.id === childNote.id && n.title === '子目录笔记'));
+
+  // 6. Replace with permanent share
+  const permanentResponse = await request(`/api/folders/${parentFolderId}/share`, 'POST', { expiresInHours: null });
+  assert.equal(permanentResponse.status, 201, await permanentResponse.clone().text());
+  const permanent = await permanentResponse.json() as any;
+  assert.equal(permanent.share.expiresAt, null);
+  const permanentToken = permanent.url.split('/').at(-1);
+
+  // Old token invalid
+  assert.equal((await request(`/api/public/shares/${rawToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  })).status, 404);
+
+  // New token works
+  const permanentPublic = await request(`/api/public/shares/${permanentToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  });
+  assert.equal(permanentPublic.status, 200);
+  assert.equal((await permanentPublic.json() as any).folder.expiresAt, null);
+
+  // 7. Revoke share
+  assert.equal((await request(`/api/folders/${parentFolderId}/share`, 'DELETE', {})).status, 200);
+  assert.equal((await request(`/api/public/shares/${permanentToken}`, 'GET', undefined, {
+    Cookie: '', 'X-CSRF-Token': '',
+  })).status, 404);
+
+  // 8. Cross-tenant isolation: another user cannot share or view folder share of parentFolderId
+  const otherId = randomUUID(), otherToken = 'd'.repeat(64);
+  await instance.db.prepare(`INSERT INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(otherId, `user-${otherId.slice(0, 6)}`, '{}', Date.now(), Date.now(), Date.now()).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(otherToken), otherId, testCsrf, Date.now() + 60000).run();
+  const otherHeaders = { Cookie: `__Host-easynote=${otherToken}` };
+
+  assert.equal((await request(`/api/folders/${parentFolderId}/share`, 'GET', undefined, otherHeaders)).status, 404);
+  assert.equal((await request(`/api/folders/${parentFolderId}/share`, 'POST', { expiresInHours: 24 }, otherHeaders)).status, 404);
+  assert.equal((await request(`/api/folders/${parentFolderId}/share`, 'PATCH', { expiresInHours: 24 }, otherHeaders)).status, 404);
+  assert.equal((await request(`/api/folders/${parentFolderId}/share`, 'DELETE', {}, otherHeaders)).status, 404);
 });
 
 test('incremental sync emits current notes and purge tombstones', async () => {
