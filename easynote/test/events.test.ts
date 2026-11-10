@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { build } from 'esbuild';
-import { Miniflare, Response, convertV4MiniflareOptions } from 'miniflare';
+import * as miniflareModule from 'miniflare';
+
+const Miniflare = miniflareModule.Miniflare;
+const Response = miniflareModule.Response;
+const convertOptions = (miniflareModule as Record<string, any>).convertV4MiniflareOptions ?? ((opts: any) => opts);
 
 test('a slow change notification continues after the response without blocking it', { timeout: 10_000 }, async () => {
   const bundle = await build({
@@ -26,10 +30,10 @@ test('a slow change notification continues after the response without blocking i
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const delivery = new Promise<void>((resolve) => { delivered = resolve; });
   const client = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  const runtime = new Miniflare(convertV4MiniflareOptions({
-    modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-09-14',
+  const runtime = new Miniflare(convertOptions({
+    modules: true, script: bundle.outputFiles[0].text, compatibilityDate: '2026-08-06',
     serviceBindings: {
-      NOTIFY: async (request) => {
+      NOTIFY: async (request: any) => {
         notification = { method: request.method, client: request.headers.get('X-EasyNote-Client') };
         await gate;
         completed = true;

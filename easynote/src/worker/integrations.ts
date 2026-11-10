@@ -1,3 +1,4 @@
+import { noteDescription } from '../shared/descriptions';
 import {
   idPattern,
   type IntegrationNoteSummary,
@@ -157,6 +158,7 @@ async function searchNotes(request: Request, env: Env, user: IntegrationIdentity
     const matches = searchMatches(row, query);
     return {
       ...note,
+      description: noteDescription(content),
       excerpt: matches.find((match) => match.field === 'content')?.snippet ??
         matches[0]?.snippet ?? content.slice(0, 180),
       matches,

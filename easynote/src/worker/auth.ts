@@ -190,7 +190,10 @@ const userView = (row: Pick<UserRow, 'id' | 'username' | 'role' | 'enabled' | 'a
 });
 
 export async function limitAccountAction(request: Request, env: Env, action: string, ipLimitKey: keyof Env, globalLimitKey: keyof Env): Promise<void> {
-  const ip = request.headers.get('CF-Connecting-IP') ?? (localHttp(request, env) ? 'local' : null);
+  const ip = request.headers.get('CF-Connecting-IP') ??
+    request.headers.get('X-Real-IP') ??
+    request.headers.get('X-Forwarded-For')?.split(',')[0].trim() ??
+    (localHttp(request, env) ? 'local' : null);
   if (!ip) throw new ApiError(503, 'Client address is unavailable.');
   const window = numberSetting(env, 'ACCOUNT_WINDOW_SECONDS', 60, 86400) * 1000;
   for (const [key, limit] of [
@@ -404,7 +407,10 @@ export async function verifyLogin(env: Env, username: string, password: string):
 }
 
 export async function limitLogin(request: Request, env: Env): Promise<void> {
-  const ip = request.headers.get('CF-Connecting-IP') ?? (localHttp(request, env) ? 'local' : null);
+  const ip = request.headers.get('CF-Connecting-IP') ??
+    request.headers.get('X-Real-IP') ??
+    request.headers.get('X-Forwarded-For')?.split(',')[0].trim() ??
+    (localHttp(request, env) ? 'local' : null);
   if (!ip) throw new ApiError(503, 'Client address is unavailable.');
   const window = numberSetting(env, 'LOGIN_WINDOW_SECONDS', 60, 86400) * 1000;
   for (const [key, limit] of [

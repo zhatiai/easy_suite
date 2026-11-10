@@ -17,6 +17,11 @@ export const dateLocale = (): string => uiLanguage() === 'en' ? 'en-US' : 'zh-CN
 
 export const translations: { zh: Record<string, string>; en: Record<string, string> } = {
   zh: {
+    '文件夹描述': '文件夹描述',
+    '文件描述': '文件描述',
+    '添加描述': '添加描述',
+    '编辑描述': '编辑描述',
+    '描述以引用语法保存在正文顶部，供 MCP 读取。': '描述以引用语法保存在正文顶部，供 MCP 读取。',
     // Semantic keys
     copied: '已复制',
     close: '关闭',
@@ -895,6 +900,9 @@ export const translations: { zh: Record<string, string>; en: Record<string, stri
     '已基于文档创建新笔记': '已基于文档创建新笔记',
     '以此创建新笔记': '以此创建新笔记',
     '下载': '下载',
+    '下载 Markdown': '下载 Markdown',
+    '下载 ZIP': '下载 ZIP',
+    '下载已开始': '下载已开始',
     '打开其他文档': '打开其他文档',
     '文档加载中...': '文档加载中...',
     '添加批注': '添加批注',
@@ -927,8 +935,20 @@ export const translations: { zh: Record<string, string>; en: Record<string, stri
     '正在处理第 {0} / {1} 个文件': '正在处理第 {0} / {1} 个文件',
     '全屏阅读': '全屏阅读',
     '上传完成': '上传完成',
+    '搜索当前文件夹内容…': '搜索当前文件夹内容…',
+    '搜索当前文件夹内容': '搜索当前文件夹内容',
+    '搜索文件夹内容': '搜索文件夹内容',
+    '上一个匹配项': '上一个匹配项',
+    '下一个匹配项': '下一个匹配项',
+    '无匹配': '无匹配',
+    '{0} / {1}': '{0} / {1}',
   },
   en: {
+    '文件夹描述': 'Folder description',
+    '文件描述': 'File description',
+    '添加描述': 'Add description',
+    '编辑描述': 'Edit description',
+    '描述以引用语法保存在正文顶部，供 MCP 读取。': 'Descriptions are saved as a leading Markdown blockquote for MCP access.',
     // Semantic keys
     copied: 'Copied',
     close: 'Close',
@@ -1807,6 +1827,9 @@ export const translations: { zh: Record<string, string>; en: Record<string, stri
     '已基于文档创建新笔记': 'Created new note from document',
     '以此创建新笔记': 'Create New Note From Content',
     '下载': 'Download',
+    '下载 Markdown': 'Download Markdown',
+    '下载 ZIP': 'Download ZIP',
+    '下载已开始': 'Download started',
     '打开其他文档': 'Open Other Document',
     '文档加载中...': 'Loading document...',
     '添加批注': 'Add Annotation',
@@ -1839,6 +1862,13 @@ export const translations: { zh: Record<string, string>; en: Record<string, stri
     '正在处理第 {0} / {1} 个文件': 'Processing file {0} of {1}',
     '全屏阅读': 'Fullscreen Reader',
     '上传完成': 'Upload complete',
+    '搜索当前文件夹内容…': 'Search folder contents…',
+    '搜索当前文件夹内容': 'Search folder contents',
+    '搜索文件夹内容': 'Search folder contents',
+    '上一个匹配项': 'Previous match',
+    '下一个匹配项': 'Next match',
+    '无匹配': 'No matches',
+    '{0} / {1}': '{0} / {1}',
   },
 };
 

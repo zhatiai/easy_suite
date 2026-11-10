@@ -27,14 +27,14 @@ Consume semantic variables instead of copying raw colors:
 - elevation: `--control-shadow`, `--panel-shadow`;
 - syntax highlighting: the `--syntax-*` variables.
 
-The default light theme uses cool system grays and iOS blue (`#007aff`). Dark mode switches to near-black gray surfaces and a brighter blue (`#0a84ff`). Light mode also offers pure-white and warm-paper variants through `data-theme="white"` and `data-theme="warm"`. Every new surface must work in all four appearances without theme-specific component forks.
+The default light theme uses white document/navigation surfaces, dark gray text (`#262626`), quiet neutral controls, and iOS blue (`#007aff`). Dark mode switches to near-black gray surfaces and a brighter blue (`#0a84ff`). Light mode also offers pure-white and warm-paper variants through `data-theme="white"` and `data-theme="warm"`. Every new surface must work in all four appearances without theme-specific component forks.
 
 Use `color-mix()` with semantic variables for restrained tinted states. Hard-coded color is acceptable only for an invariant medium such as white text on the primary button, the dark PDF preview stage, or print output.
 
 ## Typography and rhythm
 
 - UI font stack: `-apple-system`, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, then Noto Sans SC and sans-serif.
-- Standard control/body chrome is 12–14 px. Metadata is typically 10–12 px. Editor and rendered Markdown body are 16 px desktop and 15 px mobile with roughly 1.7 line height.
+- Standard control/body chrome is 12–14 px. Metadata is typically 10–12 px. Editor and rendered Markdown body are 16 px desktop and 15 px mobile with roughly 1.7–1.75 line height.
 - The note title is 32 px desktop and 27 px mobile, weight around 650. Rendered headings step down from about 30/23/19 px.
 - Use 600–700 weight for selected items, section identity, and primary hierarchy; keep supporting copy regular and muted.
 - Existing spacing is compact and generally follows small 2–8 px gaps, 10–20 px control/panel padding, and larger 28–48 px document spacing.
@@ -46,11 +46,12 @@ Use `color-mix()` with semantic variables for restrained tinted states. Hard-cod
 Desktop is a continuous pane workspace:
 
 ```text
-200 px navigation | 220–440 px note list (300 default) | 5 px resizer | flexible document
+52 px navigation rail | 5 px divider | 220–440 px note list (340 default) | 5 px resizer | flexible document
 ```
 
+- The desktop rail expands to 248 px over adjacent panes on hover or visible keyboard focus; it does not resize the document. Open rail menus keep it expanded. There is no manual navigation collapse button; the explorer keeps its own collapse control. The rail contains search without a create-note button. Search and category rows are 40 px tall, with a 10 px gap between search and categories and aligned 18 px icons. Brand, search, and categories keep their height; the folder/tag area absorbs overflow and scrolls. Activating search collapses the overlay and focuses the explorer search field.
 - The sidebar and list have subtly different neutral surfaces; the document is the cleanest surface.
-- The document is capped near 900 px, optionally 1080 px, with 40 px desktop side padding.
+- The document is centered and capped near 900 px, optionally 1080 px, with 40 px desktop side padding. Attachment links must preserve this outer scroll container and its gutters; embedded viewers have their own bounded height.
 - Toolbars and footers use thin borders and fixed, compact heights rather than card containers.
 - Optional knowledge/navigation detail appears as a narrow right panel, not a floating dashboard.
 
@@ -68,14 +69,16 @@ Do not add horizontal scrolling at 320 px in either Chinese or English. Long tit
 
 - Buttons: 7 px radius, thin border, quiet shadow. Primary buttons are solid blue with white type. Destructive actions use semantic red and are not styled as primary unless the surrounding confirmation pattern already does so.
 - Icon buttons: usually 28–32 px square, borderless, transparent, and muted; hover reveals a soft fill and accent color. Provide `aria-label`; desktop tooltips derive from the same localized label and are suppressed on touch/mobile.
-- Navigation/list rows: flat and full-width. Selection uses `--accent-soft` plus `--accent-text`; separators disappear under hover/selection. Secondary row actions may reveal on hover or focus, but must remain keyboard reachable.
+- Navigation/list rows: flat and full-width. Selection uses `--accent-soft` plus `--accent-text`; separators disappear under hover/selection. Secondary row actions may reveal on hover or focus, but must remain keyboard reachable. File/folder names expose a native full-name tooltip only when the rendered label is truncated, measured when the pointer enters.
+- File/folder action menus fit their measured size within the visual viewport with 8 px margins and internal scrolling when needed. Markdown downloads appear in note actions and the document toolbar; folder actions download a ZIP preserving descendants and referenced attachments.
 - Inputs/selects: 7 px radius, semantic surface and border, subtle shadow, blue border plus a 3 px focus ring. Search is an inset soft field rather than a separate card.
 - Segmented controls: soft container with a lightly elevated selected segment and `aria-pressed` state.
 - Dialogs: native `<dialog>`, typically 560 px maximum width, 8 px radius, thin border, one panel shadow, and a dim 3 px blurred backdrop. Actions align right. Use side sheets or bottom sheets for mobile navigation/actions.
 - Feedback: persistent errors use inline alert strips; success uses small restrained toasts; progress and save state appear near the action or toolbar. Do not rely on color alone.
 - Empty states: sparse, centered, and task-oriented, with one muted icon/title and at most one clear primary action.
 - Settings: divided rows, simple labels and controls; complex forms use small grids that collapse to one column on mobile.
-- Markdown/document: generous vertical rhythm, readable line length, quiet code blocks, simple tables and blockquotes, and no decorative card around the note itself.
+- Markdown/document: generous vertical rhythm, readable line length, white code blocks with thin borders and 14 px system monospace, simple tables and blockquotes, and no decorative card around the note itself. Light-mode syntax uses purple keys/keywords and deep blue strings.
+- Tables: use the paper surface for body cells, a subtle neutral header with left-aligned 600-weight labels, thin separators, and 15 px type with 10 × 14 px cell padding. Avoid zebra striping; keep preview and live editing consistent and preserve horizontal scrolling on narrow screens.
 
 ## Interaction and accessibility
 

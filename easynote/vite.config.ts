@@ -3,9 +3,22 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { readFileSync } from 'node:fs';
 
-const versions = JSON.parse(readFileSync(new URL('../versions.json', import.meta.url), 'utf8')) as {
-  easynote: string;
-};
+let easynoteVersion = '0.7.8';
+try {
+  const versions = JSON.parse(readFileSync(new URL('../versions.json', import.meta.url), 'utf8')) as {
+    easynote: string;
+  };
+  easynoteVersion = versions.easynote;
+} catch {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+      version: string;
+    };
+    easynoteVersion = pkg.version;
+  } catch {
+    /* fallback to default */
+  }
+}
 
 function mathjaxCleanPlugin() {
   return {
@@ -79,7 +92,7 @@ export default defineConfig({
     }),
   ],
   define: {
-    __EASYNOTE_VERSION__: JSON.stringify(versions.easynote),
+    __EASYNOTE_VERSION__: JSON.stringify(easynoteVersion),
     PACKAGE_VERSION: JSON.stringify('3.2.2'),
   },
   server: {

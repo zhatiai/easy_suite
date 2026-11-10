@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Archive, ClipboardList, FileText, Folder, GitMerge, MoreHorizontal, NotebookPen, Palette, Pencil, Plus, Search, Settings, Share2, Tag, Trash2 } from 'lucide-react';
 import type { Folder as FolderItem } from '../shared/types';
 import { dateLocale, t } from './i18n';
+import { updateTruncatedTitle } from './truncatedTitle';
 import { TAG_COLOR_COUNT, tagColorIndex } from './tagColors';
 
 interface NavigationRailProps {
@@ -17,8 +18,6 @@ interface NavigationRailProps {
   activeFolderId: string | null | undefined;
   disabled: boolean;
   online: boolean;
-  collapsed: boolean;
-  createNote(): void;
   openSearch(): void;
   chooseView(view: string, tag?: string): void;
   chooseFolder(id: string): void;
@@ -35,6 +34,7 @@ interface NavigationRailProps {
 }
 
 export function NavigationRail(props: NavigationRailProps) {
+  const [searchDismissed, setSearchDismissed] = useState(false);
   const [colorTarget, setColorTarget] = useState<string | null>(null);
   const allNotesActive = !props.quickNotes && !props.sharing && props.view === 'all' && !props.activeTag && props.activeFolderId === undefined;
   const rootFolders = props.folders
@@ -69,46 +69,27 @@ export function NavigationRail(props: NavigationRailProps) {
     target.closest('details')?.removeAttribute('open');
     setColorTarget(null);
   };
-  if (props.collapsed) return <aside className="sidebar navigation-rail compact-navigation-rail" id="navigation-rail">
-    <div className="compact-navigation-brand">
-      <img className="brand-icon" src="/easynote-icon.svg" width="34" height="34" alt="EasyNote" />
-    </div>
-    <nav className="compact-navigation" aria-label={t('note_categories')}>
-      <button className="compact-navigation-button" aria-label={t('搜索笔记')} title={t('搜索笔记')} onClick={props.openSearch}><Search size={20} /></button>
-      <button className="compact-navigation-button compact-create-note" aria-label={t('new_note')} title={t('new_note')} disabled={props.disabled} onClick={props.createNote}><Plus size={22} /></button>
-      <button className={`compact-navigation-button ${allNotesActive ? 'active' : ''}`} aria-label={t('all_notes')} title={t('all_notes')} aria-current={allNotesActive ? 'page' : undefined} onClick={() => props.chooseView('all')}><FileText size={20} /></button>
-      <button className={`compact-navigation-button ${props.quickNotes ? 'active' : ''}`} aria-label={t('小记')} title={t('小记')} aria-current={props.quickNotes ? 'page' : undefined} onClick={props.openQuickNotes}><NotebookPen size={20} /></button>
-      <button className="compact-navigation-button" aria-label={t('task_center')} title={t('task_center')} onClick={props.openTasks}><ClipboardList size={20} /></button>
-      <button className={`compact-navigation-button ${!props.sharing && props.view === 'archive' ? 'active' : ''}`} aria-label={t('archive')} title={t('archive')} onClick={() => props.chooseView('archive')}><Archive size={20} /></button>
-      <button className={`compact-navigation-button ${props.sharing ? 'active' : ''}`} aria-label={t('sharing')} title={t('sharing')} disabled={!props.online} onClick={props.openSharing}><Share2 size={20} /></button>
-      <button className={`compact-navigation-button ${!props.sharing && props.view === 'trash' ? 'active' : ''}`} aria-label={t('trash')} title={t('trash')} onClick={() => props.chooseView('trash')}><Trash2 size={20} /></button>
-      <span className="compact-navigation-separator" aria-hidden="true" />
-      <button className={`compact-navigation-button ${typeof props.activeFolderId === 'string' ? 'active' : ''}`} aria-label={t('文件夹')} title={t('文件夹')} onClick={props.openSearch}><Folder size={20} /></button>
-      <button className={`compact-navigation-button ${props.activeTag ? 'active' : ''}`} aria-label={t('tags')} title={t('tags')} onClick={props.openSearch}><Tag size={20} /></button>
-    </nav>
-    <div className="sidebar-bottom compact-navigation-footer">
-      <button className="compact-navigation-button" aria-label={t('settings')} title={t('settings')} onClick={props.openSettings}><Settings size={20} /></button>
-    </div>
-  </aside>;
-
-  return <aside className="sidebar navigation-rail" id="navigation-rail">
+  return <aside className={`sidebar navigation-rail auto-navigation-rail ${searchDismissed ? 'search-dismissed' : ''}`} id="navigation-rail"
+    onPointerEnter={() => setSearchDismissed(false)} onPointerLeave={() => setSearchDismissed(false)}
+    onFocusCapture={() => setSearchDismissed(false)}>
     <div className="brand navigation-brand">
       <img className="brand-icon" src="/easynote-icon.svg" width="32" height="32" alt="" aria-hidden="true" />
       <span className="brand-copy"><strong>EasyNote</strong><small>{t('记录，让思考更轻松')}</small></span>
     </div>
-    <button className="new-note" disabled={props.disabled} onClick={props.createNote}><Plus size={19} />{t('new_note')}</button>
+    <button className="navigation-search navigation-summary" aria-label={t('搜索笔记')} onClick={() => { setSearchDismissed(true); props.openSearch(); }}><Search size={18} /><span>{t('搜索笔记')}</span></button>
     <nav className="primary-navigation" aria-label={t('note_categories')}>
-      <button className={allNotesActive ? 'active' : ''} aria-current={allNotesActive ? 'page' : undefined} onClick={() => props.chooseView('all')}><FileText size={18} />{t('all_notes')}</button>
-      <button className={props.quickNotes ? 'active' : ''} aria-current={props.quickNotes ? 'page' : undefined} onClick={props.openQuickNotes}><NotebookPen size={18} />{t('小记')}</button>
-      <button onClick={props.openTasks}><ClipboardList size={18} />{t('task_center')}</button>
-      <button aria-label={t('归档笔记')} className={!props.sharing && props.view === 'archive' ? 'active' : ''} onClick={() => props.chooseView('archive')}><Archive size={18} />{t('archive')}</button>
-      <button aria-label={t('分享管理')} className={props.sharing ? 'active' : ''} disabled={!props.online} onClick={props.openSharing}><Share2 size={18} />{t('sharing')}</button>
-      <button className={!props.sharing && props.view === 'trash' ? 'active' : ''} onClick={() => props.chooseView('trash')}><Trash2 size={18} />{t('trash')}</button>
+      <button aria-label={t('all_notes')} title={t('all_notes')} className={allNotesActive ? 'active' : ''} aria-current={allNotesActive ? 'page' : undefined} onClick={() => props.chooseView('all')}><FileText size={18} /><span className="navigation-label">{t('all_notes')}</span></button>
+      <button aria-label={t('小记')} title={t('小记')} className={props.quickNotes ? 'active' : ''} aria-current={props.quickNotes ? 'page' : undefined} onClick={props.openQuickNotes}><NotebookPen size={18} /><span className="navigation-label">{t('小记')}</span></button>
+      <button aria-label={t('task_center')} title={t('task_center')} onClick={props.openTasks}><ClipboardList size={18} /><span className="navigation-label">{t('task_center')}</span></button>
+      <button aria-label={t('归档笔记')} className={!props.sharing && props.view === 'archive' ? 'active' : ''} onClick={() => props.chooseView('archive')}><Archive size={18} /><span className="navigation-label">{t('archive')}</span></button>
+      <button aria-label={t('分享管理')} className={props.sharing ? 'active' : ''} disabled={!props.online} onClick={props.openSharing}><Share2 size={18} /><span className="navigation-label">{t('sharing')}</span></button>
+      <button aria-label={t('trash')} title={t('trash')} className={!props.sharing && props.view === 'trash' ? 'active' : ''} onClick={() => props.chooseView('trash')}><Trash2 size={18} /><span className="navigation-label">{t('trash')}</span></button>
     </nav>
     <div className="navigation-scroll">
       <div className="section-label"><span>{t('文件夹')}</span><button className="section-action" aria-label={t('新建文件夹')} disabled={!props.online} onClick={props.createFolder}><Plus size={16} /></button></div>
       <nav className="folder-nav" aria-label={t('文件夹')}>
-        {rootFolders.map((folder) => <button key={folder.id} className={`navigation-summary ${props.activeFolderId === folder.id ? 'active' : ''}`} aria-current={props.activeFolderId === folder.id ? 'page' : undefined} onClick={() => props.chooseFolder(folder.id)}>
+        {rootFolders.map((folder) => <button key={folder.id} className={`navigation-summary ${props.activeFolderId === folder.id ? 'active' : ''}`} aria-current={props.activeFolderId === folder.id ? 'page' : undefined}
+          onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget, event.currentTarget.querySelector<HTMLElement>('span'))} onClick={() => props.chooseFolder(folder.id)}>
           <Folder size={17} /><span>{folder.name}</span><small>{folder.noteCount || ''}</small>
         </button>)}
       </nav>
@@ -150,7 +131,7 @@ export function NavigationRail(props: NavigationRailProps) {
       </nav>
     </div>
     <div className="sidebar-bottom">
-      <button className="account" onClick={props.openSettings}><Settings size={18} /><span>{t('settings')}</span><small>{props.username}</small></button>
+      <button aria-label={t('settings')} title={t('settings')} className="account" onClick={props.openSettings}><Settings size={18} /><span>{t('settings')}</span><small>{props.username}</small></button>
     </div>
   </aside>;
 }

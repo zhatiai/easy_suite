@@ -1,0 +1,17 @@
+services:
+  easynote:
+    image: easynote:0.7.8
+    container_name: easynote
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 30s
+    environment:
+      - PORT=8791
+      - HEALTH_PORT=8792
+      - DATA_DIR=/data
+      - ALLOW_LOCAL_HTTP=true
+    ports:
+      - "8791:8791"
+      - "127.0.0.1:8792:8792"
+    volumes:
+      - /var/lib/easynote/data:/data

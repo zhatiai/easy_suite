@@ -1,3 +1,4 @@
+import './uuid';
 import type {
   Folder,
   FolderShare,
@@ -118,9 +119,9 @@ export const api = {
     request<{ tags: string[]; counts: Record<string, number> }>(`/api/tags?${new URLSearchParams({ view })}`, 'GET', undefined, signal),
   blank: (folderId: string | null = null) => request<{ note: Note | null }>(`/api/notes/blank?folderId=${folderId ?? 'root'}`),
   folders: (signal?: AbortSignal) => request<{ folders: Folder[] }>('/api/folders', 'GET', undefined, signal),
-  createFolder: (name: string, parentId: string | null) =>
-    request<{ folder: Folder }>('/api/folders', 'POST', { id: crypto.randomUUID(), name, parentId }),
-  updateFolder: (id: string, patch: { name?: string; parentId?: string | null }) =>
+  createFolder: (name: string, parentId: string | null, description = '') =>
+    request<{ folder: Folder }>('/api/folders', 'POST', { id: crypto.randomUUID(), name, parentId, description }),
+  updateFolder: (id: string, patch: { name?: string; parentId?: string | null; description?: string }) =>
     request<{ folder: Folder }>(`/api/folders/${id}`, 'PATCH', patch),
   mergeFolder: (id: string, targetId: string) =>
     request<{ ok: true; movedNotes: number; movedFolders: number }>(`/api/folders/${id}/merge`, 'POST', { targetId }),

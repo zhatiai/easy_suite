@@ -1211,8 +1211,8 @@ export function useNotebook(session: Session) {
     refresh: () => refreshRef.current(), loadMore: () => refresh(true),
     configureOffline, cachedFile, backlinks, tasks, searchAll, addTag, manageTag, setTagColor, tagColors, tagCounts, bulkUpdate, findDuplicates,
     refreshFolders,
-    createFolder: async (name: string, parentId: string | null) => { await api.createFolder(name, parentId); await refreshFolders(); },
-    updateFolder: async (id: string, patch: { name?: string; parentId?: string | null }) => { await api.updateFolder(id, patch); await refreshFolders(); },
+    createFolder: async (name: string, parentId: string | null, description = '') => { await api.createFolder(name, parentId, description); await refreshFolders(); },
+    updateFolder: async (id: string, patch: { name?: string; parentId?: string | null; description?: string }) => { await api.updateFolder(id, patch); await refreshFolders(); },
     mergeFolder: async (id: string, targetId: string) => {
       const result = await api.mergeFolder(id, targetId);
       if (folderId === id) setFolderId(targetId);

@@ -1,0 +1,12 @@
+node_modules
+.git
+.wrangler
+.dev.vars*
+wrangler.deploy.json
+data
+backups
+dist
+test-results
+playwright-report
+.DS_Store
+*.log

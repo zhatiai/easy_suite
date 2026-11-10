@@ -1,8 +1,11 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
+import * as miniflareModule from 'miniflare';
 import { passwordVerifier } from '../src/worker/auth';
 import { digest } from '../src/worker/core';
+
+const Miniflare = miniflareModule.Miniflare;
+const convertOptions = (miniflareModule as Record<string, any>).convertV4MiniflareOptions ?? ((opts: any) => opts);
 
 export const testPassword = 'Test-only-EasyNote-938!';
 export const testToken = 'a'.repeat(64);
@@ -35,10 +38,10 @@ export async function createRuntime(port?: number, options: { seedOwner?: boolea
     bundle: true, write: false, format: 'esm', platform: 'browser', external: ['node:*', 'cloudflare:*'],
   });
   const verifier = await passwordVerifier(testPassword);
-  const runtime = new Miniflare(convertV4MiniflareOptions({
+  const runtime = new Miniflare(convertOptions({
     name: 'easynote-test',
     modules: true, script: bundle.outputFiles[0].text,
-    compatibilityDate: config.compatibility_date,
+    compatibilityDate: config.compatibility_date > '2026-08-06' ? '2026-08-06' : config.compatibility_date,
     compatibilityFlags: ['nodejs_compat'],
     bindings: {
       ...config.vars, ALLOW_LOCAL_HTTP: port ? 'true' : 'false',

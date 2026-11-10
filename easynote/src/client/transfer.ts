@@ -1,5 +1,5 @@
 import { zip, unzip, strToU8, strFromU8 } from 'fflate';
-import { filePath, idPattern, imagePath, noteFingerprint, storedFileIds, type ClientConfig } from '../shared/types';
+import { filePath, idPattern, imagePath, noteFingerprint, storedFileIds, type ClientConfig, type Folder, type Note } from '../shared/types';
 import { api, uploadAttachment, uploadImage } from './api';
 import { loadCachedFile, loadDrafts } from './drafts';
 
@@ -64,8 +64,8 @@ function responseFilename(response: Response, fallback: string): string {
   try { return encoded ? decodeURIComponent(encoded) : fallback; } catch { return fallback; }
 }
 
-function download(name: string, bytes: Uint8Array): void {
-  const href = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: 'application/zip' }));
+function download(name: string, bytes: Uint8Array, mime = 'application/zip'): void {
+  const href = URL.createObjectURL(new Blob([new Uint8Array(bytes)], { type: mime }));
   const link = document.createElement('a');
   link.href = href;
   link.download = name;
@@ -73,7 +73,12 @@ function download(name: string, bytes: Uint8Array): void {
   setTimeout(() => URL.revokeObjectURL(href), 10000);
 }
 
-export async function exportArchive(progress: (text: string) => void): Promise<void> {
+export function downloadNote(note: Pick<Note, 'title' | 'content'>): void {
+  const name = noteExportPath(note.title.replace(/\.md$/i, ''), new Set()).slice('notes/'.length);
+  download(name, strToU8(note.content), 'text/markdown;charset=utf-8');
+}
+
+export async function exportArchive(progress: (text: string) => void, scope?: { folder: Folder; folders: Folder[] }): Promise<void> {
   const files: Record<string, Uint8Array> = {};
   const manifest: Manifest = { format: 'easynote', version: 2, notes: [], files: [] };
   let total = 0;
@@ -82,18 +87,41 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
     if (total > MAX_ARCHIVE_BYTES || Object.keys(files).length >= MAX_ENTRIES) throw new Error('当前浏览器导出上限为 64 MiB / 1200 个文件。');
     files[path] = bytes;
   };
-  let offset: number | null = 0;
+  const folderPaths = new Map<string, string>();
+  const namesByFolder = new Map<string, Set<string>>();
+  if (scope) {
+    const visit = (folder: Folder, path: string) => {
+      folderPaths.set(folder.id, path);
+      add(path, new Uint8Array());
+      const names = new Set<string>();
+      namesByFolder.set(folder.id, names);
+      for (const child of scope.folders.filter((item) => item.parentId === folder.id)) {
+        const base = safeFilename(child.name);
+        let name = base;
+        for (let suffix = 2; names.has(name.toLocaleLowerCase('en-US')); suffix++) name = `${base} (${suffix})`;
+        names.add(name.toLocaleLowerCase('en-US'));
+        visit(child, `${path}${name}/`);
+      }
+    };
+    visit(scope.folder, `${safeFilename(scope.folder.name)}/`);
+  }
   const ids = new Set<string>();
-  do {
-    const page = await api.list({ view: 'export', offset });
-    page.notes.forEach((n) => ids.add(n.id));
-    offset = page.nextOffset;
-  } while (offset !== null);
+  for (const folderId of scope ? folderPaths.keys() : [undefined]) {
+    let offset: number | null = 0;
+    do {
+      const page = await api.list({ view: 'export', offset, ...(folderId ? { folderId } : {}) });
+      page.notes.filter((note) => !scope || note.deletedAt === null).forEach((note) => ids.add(note.id));
+      offset = page.nextOffset;
+    } while (offset !== null);
+  }
   const storedFiles = new Set<string>();
   const noteFilenames = new Set<string>();
   for (const id of ids) {
     const { note } = await api.note(id);
-    const path = noteExportPath(note.title, noteFilenames);
+    if (scope && (note.deletedAt !== null || !note.folderId || !folderPaths.has(note.folderId))) continue;
+    const directory = scope && note.folderId ? folderPaths.get(note.folderId) ?? '' : 'notes/';
+    const names = scope && note.folderId ? namesByFolder.get(note.folderId) ?? noteFilenames : noteFilenames;
+    const path = directory + noteExportPath(note.title, names).slice('notes/'.length);
     add(path, strToU8(note.content));
     manifest.notes.push({
       id, path, title: note.title, tags: note.tags,
@@ -107,7 +135,8 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
     if (!response.ok) throw new Error(`GET ${filePath(id)} [${response.status}]\n${await response.text()}`);
     const bytes = new Uint8Array(await response.arrayBuffer());
     const filename = responseFilename(response, id);
-    const path = `files/${id}-${safeFilename(filename)}`;
+    const directory = scope ? `${folderPaths.get(scope.folder.id)}.attachments/` : 'files/';
+    const path = `${directory}${id}-${safeFilename(filename)}`;
     add(path, bytes);
     const mime = response.headers.get('Content-Type') ?? '';
     manifest.files.push({ id, path, mime, filename, sha256: await sha(bytes) });
@@ -117,15 +146,18 @@ export async function exportArchive(progress: (text: string) => void): Promise<v
   for (const entry of manifest.notes) {
     let content = strFromU8(files[entry.path]);
     for (const stored of manifest.files) {
-      content = content.replaceAll(imagePath(stored.id), `../${stored.path}`)
-        .replaceAll(filePath(stored.id), `../${stored.path}`);
+      const relative = '../'.repeat(entry.path.split('/').length - 1) + stored.path;
+      const link = scope ? relative.split('/').map((segment) =>
+        encodeURIComponent(segment).replaceAll('(', '%28').replaceAll(')', '%29')).join('/') : relative;
+      content = content.replaceAll(imagePath(stored.id), link)
+        .replaceAll(filePath(stored.id), link);
     }
     files[entry.path] = strToU8(content);
   }
-  add('manifest.json', strToU8(JSON.stringify(manifest, null, 2)));
+  if (!scope) add('manifest.json', strToU8(JSON.stringify(manifest, null, 2)));
   const bytes = await new Promise<Uint8Array>((resolve, reject) =>
     zip(files, { level: 0 }, (error, data) => error ? reject(error) : resolve(data)));
-  download(`easynote-${new Date().toISOString().slice(0, 10)}.zip`, bytes);
+  download(scope ? `${safeFilename(scope.folder.name)}.zip` : `easynote-${new Date().toISOString().slice(0, 10)}.zip`, bytes);
 }
 
 export async function exportLocalDrafts(userId: string, progress: (text: string) => void): Promise<number> {

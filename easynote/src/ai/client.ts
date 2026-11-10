@@ -139,11 +139,11 @@ export class EasyNoteClient {
     return this.json('/api/integrations/folders');
   }
 
-  createFolder(name: string, parentId: string | null): Promise<{ folder: Folder }> {
-    return this.json('/api/integrations/folders', 'POST', { id: crypto.randomUUID(), name, parentId });
+  createFolder(name: string, parentId: string | null, description = ''): Promise<{ folder: Folder }> {
+    return this.json('/api/integrations/folders', 'POST', { id: crypto.randomUUID(), name, parentId, description });
   }
 
-  updateFolder(id: string, patch: { name?: string; parentId?: string | null }): Promise<{ folder: Folder }> {
+  updateFolder(id: string, patch: { name?: string; parentId?: string | null; description?: string }): Promise<{ folder: Folder }> {
     return this.json(`/api/integrations/folders/${encodeURIComponent(id)}`, 'PATCH', patch);
   }
 

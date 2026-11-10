@@ -1,3 +1,4 @@
+import { withNoteDescription } from '../shared/descriptions.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import {
@@ -39,6 +40,7 @@ const noteSearchMatchSchema = z.object({
 });
 
 const recentNoteSchema = noteMetadataSchema.extend({
+  description: z.string(),
   excerpt: z.string(),
   uri: z.string(),
 });
@@ -142,6 +144,7 @@ function recentNote(note: IntegrationNoteSummary) {
     createdAt: note.createdAt,
     updatedAt: note.updatedAt,
     revision: note.revision,
+    description: note.description,
     excerpt: note.excerpt,
     uri: note.uri,
   };
@@ -168,6 +171,7 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     }).strict(),
     outputSchema: z.object({
       notes: z.array(noteMetadataSchema.extend({
+        description: z.string(),
         excerpt: z.string(),
         matches: z.array(noteSearchMatchSchema).max(3),
         uri: z.string(),
@@ -398,10 +402,10 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
 
   server.registerTool('easynote_list_folders', {
     title: 'List EasyNote Folders',
-    description: 'List the complete EasyNote folder hierarchy with stable IDs, parent IDs and direct note counts.',
+    description: 'List the complete EasyNote folder hierarchy with stable IDs, parent IDs, descriptions and direct note counts.',
     inputSchema: z.object({}).strict(),
     outputSchema: z.object({ folders: z.array(z.object({
-      id: z.string(), name: z.string(), parentId: z.string().nullable(),
+      id: z.string(), name: z.string(), description: z.string(), parentId: z.string().nullable(),
       createdAt: z.number(), updatedAt: z.number(), noteCount: z.number(),
     })) }),
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
@@ -419,7 +423,8 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     description: 'Create one EasyNote note. This changes cloud data and may create a duplicate if called twice.',
     inputSchema: z.object({
       title: z.string().max(256).describe('Plain note title without a Markdown heading marker.'),
-      content: z.string().describe('Markdown body. Use ## for top-level body sections.'),
+      content: z.string().describe('Markdown body. Use ## for top-level body sections. A leading blockquote is the note description.'),
+      description: z.string().max(2000).optional().describe('Optional description inserted as a leading Markdown blockquote.'),
       tags: z.array(z.string().min(1).max(40)).max(20).default([]),
       pinned: z.boolean().default(false),
       archived: z.boolean().default(false),
@@ -427,11 +432,11 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     }).strict(),
     outputSchema: noteResultSchema,
     annotations: writeAnnotations,
-  }, async ({ title, content, tags, pinned, archived, folderId }) => {
+  }, async ({ title, content, description, tags, pinned, archived, folderId }) => {
     try {
       return await save(client, crypto.randomUUID(), {
         title,
-        content,
+        content: description === undefined ? content : withNoteDescription(content, description),
         tags: [...new Set(tags)],
         pinned,
         quick: false,
@@ -476,20 +481,20 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
   server.registerTool('easynote_create_folder', {
     title: 'Create EasyNote Folder',
     description: 'Create a folder at the root or inside another folder.',
-    inputSchema: z.object({ name: z.string().min(1).max(120), parentId: z.uuid().nullable().default(null) }).strict(),
+    inputSchema: z.object({ name: z.string().min(1).max(120), description: z.string().max(2000).default(''), parentId: z.uuid().nullable().default(null) }).strict(),
     annotations: writeAnnotations,
-  }, async ({ name, parentId }) => {
+  }, async ({ name, parentId, description }) => {
     try {
-      const result = await client.createFolder(name, parentId);
+      const result = await client.createFolder(name, parentId, description);
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
     } catch (error) { return toolError(error); }
   });
 
   server.registerTool('easynote_update_folder', {
     title: 'Rename or Move EasyNote Folder',
-    description: 'Rename a folder or move it to another parent. Cycles and sibling name collisions are rejected.',
-    inputSchema: z.object({ id: z.uuid(), name: z.string().min(1).max(120).optional(), parentId: z.uuid().nullable().optional() })
-      .strict().refine(({ name, parentId }) => name !== undefined || parentId !== undefined, { message: 'Supply a name or parentId.' }),
+    description: 'Update a folder name or description, or move it to another parent. Cycles and sibling name collisions are rejected.',
+    inputSchema: z.object({ id: z.uuid(), name: z.string().min(1).max(120).optional(), description: z.string().max(2000).optional(), parentId: z.uuid().nullable().optional() })
+      .strict().refine(({ name, parentId, description }) => name !== undefined || parentId !== undefined || description !== undefined, { message: 'Supply a name, description or parentId.' }),
     annotations: writeAnnotations,
   }, async ({ id, ...patch }) => {
     try {

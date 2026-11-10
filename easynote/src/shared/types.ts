@@ -16,6 +16,7 @@ export interface Note {
 export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'quick' | 'archived' | 'folderId' | 'deletedAt'>;
 export type NoteSummary = Omit<Note, 'content'> & { excerpt: string };
 export interface Folder {
+  description: string;
   id: string;
   name: string;
   parentId: string | null;
@@ -32,6 +33,7 @@ export interface NoteSearchMatch {
   snippet: string;
 }
 export type IntegrationNoteSummary = NoteSummary & {
+  description: string;
   matches: NoteSearchMatch[];
   uri: string;
 };

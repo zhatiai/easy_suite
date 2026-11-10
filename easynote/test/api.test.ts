@@ -5,6 +5,7 @@ import { createRuntime, testCsrf, testToken, testUserId, testPassword } from './
 import { digest } from '../src/worker/core';
 import { cleanup } from '../src/worker/images';
 import { passwordVerifier } from '../src/worker/auth';
+import { noteDescription, withNoteDescription } from '../src/shared/descriptions';
 import { folderRelativePath, noteFingerprint, noteRelativePath } from '../src/shared/types';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
@@ -1030,4 +1031,40 @@ test('private PDF and text attachments are validated and downloaded safely', asy
     body: Buffer.from('not a pdf'),
   });
   assert.equal(invalid.status, 415);
+});
+
+
+test('note descriptions use a leading quote and preserve the remaining Markdown', () => {
+  const body = '## Body\n\n> unrelated quote\n';
+  const described = withNoteDescription(body, 'Purpose\n\nScope');
+  assert.equal(described, '> Purpose\n> \n> Scope\n\n' + body);
+  assert.equal(noteDescription(described), 'Purpose\n\nScope');
+  assert.equal(withNoteDescription(described, 'Replacement'), '> Replacement\n\n' + body);
+  assert.equal(withNoteDescription(described, ''), body);
+  assert.equal(noteDescription(body), '');
+  assert.equal(noteDescription('> Description\r\n> second\r\n\r\nBody'), 'Description\nsecond');
+});
+
+test('folder descriptions persist, validate input and stay isolated by tenant', async () => {
+  const id = randomUUID();
+  const response = await request('/api/folders', 'POST', { id, name: `described-${id}`, description: '  Project scope\nDocuments  ' });
+  assert.equal(response.status, 201);
+  assert.equal((await response.json() as { folder: { description: string } }).folder.description, 'Project scope\nDocuments');
+  assert.equal((await request(`/api/folders/${id}`, 'PATCH', { name: 'Renamed description folder' })).status, 200);
+  const listed = await (await request('/api/folders')).json() as { folders: Array<{ id: string; description: string }> };
+  assert.equal(listed.folders.find((folder) => folder.id === id)?.description, 'Project scope\nDocuments');
+  for (const description of [null, 123, 'x'.repeat(2001)]) {
+    assert.equal((await request(`/api/folders/${id}`, 'PATCH', { description })).status, 400);
+    assert.equal((await request('/api/folders', 'POST', { id: randomUUID(), name: 'Invalid description', description })).status, 400);
+  }
+  const otherId = randomUUID(), otherToken = randomUUID().replaceAll('-', '').repeat(2);
+  await instance.db.prepare(`INSERT INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(otherId, `description-${otherId}`, '{}', Date.now(), Date.now(), Date.now()).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(otherToken), otherId, testCsrf, Date.now() + 60000).run();
+  const otherHeaders = { Cookie: `__Host-easynote=${otherToken}` };
+  const otherFolders = await (await request('/api/folders', 'GET', undefined, otherHeaders)).json() as { folders: Array<{ id: string }> };
+  assert.ok(!otherFolders.folders.some((folder) => folder.id === id));
+  assert.equal((await request(`/api/folders/${id}`, 'PATCH', { description: 'Stolen' }, otherHeaders)).status, 404);
+  assert.equal((await request(`/api/folders/${id}`, 'PATCH', { description: '' })).status, 200);
 });

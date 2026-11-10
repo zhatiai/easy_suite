@@ -18,7 +18,8 @@ export default {
     const oauthPath = path.startsWith('/oauth/') || path.startsWith('/.well-known/');
     if (path !== '/mcp' && !path.startsWith('/api/') && !oauthPath) return env.ASSETS.fetch(request);
     try {
-      if (new URL(request.url).protocol !== 'https:' && !localHttp(request, env)) {
+      const isHttps = new URL(request.url).protocol === 'https:' || request.headers.get('x-forwarded-proto') === 'https';
+      if (!isHttps && !localHttp(request, env)) {
         throw new ApiError(403, 'HTTPS is required.');
       }
       if (path === '/mcp') return await mcpRoute(request, env);

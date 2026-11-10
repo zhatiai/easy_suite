@@ -145,7 +145,7 @@ easynote/
 
 ## 4. 数据模型和存储边界
 
-`migrations/0001_initial.sql` 建立 D1 基线，后续按编号依次应用 migration；`0002_folders.sql` 增加嵌套文件夹和笔记/版本的文件夹归属，`0003_quick_notes.sql` 增加小记类型标记与独立列表索引：
+`migrations/0001_initial.sql` 建立 D1 基线，后续按编号依次应用 migration；`0002_folders.sql` 增加嵌套文件夹和笔记/版本的文件夹归属，`0003_quick_notes.sql` 增加小记类型标记与独立列表索引，`0005_folder_descriptions.sql` 增加文件夹描述：
 
 | 表/对象 | 作用 |
 | --- | --- |
@@ -154,7 +154,7 @@ easynote/
 | `integration_tokens` | AI 令牌元数据、权限、过期和撤销状态 |
 | `login_attempts` / `account_attempts` | 登录、注册和重置等限流窗口 |
 | `app_state` | 全局注册开关 |
-| `folders` | 用户私有的嵌套文件夹、父子关系和同级唯一名称 |
+| `folders` | 用户私有的嵌套文件夹、描述、父子关系和同级唯一名称 |
 | `notes` | 当前笔记/小记状态、类型标记和并发/幂等字段 |
 | `note_versions` | 有上限的手动/AI 内容快照及操作者信息 |
 | `images` | R2 对象元数据；同时表示图片与普通附件 |
@@ -268,3 +268,9 @@ npm run dev:client
 - 不手工编辑构建产物 `dist/`、依赖目录 `node_modules/` 或本地状态 `.wrangler/`。
 
 理解或修改某个功能时，以本文作为地图，以对应源码和测试作为最终事实来源。
+
+### 描述约定
+
+文件夹描述保存在 `folders.description`，最多 2000 个字符。创建及编辑文件夹时可以填写，选中文件夹后在右侧顶部展示。浏览器和 MCP 文件夹列表均返回 `description`；旧文件夹默认为空字符串。
+
+笔记通过标题下方的“添加描述 / 编辑描述”入口维护描述。描述保存在 Markdown 正文最前面的连续引用块（`> 描述`），多行描述每行均使用 `>`，与后续正文之间空一行。已有正文以引用块开头时，该引用块也按描述读取。描述沿用正文的自动保存、离线草稿、revision、历史及导入导出流程，不维护第二份数据。MCP 搜索及最近笔记列表返回从开头引用块提取的 `description`；创建笔记工具可接受可选 `description`，更新时直接修改正文中的引用块。

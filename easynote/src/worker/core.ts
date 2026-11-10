@@ -63,12 +63,22 @@ export function clientConfig(env: Env): ClientConfig {
 
 export function localHttp(request: Request, env: Env): boolean {
   const url = new URL(request.url);
-  return env.ALLOW_LOCAL_HTTP === 'true' && url.protocol === 'http:' &&
-    ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const isHttp = url.protocol === 'http:' && request.headers.get('x-forwarded-proto') !== 'https';
+  return env.ALLOW_LOCAL_HTTP === 'true' && isHttp;
+}
+
+export function requestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const proto = request.headers.get('x-forwarded-proto') || url.protocol.replace(':', '');
+  const host = request.headers.get('x-forwarded-host') || url.host;
+  return `${proto}://${host}`;
 }
 
 export function requireOrigin(request: Request): void {
-  if (request.headers.get('Origin') !== new URL(request.url).origin ||
+  const origin = request.headers.get('Origin');
+  const url = new URL(request.url);
+  const expectedOrigin = requestOrigin(request);
+  if ((origin && origin !== url.origin && origin !== expectedOrigin) ||
       request.headers.get('Sec-Fetch-Site') === 'cross-site') {
     throw new ApiError(403, 'Cross-origin request rejected.');
   }

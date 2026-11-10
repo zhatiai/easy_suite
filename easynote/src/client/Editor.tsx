@@ -992,23 +992,6 @@ const liveMarkdown = ViewPlugin.fromClass(class {
   provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.replacements ?? Decoration.none),
 });
 
-type LegacyCaretDocument = Document & {
-  caretRangeFromPoint?(x: number, y: number): { startContainer: Node; startOffset: number } | null;
-};
-
-function editorPositionAtPointer(editorView: EditorView, event: MouseEvent): number | null {
-  const owner = editorView.dom.ownerDocument;
-  const caret = owner.caretPositionFromPoint?.(event.clientX, event.clientY);
-  const node = caret?.offsetNode;
-  if (node && editorView.contentDOM.contains(node)) {
-    try { return editorView.posAtDOM(node, caret.offset); } catch { /* Fall back to coordinate mapping. */ }
-  }
-  const range = (owner as LegacyCaretDocument).caretRangeFromPoint?.(event.clientX, event.clientY);
-  if (range && editorView.contentDOM.contains(range.startContainer)) {
-    try { return editorView.posAtDOM(range.startContainer, range.startOffset); } catch { /* Fall back to coordinate mapping. */ }
-  }
-  return editorView.posAtCoords({ x: event.clientX, y: event.clientY });
-}
 
 function toggleEmphasis(marker: '*' | '**') {
   return (editor: EditorView): boolean => {
@@ -1144,17 +1127,6 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
             if (update.docChanged && !external.current) callbacks.current.onChange(update.state.doc.toString());
           }),
           EditorView.domEventHandlers({
-            mousedown(event, editorView) {
-              if (modeRef.current !== 'live' || event.button !== 0 || event.detail !== 1 ||
-                  event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
-              if (event.target instanceof Element && event.target.closest('.cm-live-table-container, .cm-live-toc-container')) return false;
-              const position = editorPositionAtPointer(editorView, event);
-              if (position === null) return false;
-              event.preventDefault();
-              editorView.dispatch({ selection: { anchor: position }, scrollIntoView: true });
-              editorView.focus();
-              return true;
-            },
             paste(event) {
               const files = Array.from(event.clipboardData?.files ?? []);
               if (!files.length || !callbacks.current.onImages) return false;
@@ -1175,7 +1147,15 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
       }),
     });
     view.current = editor;
-    return () => { editor.destroy(); view.current = null; insertions.current.clear(); };
+    if (typeof window !== 'undefined') (window as any).__testEditorView = editor;
+    if (host.current) (host.current as any).__cmView = editor;
+    return () => {
+      if (typeof window !== 'undefined') (window as any).__testEditorView = null;
+      if (host.current) (host.current as any).__cmView = null;
+      editor.destroy();
+      view.current = null;
+      insertions.current.clear();
+    };
   }, []);
 
   useEffect(() => {
@@ -1701,7 +1681,6 @@ export function Preview({
   resolveFile,
   dark = false,
   eagerImages = false,
-  onEditLine,
   searchQuery = '',
   onRefreshToc,
 }: {
@@ -1717,7 +1696,6 @@ export function Preview({
   resolveFile?(id: string): Promise<string | null>;
   dark?: boolean;
   eagerImages?: boolean;
-  onEditLine?(line: number): void;
   searchQuery?: string;
   onRefreshToc?(): void;
 }) {
@@ -1765,10 +1743,27 @@ export function Preview({
       }
       const fileRegex = new RegExp(`\\[\\s*${escapeRegex(doc.filename)}\\s*\\]\\([^)]+\\)\\r?\\n*`, 'gi');
       res = res.replace(fileRegex, '');
+
+      // Strip document annotation blocks and quotes so they do not clutter preview or squeeze embedded viewer
+      const titlePattern = `(?:${escapeRegex(doc.filename)}|${escapeRegex(rawTitle)})`;
+      const fullAnnRegex = new RegExp(
+        `(?:^|\\r?\\n)###\\s+《${titlePattern}》(?:阅读笔记与批注|批注与笔记|批注)[\\s\\S]*?(?=(?:\\r?\\n#[^#]|\\r?\\n\\[|$))`,
+        'gi'
+      );
+      res = res.replace(fullAnnRegex, '');
+
+      const singleAnnRegex = new RegExp(
+        `(?:^|\\r?\\n)(?:>\\s*[^\\r\\n]*\\r?\\n*)*(?:\\*\\*批注\\*\\*[:：][^\\r\\n]*\\r?\\n*)*(?:\\*\\([^)]*《${titlePattern}》[^)]*\\)\\*\\s*|\\*\\(来源:\\s*《${titlePattern}》\\)\\*\\s*)`,
+        'gi'
+      );
+      res = res.replace(singleAnnRegex, '');
+
+      // Strip any orphaned empty blockquote lines left over
+      res = res.replace(/^\s*>\s*$/gm, '');
     }
-    const remainingText = res.trim();
+    const remainingText = res.replace(/^[>\s]+$/g, '').trim();
     return {
-      cleanedContent: res,
+      cleanedContent: remainingText.length > 0 ? res : '',
       hasOtherText: remainingText.length > 0,
     };
   }, [content, embeddedDocs]);
@@ -1886,14 +1881,7 @@ export function Preview({
     };
   }, [html, dark, resolveFile, eagerImages]);
 
-  return (<>{hasOtherText && html.trim() ? <article ref={host} className="markdown" onDoubleClick={(event) => {
-    if (!onEditLine) return;
-    const target = event.target as HTMLElement;
-    if (target.closest('a, button, input, img, summary')) return;
-    const block = target.closest<HTMLElement>('[data-source-line]');
-    const line = Number(block?.dataset.sourceLine);
-    if (Number.isInteger(line) && line >= 0) onEditLine(line);
-  }} onClick={(event) => {
+  return (<>{hasOtherText && html.trim() ? <article ref={host} className="markdown" onClick={(event) => {
     const target = event.target as HTMLElement;
     const refreshBtn = target.closest<HTMLElement>('[data-toc-action="refresh"]');
     if (refreshBtn) {
@@ -1982,7 +1970,6 @@ export function Preview({
         file={doc}
         userId={userId || ''}
         onExpandFullscreen={() => onViewDocument?.(doc)}
-        onInsertToNote={onInsertToNote}
         onCreateNoteFromContent={onCreateNoteFromContent}
         resolveFile={resolveFile}
       />

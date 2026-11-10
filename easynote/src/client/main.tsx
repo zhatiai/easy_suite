@@ -1,3 +1,4 @@
+import './uuid';
 import { createRoot } from 'react-dom/client';
 import App from './App';
 import { installUiLanguage } from './i18n';

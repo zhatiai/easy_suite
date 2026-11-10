@@ -6,6 +6,7 @@ import { publishNoteChanges } from './events';
 interface FolderRow {
   id: string;
   name: string;
+  description: string;
   parent_id: string | null;
   created_at: number;
   updated_at: number;
@@ -15,6 +16,7 @@ interface FolderRow {
 const toFolder = (row: FolderRow): Folder => ({
   id: row.id,
   name: row.name,
+  description: row.description,
   parentId: row.parent_id,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -29,6 +31,11 @@ function folderName(value: unknown): string {
   return name;
 }
 
+function folderDescription(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 2000) throw new ApiError(400, 'Folder descriptions must be at most 2000 characters.');
+  return value.trim();
+}
+
 function parentId(value: unknown): string | null {
   if (value === null) return null;
   if (typeof value !== 'string' || !idPattern.test(value)) throw new ApiError(400, 'Invalid parent folder.');
@@ -40,7 +47,7 @@ async function ownedFolder(env: Env, userId: string, id: string): Promise<boolea
 }
 
 export async function listFolders(env: Env, userId: string): Promise<Folder[]> {
-  const rows = await env.DB.prepare(`SELECT f.id,f.name,f.parent_id,f.created_at,f.updated_at,
+  const rows = await env.DB.prepare(`SELECT f.id,f.name,f.description,f.parent_id,f.created_at,f.updated_at,
     COUNT(n.id) AS note_count FROM folders f LEFT JOIN notes n
       ON n.folder_id=f.id AND n.user_id=f.user_id AND n.deleted_at IS NULL
     WHERE f.user_id=? GROUP BY f.id ORDER BY f.name COLLATE NOCASE,f.id`)
@@ -51,21 +58,22 @@ export async function listFolders(env: Env, userId: string): Promise<Folder[]> {
 export async function folderRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
   if (path === '/api/folders' && request.method === 'GET') return json({ folders: await listFolders(env, user.id) });
   if (path === '/api/folders' && request.method === 'POST') {
-    const data = await readJson(request, 4096);
-    if (Object.keys(data).some((key) => !['id', 'name', 'parentId'].includes(key)) ||
+    const data = await readJson(request, 16384);
+    if (Object.keys(data).some((key) => !['id', 'name', 'parentId', 'description'].includes(key)) ||
         typeof data.id !== 'string' || !idPattern.test(data.id)) throw new ApiError(400, 'Invalid folder fields.');
     const name = folderName(data.name);
+    const description = folderDescription(data.description === undefined ? '' : data.description);
     const parent = parentId(data.parentId ?? null);
     if (parent && !await ownedFolder(env, user.id, parent)) throw new ApiError(404, 'Parent folder not found.');
     const now = Date.now();
     try {
-      await env.DB.prepare('INSERT INTO folders(id,user_id,parent_id,name,created_at,updated_at) VALUES(?,?,?,?,?,?)')
-        .bind(data.id, user.id, parent, name, now, now).run();
+      await env.DB.prepare('INSERT INTO folders(id,user_id,parent_id,name,description,created_at,updated_at) VALUES(?,?,?,?,?,?,?)')
+        .bind(data.id, user.id, parent, name, description, now, now).run();
     } catch {
       throw new ApiError(409, 'A folder with this name already exists in that location.');
     }
     await publishNoteChanges(env, user.id, request);
-    return json({ folder: { id: data.id, name, parentId: parent, createdAt: now, updatedAt: now, noteCount: 0 } satisfies Folder }, 201);
+    return json({ folder: { id: data.id, name, description, parentId: parent, createdAt: now, updatedAt: now, noteCount: 0 } satisfies Folder }, 201);
   }
   const mergeMatch = /^\/api\/folders\/([^/]+)\/merge$/.exec(path);
   if (mergeMatch && request.method === 'POST') {
@@ -117,13 +125,14 @@ export async function folderRoutes(request: Request, env: Env, user: Identity, p
   const id = match[1];
   if (!idPattern.test(id) || !await ownedFolder(env, user.id, id)) throw new ApiError(404, 'Folder not found.');
   if (request.method === 'PATCH') {
-    const data = await readJson(request, 4096);
-    if (!Object.keys(data).length || Object.keys(data).some((key) => !['name', 'parentId'].includes(key))) {
+    const data = await readJson(request, 16384);
+    if (!Object.keys(data).length || Object.keys(data).some((key) => !['name', 'parentId', 'description'].includes(key))) {
       throw new ApiError(400, 'Invalid folder fields.');
     }
-    const current = await env.DB.prepare('SELECT name,parent_id FROM folders WHERE id=? AND user_id=?')
-      .bind(id, user.id).first<{ name: string; parent_id: string | null }>();
+    const current = await env.DB.prepare('SELECT name,parent_id,description FROM folders WHERE id=? AND user_id=?')
+      .bind(id, user.id).first<{ name: string; parent_id: string | null; description: string }>();
     const name = data.name === undefined ? current!.name : folderName(data.name);
+    const description = data.description === undefined ? current!.description : folderDescription(data.description);
     const parent = data.parentId === undefined ? current!.parent_id : parentId(data.parentId);
     if (parent === id) throw new ApiError(409, 'A folder cannot contain itself.');
     if (parent) {
@@ -136,8 +145,8 @@ export async function folderRoutes(request: Request, env: Env, user: Identity, p
     }
     const now = Date.now();
     try {
-      await env.DB.prepare('UPDATE folders SET name=?,parent_id=?,updated_at=? WHERE id=? AND user_id=?')
-        .bind(name, parent, now, id, user.id).run();
+      await env.DB.prepare('UPDATE folders SET name=?,parent_id=?,description=?,updated_at=? WHERE id=? AND user_id=?')
+        .bind(name, parent, description, now, id, user.id).run();
     } catch {
       throw new ApiError(409, 'A folder with this name already exists in that location.');
     }
