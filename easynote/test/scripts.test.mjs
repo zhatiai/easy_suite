@@ -143,6 +143,20 @@ appendFileSync(root + '/calls.jsonl', JSON.stringify({ tool, args, cwd: process.
   logPath: process.env.WRANGLER_LOG_PATH, registryPath: process.env.WRANGLER_REGISTRY_PATH,
   hasApiToken: !!process.env.CLOUDFLARE_API_TOKEN, accountId: process.env.CLOUDFLARE_ACCOUNT_ID }) + '\\n');
 if (process.env.FAKE_FAIL === tool + ':' + args[0]) process.exit(19);
+const triggerFailure = process.env.FAKE_TRIGGER_FAILURE;
+if (tool === 'wrangler' && triggerFailure &&
+    (args[0] === 'deploy' || args[0] === 'triggers' && triggerFailure !== 'transient')) {
+  const forbidden = triggerFailure === 'forbidden' || triggerFailure === 'retry-forbidden' && args[0] === 'triggers';
+  const report = [
+    'Trigger configuration for "easynote" was only partially updated:', '',
+    '  Cron schedules:', forbidden ? '    - HTTP 403: Missing Workers Scripts Write permission' : '    - fetch failed', '',
+  ];
+  if (triggerFailure === 'mixed') report.push('  Routes:', '    - fetch failed', '');
+  report.push('Successful trigger changes were not rolled back.');
+  console.error(String.fromCharCode(27) + '[31m' + report.join(String.fromCharCode(10)) + String.fromCharCode(27) + '[0m');
+  process.exit(1);
+}
+
 if (tool === 'npm' && args[0] === 'ci') {
   mkdirSync(root + '/node_modules/.bin', {recursive:true});
   mkdirSync(root + '/node_modules/wrangler/bin', {recursive:true});
@@ -435,6 +449,42 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   assert.ok((await cloudflareCalls(f)).every((call) => call.method === 'GET'));
   assert.ok(!result.output.includes(apiToken));
 });
+
+test('deployment recovers a Cron-only network failure by retrying triggers', async () => {
+  const f = await fixture();
+  await dependencies(f);
+  const result = await terminal(f, 'deploy.sh', [], [['Worker name [easynote]: ', 'easynote']], {
+    CLOUDFLARE_API_TOKEN: apiToken, EASYNOTE_DEPLOY_DOMAIN: 'workers.dev',
+    EASYNOTE_DEPLOY_CONFIRMATION: 'deploy easynote', FAKE_TRIGGER_FAILURE: 'transient',
+  });
+  assert.equal(result.status, 0, result.output);
+  assert.match(result.output, /Deployment complete/);
+  const commands = (await calls(f)).filter((call) => call.tool === 'wrangler');
+  assert.equal(commands.filter((call) => call.args[0] === 'deploy').length, 1);
+  assert.deepEqual(commands.find((call) => call.args[0] === 'triggers').args,
+    ['triggers', 'deploy', '--config', 'wrangler.deploy.json']);
+  assert.ok(commands.some((call) => call.args[0] === 'secret' && call.args[1] === 'list'));
+  assert.ok(!result.output.includes(apiToken));
+});
+
+for (const [failure, retries] of [['persistent', 2], ['forbidden', 0], ['mixed', 0], ['retry-forbidden', 1]]) {
+  test(`deployment reports incomplete triggers for ${failure} failure`, async () => {
+    const f = await fixture();
+    await dependencies(f);
+    const result = await terminal(f, 'deploy.sh', [], [['Worker name [easynote]: ', 'easynote']], {
+      CLOUDFLARE_API_TOKEN: apiToken, EASYNOTE_DEPLOY_DOMAIN: 'workers.dev',
+      EASYNOTE_DEPLOY_CONFIRMATION: 'deploy easynote', FAKE_TRIGGER_FAILURE: failure,
+    });
+    assert.notEqual(result.status, 0);
+    assert.doesNotMatch(result.output, /Deployment complete/);
+    const commands = (await calls(f)).filter((call) => call.tool === 'wrangler');
+    assert.equal(commands.filter((call) => call.args[0] === 'deploy').length, 1);
+    assert.equal(commands.filter((call) => call.args[0] === 'triggers').length, retries);
+    assert.ok(!commands.some((call) => call.args[0] === 'secret'));
+    if (retries > 0) assert.match(result.output, /Worker was uploaded, but trigger configuration remains incomplete/);
+    assert.ok(!result.output.includes(apiToken));
+  });
+}
 
 test('the shipped wrangler template routes every OAuth and MCP path to the Worker', async () => {
   // Fixed contract on the real template: run_worker_first decides whether OAuth reaches the Worker in production.

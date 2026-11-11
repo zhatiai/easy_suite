@@ -9,6 +9,7 @@ import {
   FolderPlus,
   LoaderCircle,
   Plus,
+  Pencil,
   Search,
   Share2,
   Upload,
@@ -216,9 +217,21 @@ export function FolderOverview(props: FolderOverviewProps) {
     <div className="folder-overview-scroll">
       <div className="folder-overview-content">
         <header className="folder-overview-header">
-          <div className="folder-overview-heading">
-            <FolderOpen size={32} />
-            <h1 id="folder-overview-title" onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget)}>{props.folder.name}</h1>
+          <div className="folder-overview-intro">
+            <div className="folder-overview-heading">
+              <FolderOpen size={32} />
+              <h1 id="folder-overview-title" onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget)}>{props.folder.name}</h1>
+            </div>
+            {(props.folder.description || props.editFolder) && <div className="folder-description-row">
+              {props.folder.description && <p className="folder-overview-description">{props.folder.description}</p>}
+              {props.editFolder && <button type="button"
+                className={props.folder.description ? 'icon-button folder-description-edit' : 'note-description-action folder-description-add'}
+                aria-label={t(props.folder.description ? '编辑描述' : '添加描述')}
+                title={t(props.folder.description ? '编辑描述' : '添加描述')}
+                onClick={() => props.editFolder?.(props.folder)}>
+                {props.folder.description ? <Pencil size={14} /> : <><Plus size={14} /><span>{t('添加描述')}</span></>}
+              </button>}
+            </div>}
           </div>
           {(props.createChild || props.createNoteIn || props.uploadFileTo || props.moveFolder || props.shareFolder || props.copyFolderPath || props.copyFolderId) && <div className="folder-overview-actions">
             {props.createChild && <button type="button" className="secondary folder-action-primary" aria-label={t('新建子文件夹')} data-tooltip={t('新建子文件夹')} onClick={() => props.createChild?.(props.folder.id)}><FolderPlus size={15} /><span className="folder-action-text">{t('新建子文件夹')}</span></button>}
@@ -231,9 +244,6 @@ export function FolderOverview(props: FolderOverviewProps) {
           </div>}
         </header>
 
-        {props.folder.description && <p className="folder-overview-description">{props.folder.description}</p>}
-
-        {props.editFolder && <button className="note-description-action" onClick={() => props.editFolder?.(props.folder)}>{t(props.folder.description ? '编辑描述' : '添加描述')}</button>}
         <dl className="folder-overview-meta">
           <div><dt>{t('created_at')}</dt><dd>{new Date(props.folder.createdAt).toLocaleString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</dd></div>
           <div><dt>{t('total_files')}</dt><dd>{t('{0} 个文件', totalFiles)}</dd></div>

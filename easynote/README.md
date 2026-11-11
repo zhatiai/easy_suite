@@ -512,7 +512,7 @@ def hello_world():
 
 ### 图表与 HTML
 
-流程图和脑图使用 Mermaid fenced code block，在预览模式渲染，支持暗黑模式自动切换：
+流程图和脑图使用 Mermaid fenced code block，在预览模式按需渲染。渲染器固定为 Mermaid 12.3.0，使用 Neo 外观及定制的 Redux 浅蓝／深蓝主题（圆角普通节点与标签，无投影，细灰线和开放式箭头）；流程图采用 ELK 布局，脑图保留适用的 CoSE 布局。浏览器需支持 ES2024（Safari 17.4+）：
 
 ````markdown
 ```mermaid
@@ -523,6 +523,8 @@ flowchart LR
 ````
 
 脑图将首行改为 `mindmap` 并按缩进编写节点，亦支持 `sequenceDiagram`、`classDiagram`、`stateDiagram` 等常用图表。单篇笔记最多渲染 20 个 Mermaid 图表，每个源码最多 50,000 字符。
+
+图表保留自然尺寸，小图居中，大图可在图表区域内横向滚动，也可聚焦后用方向键滚动。切换浅深色模式时会从原始源码重新渲染。正文、只读分享和 PDF 使用同一套渲染设置；渲染失败时保留源码和错误提示，其余图表继续显示。编辑模式始终保留 Mermaid 源码。
 
 HTML block 可直接写入 Markdown，通过 DOMPurify 进行安全过滤。放行 `<section>`、`<mark>`、`<kbd>`、`<details>`、`<summary>` 等安全结构标签；自动剥离 `<script>`、`<style>`、`<iframe>`、`<form>`、事件属性和外部媒体。
 

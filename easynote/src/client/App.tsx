@@ -20,6 +20,7 @@ import { NotebookExplorer } from './NotebookExplorer';
 import { FolderOverview } from './FolderOverview';
 import { FolderTreePicker } from './FolderTreePicker';
 import { DocumentMetaBar } from './DocumentMetaBar';
+import { NoteOutline } from './NoteOutline';
 import { QuickNotes } from './QuickNotes';
 import { clearAccountStorage, forgetCachedSession, loadOfflineSession, cacheSession } from './drafts';
 import { headings, noteLink } from './knowledge';
@@ -667,6 +668,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [pdfPreviewError, setPdfPreviewError] = useState('');
   const [printNote, setPrintNote] = useState<Note | null>(null);
   const [inspector, setInspector] = useState(false);
+  const [activeHeadingOffset, setActiveHeadingOffset] = useState<number | null>(null);
   const [backlinks, setBacklinks] = useState<NoteSummary[]>([]);
   const [linkPicker, setLinkPicker] = useState(false);
   const [linkQuery, setLinkQuery] = useState('');
@@ -721,6 +723,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   });
   const [documentFullscreen, setDocumentFullscreen] = useState(false);
   const editor = useRef<EditorHandle>(null);
+  const documentScroll = useRef<HTMLDivElement>(null);
   const editorCursor = useRef(0);
   const pendingEditorOffset = useRef<{ noteId: string; offset: number } | null>(null);
   const pendingInsertion = useRef<string | null>(null);
@@ -744,6 +747,41 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const visibleNotes = book.notes.slice(0, visibleNoteLimit);
   const hasHiddenNotes = visibleNotes.length < book.notes.length;
   const outline = useMemo(() => headings(note?.content ?? ''), [note?.content]);
+  useEffect(() => {
+    const scroll = documentScroll.current;
+    if (!inspector || !scroll || !note) return;
+    let frame = 0;
+    const lineOffsets = [0];
+    for (const line of note.content.split('\n')) {
+      lineOffsets.push(lineOffsets[lineOffsets.length - 1] + line.length + 1);
+    }
+    const update = () => {
+      const top = scroll.getBoundingClientRect().top + 24;
+      let offset = 0;
+      if (editor.current) offset = editor.current.readingOffset(top);
+      else {
+        const elements = scroll.querySelectorAll<HTMLElement>('.markdown :is(h1, h2, h3, h4, h5, h6)[data-source-line]');
+        for (const element of elements) {
+          if (element.getBoundingClientRect().top > top + 1) break;
+          const line = Number(element.dataset.sourceLine);
+          offset = lineOffsets[line] ?? 0;
+        }
+      }
+      setActiveHeadingOffset(outline.findLast((heading) => heading.offset <= offset)?.offset ?? null);
+    };
+    const onScroll = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    onScroll();
+    scroll.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    return () => {
+      cancelAnimationFrame(frame);
+      scroll.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
+  }, [inspector, note?.id, note?.content, layout, outline, folderOverviewId, transfer]);
   useEffect(() => setVisibleNoteLimit(50), [book.query, book.tag, book.view]);
   const updateNoteListWidth = (value: number) => {
     const next = Math.min(440, Math.max(220, Math.round(value)));
@@ -1520,7 +1558,19 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     showNotice(count ? t('已删除标签 #{0}，更新了 {1} 篇笔记', target, count) : t('已删除标签 #{0}', target));
   });
   const goToHeading = (offset: number) => {
-    editAt(offset);
+    setActiveHeadingOffset(offset);
+    if (layout === 'preview' || note?.deletedAt || transfer) {
+      const line = (note?.content.slice(0, offset).match(/\n/g) ?? []).length;
+      const target = documentScroll.current?.querySelector<HTMLElement>(`.markdown [data-source-line="${line}"]`);
+      const scroll = documentScroll.current;
+      if (target && scroll) {
+        scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 24;
+        return;
+      }
+      editAt(offset);
+      return;
+    }
+    editor.current?.goTo(offset, true);
   };
   const noteHasToc = useMemo(() => (note ? hasToc(note.content) : false), [note?.content]);
   const toggleNoteToc = () => {
@@ -1983,7 +2033,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       /></div> : note ? <>
         {note.deletedAt && <div className="trash-banner"><span>{t('已移入回收站')}</span><button onClick={() => setConfirmAction('purge')} disabled={disabled || book.pending.some((n) => n.id === note.id)}>{t('delete_permanently')}</button></div>}
         <div className="workspace-body">
-          <div className="document-scroll">
+          <div className="document-scroll" ref={documentScroll}>
             <div className={`document ${documentFullscreen ? 'wide' : ''}`}>
               <input className="note-title" aria-label={t('note_title')} placeholder={t('untitled_note')} maxLength={256} value={note.title} readOnly={!!note.deletedAt || !!transfer} onChange={(e) => setNoteFields({ title: e.target.value })} />
               {!note.deletedAt && <button className="note-description-action" disabled={!!transfer}
@@ -2027,9 +2077,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           </div>
           {inspector && <aside className="knowledge-panel" aria-label={t('笔记导航')}>
             <header><span>{t('outline_and_links')}</span><IconButton label="关闭笔记导航" onClick={() => setInspector(false)}><X size={15} /></IconButton></header>
-            <section><h3>{t('outline')}</h3>{outline.length ? <nav>{outline.map((heading, index) =>
-              <button key={`${heading.offset}-${index}`} style={{ paddingLeft: `${8 + Math.max(0, heading.level - 1) * 10}px` }} onClick={() => goToHeading(heading.offset)}>{heading.text}</button>)}</nav>
-              : <div className="panel-empty">{t('no_headings')}</div>}</section>
+            <NoteOutline key={note.id} headings={outline} activeOffset={activeHeadingOffset} onNavigate={goToHeading} />
             <section><h3>{t('backlinks')}</h3>{backlinks.length ? <nav>{backlinks.map((item) =>
               <button key={item.id} onClick={() => void openNote(item.id)}><Link2 size={13} />{item.title || t('untitled_note')}</button>)}</nav>
               : <div className="panel-empty">{t('no_backlinks')}</div>}</section>

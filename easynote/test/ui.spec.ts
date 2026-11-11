@@ -1384,6 +1384,7 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
     '  classDef pool fill:#ffecb3,stroke:#ff8f00,stroke-width:2px',
     '  class operator company',
     '  class pool pool',
+    '  style people fill:#f4f7fb,stroke:#c7d3e0',
     '```',
   ].join('\n');
   const shapedMindmap = [
@@ -1419,8 +1420,8 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
     }))
   );
   expect(scrollMetrics.every(({ clientWidth, scrollWidth, svgWidth, viewBoxWidth }) =>
-    scrollWidth <= clientWidth + 1
-    && Math.abs(svgWidth - Math.min(clientWidth, Math.ceil(viewBoxWidth))) <= 1
+    scrollWidth >= clientWidth
+    && Math.abs(svgWidth - Math.ceil(viewBoxWidth)) <= 1
   )).toBe(true);
   const mindmapRootAlignment = await diagrams.nth(1).evaluate((svg) => {
     const rootNode = svg.querySelector<SVGGElement>('.mindmap-node.section-root');
@@ -1450,22 +1451,27 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
     })
   );
   expect(mindmapLeafAlignments.every((offset) => offset !== null && offset <= 2)).toBe(true);
-  const shapedMindmapAnchors = await diagrams.nth(3).evaluate((svg) =>
-    [...svg.querySelectorAll<SVGGElement>('.mindmap-node')].map((node) => ({
-      label: node.querySelector('text')?.textContent?.trim() ?? '',
-      anchor: getComputedStyle(node.querySelector('text')!).textAnchor,
-    }))
+  const shapedMindmapAlignments = await diagrams.nth(3).evaluate((svg) =>
+    [...svg.querySelectorAll<SVGGElement>('.mindmap-node')].map((node) => {
+      const label = node.querySelector<SVGGraphicsElement>('text');
+      const shape = node.querySelector<SVGGraphicsElement>('.node-bkg, .label-container');
+      if (!label || !shape) return null;
+      const text = label.getBoundingClientRect();
+      // Organic shapes are asymmetric; center text on the node's layout origin.
+      const origin = new DOMPoint(0, 0).matrixTransform(node.getScreenCTM()!);
+      return { label: label.textContent?.trim(), offset: Math.abs(text.x + text.width / 2 - origin.x) };
+    })
   );
-  expect(shapedMindmapAnchors).toHaveLength(7);
-  expect(shapedMindmapAnchors.every(({ label, anchor }) => label && anchor === 'middle')).toBe(true);
+  expect(shapedMindmapAlignments).toHaveLength(7);
+  expect(shapedMindmapAlignments.every((node) => node?.label && node.offset <= 2)).toBe(true);
   const styled = diagrams.nth(2);
-  await expect(styled.locator('.node').first()).toHaveAttribute('data-look', 'classic');
+  await expect(styled.locator('.node').first()).toHaveAttribute('data-look', 'neo');
   expect(await styled.locator('.node.company .label-container').evaluate((element) => getComputedStyle(element).fill))
     .toBe('rgb(225, 245, 254)');
   expect(await styled.locator('.node.pool .label-container').evaluate((element) => getComputedStyle(element).fill))
     .toBe('rgb(255, 236, 179)');
-  expect(await styled.locator('.cluster rect').first().evaluate((element) => getComputedStyle(element).fill))
-    .toBe('rgb(255, 255, 222)');
+  expect(await styled.locator('.cluster').filter({ hasText: '个人及出资方' }).locator('rect').first().evaluate((element) => getComputedStyle(element).fill))
+    .toBe('rgb(244, 247, 251)');
   expect(await styled.locator('.node').first().evaluate((element) => getComputedStyle(element).filter))
     .toBe('none');
   await expect(page.getByRole('heading', { name: 'HTML Block' })).toBeVisible();
@@ -1486,6 +1492,107 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('.mermaid-diagram svg')).toHaveCount(4, { timeout: 15000 });
   await page.screenshot({ path: 'test-results/desktop-diagrams-dark.png', fullPage: true });
+});
+
+test('Mermaid ELK keeps cyclic diagrams readable across themes, mobile and public shares', async ({ page, browser }) => {
+  const layouts: string[] = [];
+  page.on('request', (request) => {
+    if (/\/elk-[^/]+\.js$/.test(new URL(request.url()).pathname)) layouts.push(request.url());
+  });
+  const content = await readFile(new URL('../examples/mermaid-agent-workflow.md', import.meta.url), 'utf8');
+  const title = `ELK 回环-${randomUUID().slice(0, 6)}`;
+  await page.goto('/');
+  await newNote(page, title, content);
+  await page.getByRole('button', { name: '预览模式', exact: true }).click();
+  const diagram = page.getByRole('region', { name: 'Mermaid 图表', exact: true });
+  await expect(diagram.locator('svg .node')).toHaveCount(8);
+  await expect(diagram.locator('svg .node').first()).toHaveAttribute('data-look', 'neo');
+  expect(layouts.length).toBeGreaterThan(0);
+  await expect(diagram.locator('foreignObject, script, image')).toHaveCount(0);
+  const node = diagram.locator('.node rect').first();
+  const lightFill = await node.evaluate((element) => getComputedStyle(element).fill);
+  expect(lightFill).toBe('rgb(223, 240, 255)');
+  expect(await node.evaluate((element) => getComputedStyle(element).rx)).toBe('16px');
+  const appearance = await diagram.locator('svg').evaluate((svg) => ({
+    shadows: [...svg.querySelectorAll('.node, .node rect, .node polygon, .node path, .node circle, .cluster rect')].map((element) => getComputedStyle(element).filter),
+    labels: [...svg.querySelectorAll('.node text')].map((element) => ({ color: getComputedStyle(element).fill, weight: getComputedStyle(element).fontWeight })),
+    lines: [...svg.querySelectorAll('.flowchart-link.edge-thickness-normal')].map((element) => getComputedStyle(element).strokeWidth),
+    arrowheads: [...svg.querySelectorAll('marker[id*="-point"] path')].map((element) => ({ fill: getComputedStyle(element).fill, path: element.getAttribute('d') })),
+  }));
+  expect(appearance.shadows.length).toBeGreaterThan(0);
+  expect(appearance.shadows.every((filter) => filter === 'none')).toBe(true);
+  expect(appearance.labels.every((label) => label.color === 'rgb(0, 79, 153)' && label.weight === '600')).toBe(true);
+  expect(appearance.lines.length).toBeGreaterThan(0);
+  expect(appearance.lines.every((width) => width === '1px')).toBe(true);
+  expect(appearance.arrowheads.length).toBeGreaterThan(0);
+  expect(appearance.arrowheads.every((arrow) => arrow.fill === 'none' && !/z/i.test(arrow.path ?? ''))).toBe(true);
+  const lightSvg = await diagram.locator('svg').getAttribute('id');
+  await page.screenshot({ path: 'test-results/mermaid-agent-workflow-light.png' });
+
+  await page.locator('.account').click();
+  await page.getByRole('switch', { name: '深色外观' }).click();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(diagram.locator('svg')).not.toHaveAttribute('id', lightSvg!);
+  await expect.poll(() => node.evaluate((element) => getComputedStyle(element).fill)).not.toBe(lightFill);
+  await expect(diagram.locator('svg .node')).toHaveCount(8);
+  await page.screenshot({ path: 'test-results/mermaid-agent-workflow-dark.png' });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sizes = await diagram.evaluate((element) => {
+    const svg = element.querySelector('svg')!;
+    return { viewport: element.clientWidth, content: element.scrollWidth, width: svg.getBoundingClientRect().width, natural: svg.viewBox.baseVal.width };
+  });
+  expect(sizes.content).toBeGreaterThan(sizes.viewport);
+  expect(Math.abs(sizes.width - Math.ceil(sizes.natural))).toBeLessThanOrEqual(1);
+  await diagram.focus();
+  await diagram.press('ArrowRight');
+  await expect.poll(() => diagram.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/mermaid-agent-workflow-mobile.png' });
+
+  await page.setViewportSize({ width: 1440, height: 960 });
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+  await page.getByRole('group', { name: '编辑模式选择' }).getByRole('button', { name: 'MD 语法', exact: true }).click();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('child -->|结果| main');
+  const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json() as { notes: Array<{ id: string }> };
+  const shared = await page.request.post(`/api/notes/${listed.notes[0].id}/share`, { headers, data: { expiresInHours: 24 } });
+  expect(shared.status()).toBe(201);
+  const { url } = await shared.json() as { url: string };
+  const context = await browser.newContext();
+  try {
+    const reader = await context.newPage();
+    await reader.goto(url);
+    await expect(reader.locator('.mermaid-diagram svg .node')).toHaveCount(8);
+    await expect(reader.locator('.mermaid-diagram svg .node').first()).toHaveAttribute('data-look', 'neo');
+    await reader.screenshot({ path: 'test-results/mermaid-agent-workflow-shared.png' });
+  } finally { await context.close(); }
+});
+
+test('Mermaid keeps safe SVG settings and preserves invalid source without blocking later diagrams', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).hostname === 'example.com') requests.push(request.url());
+  });
+  const invalid = 'flowchart LR\n  A -->';
+  const content = [
+    '```mermaid', invalid, '```', '',
+    '```mermaid', '---', 'config:', '  securityLevel: loose', '  htmlLabels: true',
+    '  theme: forest', '  look: classic', '  layout: dagre',
+    '  flowchart:', '    htmlLabels: true', '---',
+    'flowchart LR', '  A[安全标签] --> B[继续渲染]', '  click A "javascript:alert(1)"', '```', '',
+    '```mermaid', 'sequenceDiagram', '  participant A as 主 Agent', '  participant B as 子 Agent',
+    '  A->>B: 执行任务', '  B-->>A: 返回结果', '```', '',
+    '```mermaid', 'classDiagram', '  Agent <|-- Worker', '```',
+  ].join('\n');
+  await page.goto('/');
+  await newNote(page, `SVG 安全-${randomUUID().slice(0, 6)}`, content);
+  await page.getByRole('button', { name: '预览模式', exact: true }).click();
+  await expect(page.locator('.mermaid-error code')).toHaveText(invalid);
+  await expect(page.locator('.mermaid-diagram svg')).toHaveCount(3);
+  await expect(page.locator('.mermaid-diagram').first().locator('.node:not(.clickable)').first()).toHaveAttribute('data-look', 'neo');
+  await expect(page.locator('.mermaid-diagram foreignObject, .mermaid-diagram script, .mermaid-diagram image')).toHaveCount(0);
+  expect(await page.locator('.mermaid-diagram a').evaluateAll((links) => links.every((link) => !/javascript:/i.test(link.getAttribute('href') ?? link.getAttribute('xlink:href') ?? '')))).toBe(true);
+  expect(requests).toHaveLength(0);
 });
 
 test('new note reopens the existing completely blank note', async ({ page }) => {
@@ -2721,6 +2828,131 @@ test('mobile browsers receive a real PDF through share or download', async ({ pa
   expect(imageCount).toBeLessThanOrEqual(3);
 });
 
+for (const width of [1440, 390, 320]) {
+  test(`hierarchical outline folds, navigates and tracks reading at ${width}px`, async ({ page }) => {
+    const dark = width === 320;
+    if (dark) await page.addInitScript(() => localStorage.setItem('easynote-theme', 'dark'));
+    const paragraph = '正文阅读内容，用于检查目录跳转和滚动位置。\n\n'.repeat(18);
+    const content = [
+      '## 1. 技术定位与整体架构', '### 1.1 MCP 解决什么问题', paragraph,
+      '## 2. MCP 2026-07-28：必须理解的协议变化',
+      '#### 2.1 跳级标题', '###### 2.1.1 深层标题', paragraph,
+      '## 3. 三大核心能力：Tools / Resources / Prompts', '### 3.1 可选扩展', paragraph,
+      '## 4. 通信、请求和结果语义', '### 4.1 Transport 选择', paragraph,
+      '### 4.2 调用链', '#### 请求结构', paragraph, '### 4.3 JSON-RPC 示例', paragraph,
+      '## 5. Tool 设计：决定 Server 可用性的核心', '### 5.1 不要机械把 REST API 翻译成 Tool',
+      '### 5.2 命名与描述规范', '### 5.3 严格 Schema', '### 5.4 Toolset 与动态发现',
+      '```md\n## 代码中的标题\n```', paragraph,
+    ].join('\n\n');
+    await page.goto('/');
+    await newNote(page, `大纲阅读-${randomUUID().slice(0, 6)}`, content);
+    await page.setViewportSize({ width, height: 960 });
+    if (width < 640) {
+      const actions = await openMobileNoteActions(page);
+      await actions.getByRole('button', { name: '大纲与链接', exact: true }).click();
+    } else await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
+    const panel = page.getByRole('complementary', { name: '笔记导航' });
+    const nav = panel.getByRole('navigation', { name: '大纲', exact: true });
+    const section = (name: string) => nav.getByRole('button', { name, exact: true });
+    await expect(section('代码中的标题')).toHaveCount(0);
+    const root = section('2. MCP 2026-07-28：必须理解的协议变化');
+    const child = section('2.1 跳级标题');
+    const grandchild = section('2.1.1 深层标题');
+    expect((await child.boundingBox())!.x - (await root.boundingBox())!.x).toBe(24);
+    expect((await grandchild.boundingBox())!.x - (await child.boundingBox())!.x).toBe(24);
+    const fold = panel.getByRole('button', { name: '折叠章节 2. MCP 2026-07-28：必须理解的协议变化', exact: true });
+    await fold.focus();
+    await page.keyboard.press('Enter');
+    await expect(child).toBeHidden();
+    await expect(section('3.1 可选扩展')).toBeVisible();
+    await expect(panel.getByRole('button', { name: '展开章节 2. MCP 2026-07-28：必须理解的协议变化', exact: true })).toHaveAttribute('aria-expanded', 'false');
+    await page.keyboard.press('Enter');
+    await expect(grandchild).toBeVisible();
+    await panel.getByRole('button', { name: '全部收起', exact: true }).click();
+    await expect(child).toBeHidden();
+    await expect(section('1.1 MCP 解决什么问题')).toBeHidden();
+    await panel.getByRole('button', { name: '全部展开', exact: true }).click();
+    await expect(grandchild).toBeVisible();
+    await section('4.2 调用链').click();
+    await expect(section('4.2 调用链')).toHaveAttribute('aria-current', 'location');
+    await expect(page.getByRole('textbox', { name: '笔记正文' })).toBeVisible();
+    await expect.poll(() => page.locator('.cm-line').filter({ hasText: '4.2 调用链' }).evaluate((element) =>
+      Math.abs(element.getBoundingClientRect().top - element.closest('.document-scroll')!.getBoundingClientRect().top - 24)
+    )).toBeLessThan(4);
+    await page.locator('.document-scroll').evaluate((element) => { element.scrollTop = 0; });
+    await expect(section('1. 技术定位与整体架构')).toHaveAttribute('aria-current', 'location');
+    await section('4.2 调用链').click();
+    await expect(section('4.2 调用链')).toHaveAttribute('aria-current', 'location');
+    // Mobile uses a side sheet, so close it to reach the preview action.
+    if (width < 640) await panel.getByRole('button', { name: '关闭笔记导航', exact: true }).click();
+    await page.getByRole('button', { name: '预览模式', exact: true }).click();
+    if (width < 640) {
+      const actions = await openMobileNoteActions(page);
+      await actions.getByRole('button', { name: '大纲与链接', exact: true }).click();
+    }
+    await section('4.1 Transport 选择').click();
+    await expect(page.locator('.markdown h3').filter({ hasText: '4.1 Transport 选择' })).toBeVisible();
+    await expect(section('4.1 Transport 选择')).toHaveAttribute('aria-current', 'location');
+    await expect(page.getByRole('textbox', { name: '笔记正文' })).toHaveCount(0);
+    // Scroll the document independently of the outline, matching a reader moving through the note.
+    await page.locator('.markdown h3').filter({ hasText: '4.2 调用链' }).evaluate((element) => {
+      const scroll = element.closest('.document-scroll')!;
+      scroll.scrollTop += element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 24;
+    });
+    await expect(section('4.2 调用链')).toHaveAttribute('aria-current', 'location');
+    expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await nav.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width < 640) expect((await section('4.2 调用链').boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    await page.mouse.move(5, 5);
+    await page.screenshot({ path: `test-results/outline-hierarchy-${width}.png`, animations: 'disabled' });
+    // Collapsing a branch must not carry over to another note with identical offsets.
+    await panel.getByRole('button', { name: '全部收起', exact: true }).click();
+    if (width < 640) await page.setViewportSize({ width: 1440, height: 960 });
+    await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+    await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
+    await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue('');
+    await page.getByRole('textbox', { name: '笔记标题' }).fill(`切换大纲-${randomUUID().slice(0, 6)}`);
+    await page.getByRole('textbox', { name: '笔记正文' }).fill('## 1. 技术定位与整体架构\n\n### 子章节');
+    await expect(section('子章节')).toBeVisible();
+  });
+}
+
+test('English outline keeps preview navigation aligned after embedded-document cleanup', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('easynote-language', 'en');
+    localStorage.setItem('easynote-theme', 'dark');
+  });
+  await page.setViewportSize({ width: 320, height: 900 });
+  await page.route('**/outline-guide.txt', (route) => route.fulfill({ status: 200, contentType: 'text/plain', body: 'Embedded guide' }));
+  const title = `Outline-${randomUUID().slice(0, 8)}`;
+  const id = randomUUID();
+  expect((await page.request.post(`/api/notes/${id}`, { headers, data: {
+    title, content: '# outline-guide\n\n[outline-guide.txt](/outline-guide.txt)\n\n## Transport selection\n\n### Repeated title\n\n'
+      + 'Reading content.\n\n'.repeat(60) + '## Request lifecycle\n\n### Repeated title\n\n' + 'More content.\n\n'.repeat(60),
+    tags: [], pinned: false, archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.goto('/');
+  await page.locator('[data-note-row]').filter({ hasText: title }).click();
+  await page.getByRole('button', { name: 'Preview Mode', exact: true }).click();
+  await page.getByRole('button', { name: 'More Note Actions', exact: true }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Outline & Links', exact: true }).click();
+  const panel = page.getByRole('complementary', { name: 'Note Navigation' });
+  const nav = panel.getByRole('navigation', { name: 'Outline', exact: true });
+  await panel.getByRole('button', { name: 'Collapse All', exact: true }).click();
+  await expect(nav.getByRole('button', { name: 'Repeated title', exact: true })).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Expand All', exact: true }).click();
+  const duplicates = nav.getByRole('button', { name: 'Repeated title', exact: true });
+  await expect(duplicates).toHaveCount(2);
+  await duplicates.nth(1).click();
+  await expect(duplicates.nth(1)).toHaveAttribute('aria-current', 'location');
+  await expect(duplicates.nth(0)).not.toHaveAttribute('aria-current');
+  await expect(page.getByRole('textbox', { name: 'Note Content' })).toHaveCount(0);
+  expect(await page.locator('.markdown h3').nth(1).evaluate((element) => Math.abs(element.getBoundingClientRect().top - element.closest('.document-scroll')!.getBoundingClientRect().top - 24))).toBeLessThan(2);
+  expect(await nav.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/outline-english-dark-320.png' });
+});
+
 test('outline, stable internal links and backlinks navigate between notes', async ({ page }) => {
   const marker = randomUUID().slice(0, 6);
   const targetTitle = `知识目标-${marker}`;
@@ -2977,6 +3209,16 @@ for (const width of [1440, 390]) {
     const row = page.locator('.folder-tree-row').filter({ hasText: name });
     await row.locator('.folder-tree-select').click();
     await expect(page.locator('.folder-overview-description')).toHaveText('用于项目需求与技术文档');
+    const layout = await page.locator('.folder-overview').evaluate((element) => {
+      const title = element.querySelector('h1')!.getBoundingClientRect();
+      const description = element.querySelector('.folder-overview-description')!.getBoundingClientRect();
+      const actions = element.querySelector('.folder-overview-actions')!.getBoundingClientRect();
+      const edit = element.querySelector('.folder-description-edit')!.getBoundingClientRect();
+      return { titleBottom: title.bottom, descriptionTop: description.top, descriptionBottom: description.bottom, actionsTop: actions.top, editWidth: edit.width };
+    });
+    expect(layout.descriptionTop).toBeGreaterThan(layout.titleBottom);
+    expect(layout.actionsTop).toBeGreaterThan(layout.descriptionBottom);
+    expect(layout.editWidth).toBe(28);
     await page.locator('.folder-overview').getByRole('button', { name: '编辑描述', exact: true }).click();
     await dialog.getByRole('textbox', { name: '文件夹描述', exact: true }).fill('更新后的目录说明');
     await dialog.getByRole('button', { name: '保存', exact: true }).click();
@@ -3460,7 +3702,7 @@ test('inserts and removes markdown table of contents via top toolbar button', as
   await expect(targetHeading).toBeVisible();
 
   // Switch back to edit mode
-  await page.getByRole('button', { name: '编辑模式' }).click();
+  await page.getByRole('button', { name: '编辑模式', exact: true }).click();
 
   // Click again to remove TOC
   await tocButton.click();

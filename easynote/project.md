@@ -82,9 +82,11 @@ easynote/
 - `drafts.ts`：IndexedDB 数据层。按用户隔离草稿、离线笔记镜像、会话摘要、同步游标和缓存文件；写入通过队列串行化。
 - `merge.ts`：纯三方合并算法。标量、标签和文本分别合并，不能安全自动合并时显式返回冲突字段。
 - `Editor.tsx`：CodeMirror 编辑、快捷操作、安全 Markdown 渲染、任务勾选、代码高亮和按需 Mermaid 渲染。
+- `mermaid.ts`：固定 Mermaid 12.3.0，集中管理 Neo / Redux 浅蓝深蓝主题、无投影的圆角普通节点与标签、细灰线和开放式箭头、流程图 ELK 布局及 SVG 净化。配置和渲染串行执行，避免正文、分享与 PDF 的全局主题相互覆盖；脑图沿用 CoSE 布局。图表保留自然尺寸并在容器内滚动，主题切换使用保留的源码重新生成 SVG。
 - `transfer.ts`：EasyNote ZIP、Obsidian/通用 Markdown 导入，附件重映射、重复检测与数据校验。
 - `pdf.ts`：将预览 DOM 转换为 pdfmake 文档，处理图片/Mermaid、字体、分页预览和平台导出。
 - `knowledge.ts`：标题提取及稳定的内部笔记链接。
+- `NoteOutline.tsx`：将标题级别组织为可折叠的树形大纲，展示当前阅读章节；正文滚动与编辑器定位由 `App.tsx` 和 `Editor.tsx` 接入。
 - `i18n.ts`：中英文词典和运行时语言切换；键一致性由脚本检查。
 - `AccountSecurity.tsx`、`UserManagement.tsx`、`AiAccess.tsx`、`NoteSharing.tsx`、`ShareManagement.tsx`：设置页中的独立功能面板。
 - `styles.css`：全局视觉系统和桌面/移动响应式样式。

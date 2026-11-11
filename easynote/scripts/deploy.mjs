@@ -88,14 +88,50 @@ function runWrangler(args, token, accountId, extraEnv = {}) {
         WRANGLER_SEND_METRICS: 'false',
         WRANGLER_LOG_PATH: `${root}/.wrangler/logs/`,
       },
-      stdio: 'inherit',
+      stdio: ['inherit', 'inherit', 'pipe'],
+    });
+    let output = '';
+    child.stderr.on('data', (chunk) => {
+      process.stderr.write(chunk);
+      output = (output + chunk.toString()).slice(-16384);
     });
     child.on('error', reject);
-    child.on('exit', (code) => {
+    child.on('close', (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`wrangler ${args.join(' ')} failed (${code}).`));
+      else {
+        const error = new Error(`wrangler ${args.join(' ')} failed (${code}).`);
+        error.output = output;
+        reject(error);
+      }
     });
   });
+}
+
+function isCronNetworkFailure(error) {
+  const output = (error.output ?? '').replace(/\u001b\[[0-9;]*m/g, '').replace(/\s+/g, ' ');
+  return /Trigger configuration for "[^"]+" was only partially updated: Cron schedules: - fetch failed Successful trigger changes were not rolled back\./.test(output);
+}
+
+async function uploadWorker(token, accountId) {
+  try {
+    await runWrangler(['deploy', '--config', 'wrangler.deploy.json'], token, accountId);
+    return;
+  } catch (error) {
+    if (!isCronNetworkFailure(error)) throw error;
+    console.warn('Worker upload succeeded. The Cron request failed over the network. Retrying trigger configuration.');
+  }
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    console.log(`Retrying trigger configuration (${attempt}/2)...`);
+    await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    try {
+      await runWrangler(['triggers', 'deploy', '--config', 'wrangler.deploy.json'], token, accountId);
+      return;
+    } catch (error) {
+      if (attempt === 2 || !isCronNetworkFailure(error)) {
+        throw new Error(`The Worker was uploaded, but trigger configuration remains incomplete. Check the Cloudflare connection and Cron settings, then rerun bash deploy.sh.\n${error.message}`, { cause: error });
+      }
+    }
+  }
 }
 
 function runSetup(token, accountId) {
@@ -243,8 +279,8 @@ async function main() {
     () => runWrangler(['d1', 'migrations', 'apply', 'DB', '--remote', '--config', 'wrangler.deploy.json'], token, accountId),
   );
   await withProgress(
-    'Uploading the Worker',
-    () => runWrangler(['deploy', '--config', 'wrangler.deploy.json'], token, accountId),
+    'Uploading the Worker and configuring triggers',
+    () => uploadWorker(token, accountId),
   );
   console.log('\nChecking the initial owner...');
   await runSetup(token, accountId);

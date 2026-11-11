@@ -42,7 +42,8 @@ export interface EditorHandle {
   insertAt(insertion: string, value: string): boolean;
   releaseInsertion(insertion: string): void;
   cursor(): number;
-  goTo(offset: number): void;
+  goTo(offset: number, alignToTop?: boolean): void;
+  readingOffset(viewportTop: number): number;
   focus(): void;
 }
 
@@ -1082,11 +1083,22 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
     },
     releaseInsertion(insertion) { insertions.current.delete(insertion); },
     cursor() { return view.current?.state.selection.main.head ?? 0; },
-    goTo(offset) {
+    readingOffset(viewportTop) {
+      const editor = view.current;
+      if (!editor) return 0;
+      const bounds = editor.contentDOM.getBoundingClientRect();
+      if (viewportTop <= bounds.top) return 0;
+      return editor.posAtCoords({ x: bounds.left + 8, y: viewportTop }, false) ?? editor.viewport.from;
+    },
+    goTo(offset, alignToTop = false) {
       const editor = view.current;
       if (!editor) return;
       const position = Math.max(0, Math.min(offset, editor.state.doc.length));
-      editor.dispatch({ selection: { anchor: position }, scrollIntoView: true });
+      editor.dispatch({
+        selection: { anchor: position },
+        scrollIntoView: !alignToTop,
+        effects: alignToTop ? EditorView.scrollIntoView(position, { y: 'start', yMargin: 24 }) : [],
+      });
       editor.focus();
     },
     focus() { view.current?.focus(); },
@@ -1649,18 +1661,25 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
   return parsed.body.innerHTML;
 }
 
-function diagramError(element: HTMLElement, error: unknown) {
+function diagramError(element: HTMLElement, error: unknown, source = element.textContent ?? '') {
   element.className = 'mermaid-error';
   element.removeAttribute('data-mermaid-source');
-  element.textContent = t('图表无法渲染：{0}', String(error).split('\n', 1)[0]);
+  element.removeAttribute('aria-busy');
+  const message = document.createElement('p');
+  message.textContent = t('图表无法渲染：{0}', String(error).split('\n', 1)[0]);
+  const code = document.createElement('code');
+  code.textContent = source;
+  const pre = document.createElement('pre');
+  pre.appendChild(code);
+  element.replaceChildren(message, pre);
 }
 
-function fitDiagramToContainer(element: HTMLElement) {
+function sizeDiagram(element: HTMLElement) {
   const svg = element.querySelector<SVGSVGElement>('svg');
   const width = svg?.viewBox.baseVal.width ?? 0;
   if (!svg || width <= 0) return;
   svg.style.width = `${Math.ceil(width)}px`;
-  svg.style.maxWidth = '100%';
+  svg.style.maxWidth = 'none';
   svg.style.height = 'auto';
 }
 
@@ -1700,6 +1719,7 @@ export function Preview({
   onRefreshToc?(): void;
 }) {
   const host = useRef<HTMLElement>(null);
+  const diagramSources = useRef(new WeakMap<HTMLElement, string>());
   const embeddedDocs = useMemo(() => {
     const matches = Array.from(content.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g));
     const docs: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }[] = [];
@@ -1725,24 +1745,26 @@ export function Preview({
   const { cleanedContent, hasOtherText } = useMemo(() => {
     if (!embeddedDocs.length) return { cleanedContent: content, hasOtherText: true };
     let res = content;
+    // Keep source line numbers stable for outline navigation after hiding embedded-document metadata.
+    const preserveLines = (text: string) => text.replace(/[^\r\n]/g, '');
     for (const doc of embeddedDocs) {
       const rawTitle = doc.filename.replace(/\.[^.]+$/, '').trim();
       const headingRegex = new RegExp(`^#\\s+${escapeRegex(rawTitle)}\\s*\\r?\\n*`, 'im');
-      res = res.replace(headingRegex, '');
+      res = res.replace(headingRegex, preserveLines);
       const headingRegexFull = new RegExp(`^#\\s+${escapeRegex(doc.filename)}\\s*\\r?\\n*`, 'im');
-      res = res.replace(headingRegexFull, '');
+      res = res.replace(headingRegexFull, preserveLines);
 
       // Strip document links corresponding to embedded documents so the preview moves up and removes redundant link pill
       if (doc.id) {
         const idRegex = new RegExp(`\\[[^\\]]*\\]\\([^)]*${escapeRegex(doc.id)}[^)]*\\)\\r?\\n*`, 'gi');
-        res = res.replace(idRegex, '');
+        res = res.replace(idRegex, preserveLines);
       }
       if (doc.url) {
         const urlRegex = new RegExp(`\\[[^\\]]*\\]\\(${escapeRegex(doc.url)}\\)\\r?\\n*`, 'gi');
-        res = res.replace(urlRegex, '');
+        res = res.replace(urlRegex, preserveLines);
       }
       const fileRegex = new RegExp(`\\[\\s*${escapeRegex(doc.filename)}\\s*\\]\\([^)]+\\)\\r?\\n*`, 'gi');
-      res = res.replace(fileRegex, '');
+      res = res.replace(fileRegex, preserveLines);
 
       // Strip document annotation blocks and quotes so they do not clutter preview or squeeze embedded viewer
       const titlePattern = `(?:${escapeRegex(doc.filename)}|${escapeRegex(rawTitle)})`;
@@ -1750,16 +1772,16 @@ export function Preview({
         `(?:^|\\r?\\n)###\\s+《${titlePattern}》(?:阅读笔记与批注|批注与笔记|批注)[\\s\\S]*?(?=(?:\\r?\\n#[^#]|\\r?\\n\\[|$))`,
         'gi'
       );
-      res = res.replace(fullAnnRegex, '');
+      res = res.replace(fullAnnRegex, preserveLines);
 
       const singleAnnRegex = new RegExp(
         `(?:^|\\r?\\n)(?:>\\s*[^\\r\\n]*\\r?\\n*)*(?:\\*\\*批注\\*\\*[:：][^\\r\\n]*\\r?\\n*)*(?:\\*\\([^)]*《${titlePattern}》[^)]*\\)\\*\\s*|\\*\\(来源:\\s*《${titlePattern}》\\)\\*\\s*)`,
         'gi'
       );
-      res = res.replace(singleAnnRegex, '');
+      res = res.replace(singleAnnRegex, preserveLines);
 
       // Strip any orphaned empty blockquote lines left over
-      res = res.replace(/^\s*>\s*$/gm, '');
+      res = res.replace(/^\s*>\s*$/gm, preserveLines);
     }
     const remainingText = res.replace(/^[>\s]+$/g, '').trim();
     return {
@@ -1773,7 +1795,7 @@ export function Preview({
     [cleanedContent, !!onTask, searchQuery, !!onRefreshToc]
   );
   useEffect(() => {
-    const elements = [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source]') ?? [])];
+    const elements = [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source], .mermaid-diagram') ?? [])];
     const codeBlocks = [...(host.current?.querySelectorAll<HTMLElement>('code[data-code-language]') ?? [])];
     const privateImages = [...(host.current?.querySelectorAll<HTMLImageElement>('img[data-private-image]') ?? [])];
     const docLinks = [...(host.current?.querySelectorAll<HTMLAnchorElement>('a.doc-link-pdf, a.doc-link-txt') ?? [])];
@@ -1786,6 +1808,10 @@ export function Preview({
       if (isEmbedded) {
         link.classList.add('doc-link-embedded');
       }
+    }
+    for (const element of elements) {
+      if (!diagramSources.current.has(element)) diagramSources.current.set(element, element.textContent?.trim() ?? '');
+      element.setAttribute('aria-busy', 'true');
     }
     const objectUrls: string[] = [];
     let cancelled = false;
@@ -1822,57 +1848,32 @@ export function Preview({
     })();
     if (elements.length) void (async () => {
       try {
-        const { default: mermaid } = await import('mermaid');
-        mermaid.initialize({
-          startOnLoad: false,
-          securityLevel: 'strict',
-          suppressErrorRendering: true,
-          htmlLabels: false,
-          maxTextSize: 50_000,
-          maxEdges: 500,
-          secure: [
-            'secure', 'securityLevel', 'startOnLoad', 'suppressErrorRendering', 'maxTextSize', 'maxEdges',
-            'theme', 'look', 'layout', 'themeVariables', 'themeCSS', 'fontFamily', 'htmlLabels',
-          ],
-          theme: dark ? 'dark' : 'default',
-          look: 'classic',
-          layout: 'dagre',
-          themeVariables: { fontSize: '14px' },
-          flowchart: {
-            curve: 'basis',
-            htmlLabels: false,
-            useMaxWidth: false,
-            diagramPadding: 4,
-            nodeSpacing: 30,
-            rankSpacing: 35,
-          },
-          fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        });
+        const { renderDiagram } = await import('./mermaid');
         for (const [index, element] of elements.entries()) {
           if (cancelled) return;
-          const source = element.textContent?.trim() ?? '';
+          const source = diagramSources.current.get(element) ?? '';
           if (!source || source.length > 50_000 || index >= 20) {
-            diagramError(element, source ? t('图表内容过大或数量超过 20 个。') : t('图表内容为空。'));
+            diagramError(element, source ? t('图表内容过大或数量超过 20 个。') : t('图表内容为空。'), source);
             continue;
           }
           try {
-            const id = `easynote-diagram-${crypto.randomUUID()}`;
-            const { svg, bindFunctions } = await mermaid.render(id, source);
+            const { svg, bindFunctions } = await renderDiagram(source, dark);
             if (cancelled) return;
-            element.innerHTML = DOMPurify.sanitize(svg, {
-              USE_PROFILES: { svg: true, svgFilters: true },
-              ADD_TAGS: ['style'],
-            });
+            element.innerHTML = svg;
             element.className = 'mermaid-diagram';
+            element.tabIndex = 0;
+            element.setAttribute('role', 'region');
+            element.setAttribute('aria-label', t('Mermaid 图表'));
             element.removeAttribute('data-mermaid-source');
-            fitDiagramToContainer(element);
+            element.removeAttribute('aria-busy');
+            sizeDiagram(element);
             bindFunctions?.(element);
           } catch (error) {
-            diagramError(element, error);
+            diagramError(element, error, source);
           }
         }
       } catch (error) {
-        if (!cancelled) elements.forEach((element) => diagramError(element, error));
+        if (!cancelled) elements.forEach((element) => diagramError(element, error, diagramSources.current.get(element)));
       }
     })();
     return () => {

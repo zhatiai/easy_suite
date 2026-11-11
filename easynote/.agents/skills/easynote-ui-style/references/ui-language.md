@@ -54,6 +54,7 @@ Desktop is a continuous pane workspace:
 - The document is centered and capped near 900 px, optionally 1080 px, with 40 px desktop side padding. Attachment links must preserve this outer scroll container and its gutters; embedded viewers have their own bounded height.
 - Toolbars and footers use thin borders and fixed, compact heights rather than card containers.
 - Optional knowledge/navigation detail appears as a narrow right panel, not a floating dashboard.
+- The outline panel is 304 px on desktop, 280 px at intermediate widths, and up to 352 px as a mobile side sheet. Use nested lists with 24 px relative indentation, thin parent/child guides, semibold top-level headings, branch folding, and an accent-tinted current-location row. Heading labels wrap with aligned continuation lines; mobile rows are at least 44 px tall. Preview navigation scrolls inside the document pane and retains reading mode.
 
 Responsive behavior is structural:
 
@@ -78,6 +79,7 @@ Do not add horizontal scrolling at 320 px in either Chinese or English. Long tit
 - Empty states: sparse, centered, and task-oriented, with one muted icon/title and at most one clear primary action.
 - Settings: divided rows, simple labels and controls; complex forms use small grids that collapse to one column on mobile.
 - Markdown/document: generous vertical rhythm, readable line length, white code blocks with thin borders and 14 px system monospace, simple tables and blockquotes, and no decorative card around the note itself. Light-mode syntax uses purple keys/keywords and deep blue strings.
+- Mermaid diagrams keep their natural SVG dimensions: center small diagrams and scroll large ones inside the content width. Use the shared flat Neo / Redux light and dark themes: pale blue nodes, semibold deep blue labels, 1 px neutral edges, open chevron arrowheads, and no shadows or gradients. Preserve source on errors, and keep labels as native SVG text for sanitization and PDF export.
 - Tables: use the paper surface for body cells, a subtle neutral header with left-aligned 600-weight labels, thin separators, and 15 px type with 10 × 14 px cell padding. Avoid zebra striping; keep preview and live editing consistent and preserve horizontal scrolling on narrow screens.
 
 ## Interaction and accessibility

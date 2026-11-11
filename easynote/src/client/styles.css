@@ -577,6 +577,7 @@ nav button.active svg { color: var(--accent); }
   }
 }
 .toolbar-trash-action[data-tooltip]::after,
+.knowledge-panel > header .icon-button[data-tooltip]::after,
 .toolbar-right > .icon-button:last-child[data-tooltip]::after,
 .list-heading > .icon-button:last-child[data-tooltip]::after {
   left: auto;
@@ -584,12 +585,14 @@ nav button.active svg { color: var(--accent); }
   transform: translate(0, -2px);
 }
 .toolbar-trash-action[data-tooltip]:focus-visible::after,
+.knowledge-panel > header .icon-button[data-tooltip]:focus-visible::after,
 .toolbar-right > .icon-button:last-child[data-tooltip]:focus-visible::after,
 .list-heading > .icon-button:last-child[data-tooltip]:focus-visible::after {
   transform: translate(0, 0);
 }
 @media (hover: hover) and (min-width: 641px) {
   .toolbar-trash-action[data-tooltip]:hover::after,
+  .knowledge-panel > header .icon-button[data-tooltip]:hover::after,
   .toolbar-right > .icon-button:last-child[data-tooltip]:hover::after,
   .list-heading > .icon-button:last-child[data-tooltip]:hover::after {
     transform: translate(0, 0);
@@ -1577,17 +1580,21 @@ nav button.active svg { color: var(--accent); }
   width: 100%;
   max-width: 100%;
   margin: 26px 0;
-  overflow: hidden;
+  padding: 16px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   text-align: left;
 }
+.mermaid-diagram:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 .mermaid-diagram svg {
   display: block;
   width: auto;
-  max-width: 100%;
+  max-width: none;
   height: auto;
-  margin: 0;
+  margin-inline: auto;
 }
-.mermaid-diagram .mindmap-node > .label-container ~ .label text { text-anchor: middle; }
+.mermaid-error > p { margin: 0 0 8px; }
+.mermaid-error pre { margin: 0; white-space: pre-wrap; }
 .mermaid-error { margin: 20px 0; padding: 12px 14px; color: var(--danger); background: color-mix(in srgb, var(--danger) 7%, var(--paper)); border-left: 3px solid var(--danger); white-space: pre-wrap; font-size: 12px; }
 .blocked-image { color: var(--muted); font-size: 12px; }
 .empty-state { padding: 54px 18px; display: flex; flex-direction: column; align-items: center; gap: 14px; color: var(--muted); font-size: 13px; }
@@ -1621,6 +1628,11 @@ nav button.active svg { color: var(--accent); }
   gap: 16px;
   min-width: 0;
 }
+.folder-overview-intro { flex: 1 1 100%; min-width: 0; }
+.folder-description-row { display: flex; align-items: flex-start; gap: 8px; max-width: 720px; min-width: 0; margin: 10px 0 0 44px; }
+.folder-description-row .folder-overview-description { min-width: 0; margin: 0; }
+.folder-description-edit { flex: 0 0 28px; width: 28px; height: 28px; margin-top: -2px; color: var(--muted); }
+.folder-description-row .folder-description-add { margin: 0; padding-block: 2px; }
 .folder-overview-heading {
   display: flex;
   align-items: center;
@@ -1650,7 +1662,7 @@ nav button.active svg { color: var(--accent); }
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  margin-left: auto;
+  margin-left: 0;
   flex-shrink: 0;
 }
 .folder-overview-actions button {
@@ -1752,7 +1764,7 @@ nav button.active svg { color: var(--accent); }
     gap: 10px;
   }
 }
-.folder-overview-meta { display: flex; margin: 22px 0 30px; padding: 17px 0; gap: 40px; border-block: 1px solid var(--line); }
+.folder-overview-meta { display: flex; margin: 20px 0 24px; padding: 0 0 20px; gap: 32px; border-bottom: 1px solid var(--line); }
 .folder-overview-meta > div { display: grid; gap: 5px; }
 .folder-overview-meta dt { color: var(--subtle); font-size: 11px; }
 .folder-overview-meta dd { margin: 0; color: var(--ink); font-size: 13px; }
@@ -2240,13 +2252,17 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   text-align: right;
 }
 .knowledge-panel {
-  width: 240px;
-  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  width: 304px;
+  min-width: 304px;
+  min-height: 0;
   overflow-y: auto;
   background: var(--list-pane);
   border-left: 1px solid var(--line);
 }
 .knowledge-panel > header {
+  flex-shrink: 0;
   position: sticky;
   top: 0;
   z-index: 1;
@@ -2263,6 +2279,28 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
 .knowledge-panel section { padding: 14px 8px; border-bottom: 1px solid var(--line); }
 .knowledge-panel h3 { margin: 0 6px 8px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .knowledge-panel nav button { min-height: 30px; font-size: 12px; }
+.knowledge-panel .outline-section { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px 10px 14px; scrollbar-width: thin; }
+.outline-section-header { display: flex; min-height: 36px; align-items: center; justify-content: space-between; gap: 8px; }
+.knowledge-panel .outline-section-header h3 { margin: 0 6px; }
+.outline-fold-all { padding: 6px; border: 0; background: transparent; box-shadow: none; color: var(--muted); font-size: 11px; }
+.outline-fold-all:hover { background: var(--hover); }
+.note-outline ul { list-style: none; padding: 0; margin: 0; min-width: 0; }
+.note-outline > ul > li { margin-top: 3px; }
+.outline-row { position: relative; display: flex; align-items: flex-start; min-width: 0; border-radius: 6px; }
+.outline-row:hover { background: var(--hover); }
+.outline-row.is-current { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, var(--list-pane)); }
+.outline-row.is-current::before { content: ''; position: absolute; inset: 8px auto 8px 0; width: 2px; background: var(--accent); border-radius: 2px; }
+.knowledge-panel .note-outline .outline-toggle { display: grid; place-items: center; flex: 0 0 24px; width: 24px; min-height: 36px; padding: 0; color: var(--muted); }
+.outline-toggle[aria-expanded="true"] svg { transform: rotate(90deg); }
+.outline-leaf { display: grid; place-items: center; flex: 0 0 24px; height: 36px; color: var(--subtle); }
+.outline-leaf::after { content: ''; width: 3px; height: 3px; background: currentColor; border-radius: 50%; }
+.knowledge-panel .note-outline .outline-heading { display: block; flex: 1; min-width: 0; min-height: 36px; padding: 8px 8px 8px 0; color: var(--muted); border-radius: 0; font-size: 13px; line-height: 20px; overflow-wrap: anywhere; }
+.knowledge-panel .note-outline button:hover { background: transparent; }
+.note-outline > ul > li > .outline-row > .outline-heading { color: var(--ink); font-weight: 600; }
+.knowledge-panel .note-outline .is-current .outline-heading { color: var(--accent); font-weight: 600; }
+.outline-children { margin: 2px 0 6px 14px; padding-left: 9px; border-left: 1px solid var(--line); }
+.knowledge-panel > section:last-child:not(.outline-section) { flex-shrink: 0; max-height: 30%; overflow: auto; border-bottom: 0; }
+.document-scroll .markdown :is(h1, h2, h3, h4, h5, h6) { scroll-margin-top: 24px; }
 .panel-empty { padding: 7px 8px; color: var(--subtle); font-size: 12px; }
 .command-search {
   display: flex;
@@ -4263,7 +4301,7 @@ a.doc-link-txt::before {
   .sidebar { display: none; }
   .navigation-divider { display: none; }
   .save-status { font-size: 10px; }
-  .knowledge-panel { width: 210px; min-width: 210px; }
+  .knowledge-panel { width: 280px; min-width: 280px; }
   .quick-notes-workspace { grid-column: 3 / -1; }
 }
 @media(max-width: 640px) {
@@ -4403,18 +4441,20 @@ a.doc-link-txt::before {
   .folder-overview-header { flex-wrap: wrap; }
   .folder-overview-heading { width: 100%; }
   .folder-overview-heading h1 { font-size: 27px; }
-  .folder-overview-actions { width: 100%; margin-left: 0; margin-top: 10px; }
+  .folder-overview-actions { width: 100%; margin-left: 0; margin-top: 0; }
   .folder-overview-actions button { flex: 1; justify-content: center; }
   .folder-overview-actions button .folder-action-text { display: inline; }
-  .folder-overview-meta { margin: 18px 0 30px; gap: 28px; }
+  .folder-overview-meta { margin: 18px 0 24px; gap: 24px; }
   .knowledge-panel {
     position: absolute;
     inset: 50px 0 32px auto;
     z-index: 4;
-    width: min(290px, 100%);
+    width: min(352px, 100%);
     min-width: 0;
     box-shadow: -8px 0 24px #0000001f;
   }
+  .knowledge-panel .note-outline .outline-heading { min-height: 44px; padding-top: 12px; padding-bottom: 12px; font-size: 14px; }
+  .knowledge-panel .note-outline .outline-toggle, .outline-leaf { min-height: 44px; }
   .document { width: 100%; padding: 28px 0 52px; }
   .note-title { font-size: 27px; }
   .document-meta { margin: 8px 0 22px; }

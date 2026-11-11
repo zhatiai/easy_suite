@@ -14,7 +14,7 @@ Use this reference when a UI task touches architecture, dependencies, state, per
 
 - `lucide-react` is the single UI icon family. Match the surrounding 12–20 px icon sizing and use accessible text or `aria-label` for icon-only actions.
 - CodeMirror 6 powers Markdown editing. Editor styling intentionally inherits the product font, colors, selection, and line height.
-- `markdown-it` renders Markdown; DOMPurify sanitizes it. `highlight.js` handles code syntax and Mermaid renders diagrams lazily.
+- `markdown-it` renders Markdown; DOMPurify sanitizes it. `highlight.js` handles code syntax and pinned Mermaid 12.3.0 renders diagrams lazily through `mermaid.ts` (Neo, Redux light/dark, ELK flowcharts, CoSE mindmaps). Mermaid needs ES2024-capable browsers, including Safari 17.4+.
 - PDF export uses pdfmake, html-to-pdfmake, and pdfjs. Printed/PDF content has separate CSS constraints and must remain readable on white paper.
 - `idb` backs offline drafts, cached sessions, the note mirror, sync cursor, and cached files.
 
