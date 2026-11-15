@@ -1,3 +1,5 @@
+import type { Folder } from '../shared/types';
+
 export interface Heading {
   level: number;
   text: string;
@@ -25,7 +27,12 @@ export function headings(content: string): Heading[] {
   return result;
 }
 
-export function noteLink(id: string, title: string): string {
-  const label = (title || '未命名笔记').replace(/[\]\|\r\n]/g, ' ').trim().slice(0, 256);
-  return `[[${id}|${label}]]`;
+export { noteLink } from '../shared/noteLinks';
+
+export function folderEntityCounts(folders: Folder[]): Map<string, number> {
+  const counts = new Map(folders.map((folder) => [folder.id, folder.noteCount]));
+  for (const folder of folders) {
+    if (folder.parentId) counts.set(folder.parentId, (counts.get(folder.parentId) ?? 0) + 1);
+  }
+  return counts;
 }

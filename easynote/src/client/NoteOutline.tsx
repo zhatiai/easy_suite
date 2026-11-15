@@ -62,11 +62,11 @@ export function NoteOutline({ headings, activeOffset, onNavigate }: Props) {
   })}</ul>;
 
   return <section className="outline-section">
-    <div className="outline-section-header"><h3>{t('outline')}</h3>
-      {branches.length > 0 && <button className="outline-fold-all" onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(branches))}>
+    {branches.length > 0 && <div className="outline-section-header">
+      <button className="outline-fold-all" onClick={() => setCollapsed(allCollapsed ? new Set() : new Set(branches))}>
         {t(allCollapsed ? '全部展开' : '全部收起')}
-      </button>}
-    </div>
+      </button>
+    </div>}
     {headings.length ? <nav className="note-outline" aria-label={t('outline')}>{renderNodes(roots)}</nav>
       : <div className="panel-empty">{t('no_headings')}</div>}
   </section>;

@@ -5,11 +5,14 @@ import { pbkdf2Sync, createHmac, randomBytes } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, parseEnv } from 'node:util';
+import { join } from 'node:path';
 
 process.chdir(fileURLToPath(new URL('..', import.meta.url)));
 const { values } = parseArgs({
-  options: { remote: { type: 'boolean' }, config: { type: 'string' }, 'check-local': { type: 'boolean' } },
+  options: { docker: { type: 'boolean' }, remote: { type: 'boolean' }, config: { type: 'string' }, 'check-local': { type: 'boolean' } },
 });
+if (values.docker && (values.remote || values.config || values['check-local'])) throw new Error('Invalid Docker setup options.');
+const ownerFile = join(process.env.DATA_DIR || '/data', 'initial-owner.json');
 if (values['check-local'] && (values.remote || values.config) || values.config && !values.remote) {
   throw new Error('Invalid setup options.');
 }
@@ -39,7 +42,14 @@ async function main() {
     return;
   }
   if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error('Interactive terminal required. Credentials cannot be passed by environment or arguments.');
-  if (!values.remote && await localConfigured()) {
+  if (values.docker) {
+    try {
+      await readFile(ownerFile);
+      console.log('Container owner verifier already exists; preserved without changes.');
+      return;
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  if (!values.remote && !values.docker && await localConfigured()) {
     console.log('Local account configuration already exists; preserved without changes.');
     return;
   }
@@ -121,6 +131,9 @@ async function main() {
       if (result.error) throw result.error;
       if (result.status !== 0) throw new Error('Failed to install owner verifier. Run bash deploy.sh again to finish initialization.');
       console.log('Owner verifier installed. No plaintext password was saved.');
+    } else if (values.docker) {
+      await writeFile(ownerFile, owner + '\n', { mode: 0o600, flag: 'wx' });
+      console.log('Container owner verifier saved. No plaintext password was saved.');
     } else {
       await writeFile('.dev.vars', `INITIAL_OWNER='${owner}'\nALLOW_LOCAL_HTTP="true"\n`, { mode: 0o600, flag: 'wx' });
       console.log('Local verifier saved to ignored .dev.vars. No plaintext password was saved.');

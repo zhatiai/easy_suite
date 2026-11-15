@@ -1,5 +1,7 @@
 # EasyNote 灾难恢复
 
+> 独立服务器 Docker 的冷备份、恢复和从 Cloudflare 迁移参见 [Docker 部署](DOCKER.md)。本文根目录维护命令用于 Cloudflare/Wrangler。
+
 [简体中文](DISASTER_RECOVERY.md) | [English](DISASTER_RECOVERY.en.md)
 
 ## 三种导出

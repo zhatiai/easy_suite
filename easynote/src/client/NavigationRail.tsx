@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { folderEntityCounts } from './knowledge';
+import { useEffect, useMemo, useState } from 'react';
 import { Archive, ClipboardList, FileText, Folder, GitMerge, MoreHorizontal, NotebookPen, Palette, Pencil, Plus, Search, Settings, Share2, Tag, Trash2 } from 'lucide-react';
 import type { Folder as FolderItem } from '../shared/types';
 import { dateLocale, t } from './i18n';
-import { updateTruncatedTitle } from './truncatedTitle';
 import { TAG_COLOR_COUNT, tagColorIndex } from './tagColors';
 
 interface NavigationRailProps {
@@ -34,6 +34,7 @@ interface NavigationRailProps {
 }
 
 export function NavigationRail(props: NavigationRailProps) {
+  const entityCounts = useMemo(() => folderEntityCounts(props.folders), [props.folders]);
   const [searchDismissed, setSearchDismissed] = useState(false);
   const [colorTarget, setColorTarget] = useState<string | null>(null);
   const allNotesActive = !props.quickNotes && !props.sharing && props.view === 'all' && !props.activeTag && props.activeFolderId === undefined;
@@ -73,8 +74,8 @@ export function NavigationRail(props: NavigationRailProps) {
     onPointerEnter={() => setSearchDismissed(false)} onPointerLeave={() => setSearchDismissed(false)}
     onFocusCapture={() => setSearchDismissed(false)}>
     <div className="brand navigation-brand">
-      <img className="brand-icon" src="/easynote-icon.svg" width="32" height="32" alt="" aria-hidden="true" />
-      <span className="brand-copy"><strong>EasyNote</strong><small>{t('记录，让思考更轻松')}</small></span>
+      <img className="brand-icon" src="/easynote-knowledge.svg" width="32" height="32" alt="" aria-hidden="true" />
+      <span className="brand-copy"><strong className="brand-wordmark"><span>Easy</span><span>Note</span></strong><small>{t('记录，让思考更轻松')}</small></span>
     </div>
     <button className="navigation-search navigation-summary" aria-label={t('搜索笔记')} onClick={() => { setSearchDismissed(true); props.openSearch(); }}><Search size={18} /><span>{t('搜索笔记')}</span></button>
     <nav className="primary-navigation" aria-label={t('note_categories')}>
@@ -89,8 +90,8 @@ export function NavigationRail(props: NavigationRailProps) {
       <div className="section-label"><span>{t('文件夹')}</span><button className="section-action" aria-label={t('新建文件夹')} disabled={!props.online} onClick={props.createFolder}><Plus size={16} /></button></div>
       <nav className="folder-nav" aria-label={t('文件夹')}>
         {rootFolders.map((folder) => <button key={folder.id} className={`navigation-summary ${props.activeFolderId === folder.id ? 'active' : ''}`} aria-current={props.activeFolderId === folder.id ? 'page' : undefined}
-          onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget, event.currentTarget.querySelector<HTMLElement>('span'))} onClick={() => props.chooseFolder(folder.id)}>
-          <Folder size={17} /><span>{folder.name}</span><small>{folder.noteCount || ''}</small>
+          data-full-name onClick={() => props.chooseFolder(folder.id)}>
+          <Folder size={17} /><span data-full-name-label>{folder.name}</span><small aria-label={t('direct_entity_count', entityCounts.get(folder.id) ?? 0)}>{entityCounts.get(folder.id) ?? 0}</small>
         </button>)}
       </nav>
       <div className="section-label"><span>{t('tags')}</span><button className="section-action" aria-label={t('管理标签')} onClick={props.manageTags}><Plus size={16} /></button></div>

@@ -1,3 +1,4 @@
+import { folderEntityCounts } from './knowledge';
 import { type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, useMemo, useState } from 'react';
 import {
   ChevronDown,
@@ -47,6 +48,7 @@ export function FolderTreePicker({
   itemRole,
   className = '',
 }: FolderTreePickerProps) {
+  const entityCounts = useMemo(() => folderEntityCounts(folders), [folders]);
   const folderIds = useMemo(() => new Set(folders.map((f) => f.id)), [folders]);
   const childrenByParent = useMemo(() => {
     const map = new Map<string | null, Folder[]>();
@@ -128,9 +130,7 @@ export function FolderTreePicker({
             >
               {isOpen ? <FolderOpen size={18} /> : <FolderIcon size={18} />}
               <span>{folder.name}</span>
-              {folder.noteCount !== undefined && folder.noteCount > 0 && (
-                <small>{folder.noteCount}</small>
-              )}
+              <small aria-label={t('direct_entity_count', entityCounts.get(folder.id) ?? 0)}>{entityCounts.get(folder.id) ?? 0}</small>
             </button>
             {isSelected && <Check size={16} className="folder-picker-check" aria-hidden="true" />}
           </div>

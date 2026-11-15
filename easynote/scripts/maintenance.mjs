@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
-import { createReadStream, createWriteStream, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, realpathSync } from 'node:fs';
 import { chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -16,7 +16,7 @@ const isoName = () => new Date().toISOString().replace(/[:.]/g, '-');
 const sqlString = (value) => `'${String(value).replaceAll("'", "''")}'`;
 const applicationTables = [
   'users', 'sessions', 'integration_tokens', 'oauth_clients', 'login_attempts', 'account_attempts', 'app_state',
-  'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
+  'folders', 'folder_shares', 'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
 ];
 
 async function migrationsSha256() {
@@ -199,10 +199,10 @@ async function scanDatabase(path) {
   return { objects, tables };
 }
 
-async function writeRestoreData(source, destination) {
+export async function writeRestoreData(source, destination) {
   const included = new Set(applicationTables);
   async function* statements() {
-    yield 'PRAGMA foreign_keys=ON;\n';
+    yield 'PRAGMA foreign_keys=ON;\nPRAGMA defer_foreign_keys=ON;\n';
     yield 'DELETE FROM app_state;\n';
     const reader = createInterface({ input: createReadStream(source), crlfDelay: Infinity });
     for await (const line of reader) {
@@ -213,7 +213,7 @@ async function writeRestoreData(source, destination) {
   await pipeline(Readable.from(statements()), createWriteStream(destination, { mode: 0o600, flags: 'wx' }));
 }
 
-async function verifyBackup(path) {
+export async function verifyBackup(path) {
   const directory = resolve(path);
   const manifestInfo = await lstat(`${directory}/manifest.json`);
   if (!manifestInfo.isFile() || manifestInfo.size > 10 * 1024 * 1024) fail('Invalid disaster-recovery manifest file.');
@@ -500,7 +500,9 @@ async function main() {
   fail(`Unknown command: ${command}\n\n${help}`);
 }
 
-await main().catch((error) => {
-  process.stderr.write(`EasyNote: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+  await main().catch((error) => {
+    process.stderr.write(`EasyNote: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}

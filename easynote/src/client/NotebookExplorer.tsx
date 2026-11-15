@@ -1,9 +1,9 @@
+import { folderEntityCounts } from './knowledge';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { ArrowRightLeft, CheckSquare, ChevronDown, ChevronRight, Copy, Download, FilePlus2, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, LoaderCircle, MoreHorizontal, Plus, Search, Share2, Square, Trash2, Upload, X } from 'lucide-react';
+import { ArrowRightLeft, CheckSquare, ChevronDown, ChevronRight, Copy, Download, FilePlus2, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, LoaderCircle, MoreHorizontal, Pencil, Plus, Search, Share2, Square, Trash2, Upload, X } from 'lucide-react';
 import type { Folder, Note, NoteSummary } from '../shared/types';
 import type { ExplorerFolderState } from './useNotebook';
 import { dateLocale, t, uiLanguage } from './i18n';
-import { updateTruncatedTitle } from './truncatedTitle';
 import { placeMenu } from './menuPosition';
 import { tagColorIndex } from './tagColors';
 
@@ -37,6 +37,7 @@ interface NotebookExplorerProps {
   createChild(id: string): void;
   createNoteIn(id: string): void;
   uploadFileTo?(id: string): void;
+  editFolder(folder: Folder): void;
   moveFolder(folder: Folder): void;
   mergeFolder(folder: Folder): void;
   removeFolder(folder: Folder): void;
@@ -85,9 +86,9 @@ function quickNoteTitle(timestamp: number) {
 }
 
 export function NotebookExplorer(props: NotebookExplorerProps) {
+  const entityCounts = useMemo(() => folderEntityCounts(props.folders), [props.folders]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const treeRef = useRef<HTMLUListElement>(null);
-  const menuAnchorTops = useRef(new WeakMap<HTMLDetailsElement, number>());
   const hierarchical = props.view === 'all' && !props.query && !props.activeTag;
   const foldersByParent = useMemo(() => {
     const map = new Map<string | null, Folder[]>();
@@ -163,7 +164,6 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
         const menu = details.querySelector<HTMLElement>('.folder-action-popover');
         if (trigger && menu) {
           placeMenu(menu, trigger);
-          menuAnchorTops.current.set(details, trigger.top);
         }
       }
     };
@@ -198,13 +198,11 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
       <button className={`note-row explorer-note-row ${showMetadata ? 'with-meta' : ''} ${item.id === props.currentNote?.id ? 'selected' : ''} ${props.selectedIds.has(item.id) ? 'checked' : ''}`} data-note-row
         aria-label={`${title}，${new Date(live.updatedAt).toLocaleDateString(dateLocale(), { month: 'short', day: 'numeric' })}`}
         aria-pressed={props.selectionMode ? props.selectedIds.has(item.id) : undefined}
-        onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget,
-          event.currentTarget.querySelector<HTMLElement>('.note-row-title > span')
-            ?? event.currentTarget.querySelector<HTMLElement>('.note-row-title'))}
+        data-full-name
         onClick={() => props.selectionMode ? props.toggleSelected(item.id) : props.openNote(item.id)}>
         {props.selectionMode ? props.selectedIds.has(item.id) ? <CheckSquare size={18} /> : <Square size={18} /> : <FileText size={18} />}
         <span className="explorer-note-copy">
-          <strong className="note-row-title">{highlightedText(title, props.query)}</strong>
+          <strong className="note-row-title" data-full-name-label>{highlightedText(title, props.query)}</strong>
           <small className="note-excerpt" aria-hidden="true">{highlightedText(compactExcerpt(live.excerpt) || t('empty_note'), props.query)}</small>
         </span>
         {props.pendingIds.has(item.id) && <span className="local-dot" title={t('local_draft')} />}
@@ -219,13 +217,22 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
     const children = foldersByParent.get(folder.id) ?? [];
     const bucket = props.explorerFolders[props.explorerFolderKey(folder.id)];
     return <li className="folder-tree-branch" key={folder.id}>
-      <div className={`folder-tree-row ${locatedFolderId === folder.id ? 'active' : ''}`} style={{ '--tree-depth': depth } as React.CSSProperties}>
+      <div className={`folder-tree-row ${locatedFolderId === folder.id ? 'active' : ''}`}
+        data-full-name style={{ '--tree-depth': depth } as React.CSSProperties}>
         <button className="folder-disclosure" aria-label={open ? t('折叠文件夹') : t('展开文件夹')} aria-expanded={open} onClick={() => toggleFolder(folder.id)}>
           {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
         </button>
-        <button className="folder-tree-select" onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget, event.currentTarget.querySelector<HTMLElement>('span'))} aria-pressed={props.inspectedFolderId === folder.id} onClick={() => { toggleFolder(folder.id, true); props.inspectFolder(folder.id); }}>{open ? <FolderOpen size={18} /> : <FolderIcon size={18} />}<span>{folder.name}</span><small>{folder.noteCount || ''}</small></button>
+        <button className="folder-tree-select" aria-expanded={open} aria-pressed={props.inspectedFolderId === folder.id} onClick={() => {
+          // Opening the overview must preserve this click's explicit expand/collapse choice.
+          revealedTarget.current = `${props.activeFolderId ?? ''}:${folder.id}:${folder.id}`;
+          toggleFolder(folder.id);
+          props.inspectFolder(folder.id);
+        }}>{open ? <FolderOpen size={18} /> : <FolderIcon size={18} />}<span data-full-name-label>{folder.name}</span><small aria-label={t('direct_entity_count', entityCounts.get(folder.id) ?? 0)}>{entityCounts.get(folder.id) ?? 0}</small></button>
         <details className="folder-action-menu" onToggle={(event) => {
-          if (!event.currentTarget.open) return;
+          if (event.target !== event.currentTarget) return;
+          const popover = event.currentTarget.querySelector<HTMLElement>('.folder-action-popover');
+          if (!event.currentTarget.open) { popover?.hidePopover(); return; }
+          popover?.showPopover();
           for (const menu of document.querySelectorAll<HTMLDetailsElement>('.folder-action-menu[open]')) {
             if (menu !== event.currentTarget) menu.removeAttribute('open');
           }
@@ -233,14 +240,11 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
           const menu = event.currentTarget.querySelector<HTMLElement>('.folder-action-popover');
           if (trigger && menu) {
             placeMenu(menu, trigger);
-            menuAnchorTops.current.set(event.currentTarget, trigger.top);
           }
         }}>
-          <summary className="explorer-row-more" aria-label={t('文件夹操作')} onClick={(event) => {
-            const details = event.currentTarget.parentElement;
-            if (details instanceof HTMLDetailsElement) menuAnchorTops.current.delete(details);
-          }}><MoreHorizontal size={16} /></summary>
-          <div className="folder-action-popover" role="menu">
+          <summary className="explorer-row-more" aria-label={t('文件夹操作')}><MoreHorizontal size={16} /></summary>
+          <div className="folder-action-popover" role="menu" popover="manual">
+            <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.editFolder(folder); }}><Pencil size={17} /><span className="folder-action-label">{t('编辑名称与描述')}</span></button>
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); toggleFolder(folder.id, true); props.createChild(folder.id); }}><FolderPlus size={17} /><span className="folder-action-label">{t('新建文件夹')}</span></button>
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.createNoteIn(folder.id); }}><FilePlus2 size={17} /><span className="folder-action-label">{t('新建文件')}</span></button>
             {props.uploadFileTo && (
@@ -302,9 +306,9 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
     </header>
     <div className="list-scroll explorer-scroll" onScroll={(event) => {
       for (const menu of event.currentTarget.querySelectorAll<HTMLDetailsElement>('.folder-action-menu[open]')) {
-        const previousTop = menuAnchorTops.current.get(menu);
-        const currentTop = menu.querySelector('summary')?.getBoundingClientRect().top;
-        if (previousTop !== undefined && currentTop !== undefined && Math.abs(previousTop - currentTop) > 1) menu.removeAttribute('open');
+        const anchor = menu.querySelector('summary')?.getBoundingClientRect();
+        const popover = menu.querySelector<HTMLElement>('.folder-action-popover');
+        if (anchor && popover) placeMenu(popover, anchor);
       }
     }}>
       {props.loading && !props.notes.length && !hierarchical ? <div className="empty-state">{t('loading')}</div>

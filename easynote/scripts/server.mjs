@@ -1,7 +1,10 @@
-import { readdir, readFile, mkdir, access, writeFile, unlink } from 'node:fs/promises';
-import { constants as fsConstants } from 'node:fs';
+import { readdir, readFile, mkdir, writeFile, unlink } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import http from 'node:http';
+import { fork } from 'node:child_process';
 import * as miniflareModule from 'miniflare';
 
 const Miniflare = miniflareModule.Miniflare;
@@ -32,7 +35,7 @@ export function migrationStatements(schema) {
  * Gatekeeper: verify and execute all pending D1 migrations in an isolated instance
  * before main traffic is accepted.
  */
-export async function runMigrationGatekeeper(dataDir) {
+export async function runMigrationGatekeeper(dataDir, migrationsDir = path.resolve('migrations')) {
   const d1PersistDir = path.join(dataDir, 'state', 'd1');
   console.log(`[gatekeeper] Initializing migration gatekeeper at ${d1PersistDir}...`);
 
@@ -43,7 +46,7 @@ export async function runMigrationGatekeeper(dataDir) {
     d1Persist: d1PersistDir,
     handleSIGINT: false,
     handleSIGTERM: false,
-    port: 0,
+    host: '127.0.0.1', port: 0, cf: false,
   });
 
   const mf = new Miniflare(migrationConfig);
@@ -55,22 +58,35 @@ export async function runMigrationGatekeeper(dataDir) {
       'CREATE TABLE IF NOT EXISTS _easynote_migrations (name TEXT PRIMARY KEY, applied_at INTEGER)'
     ).run();
 
-    const migrationsDir = path.resolve('migrations');
+    // Older container releases recorded only the filename. Preserve their ledger.
+    const columns = await db.prepare('PRAGMA table_info(_easynote_migrations)').all();
+    if (!columns.results.some((column) => column.name === 'sha256')) {
+      await db.prepare('ALTER TABLE _easynote_migrations ADD COLUMN sha256 TEXT').run();
+    }
     const entries = await readdir(migrationsDir);
     const sqlFiles = entries.filter((name) => name.endsWith('.sql')).sort();
 
+    const applied = await db.prepare('SELECT name FROM _easynote_migrations').all();
+    if (applied.results.some((row) => !sqlFiles.includes(row.name))) {
+      throw new Error('Database has unknown migrations; use a matching or newer image.');
+    }
     for (const file of sqlFiles) {
-      const existing = await db.prepare('SELECT 1 FROM _easynote_migrations WHERE name = ?').bind(file).first();
+      const sqlContent = await readFile(path.join(migrationsDir, file), 'utf8');
+      const sha256 = createHash('sha256').update(sqlContent).digest('hex');
+      const existing = await db.prepare('SELECT sha256 FROM _easynote_migrations WHERE name = ?').bind(file).first();
       if (existing) {
+        if (existing.sha256 && existing.sha256 !== sha256) throw new Error(`Migration changed after application: ${file}`);
+        if (!existing.sha256) await db.prepare('UPDATE _easynote_migrations SET sha256=? WHERE name=?').bind(sha256, file).run();
         continue;
       }
 
       console.log(`[gatekeeper] Applying migration ${file}...`);
-      const sqlContent = await readFile(path.join(migrationsDir, file), 'utf8');
       const statements = migrationStatements(sqlContent);
 
-      await db.batch(statements.map((s) => db.prepare(s)));
-      await db.prepare('INSERT INTO _easynote_migrations (name, applied_at) VALUES (?, ?)').bind(file, Date.now()).run();
+      await db.batch([
+        ...statements.map((s) => db.prepare(s)),
+        db.prepare('INSERT INTO _easynote_migrations (name, applied_at, sha256) VALUES (?, ?, ?)').bind(file, Date.now(), sha256),
+      ]);
       console.log(`[gatekeeper] Migration ${file} applied successfully.`);
     }
 
@@ -78,11 +94,10 @@ export async function runMigrationGatekeeper(dataDir) {
     console.log(`[gatekeeper] All migrations verified (${appliedRows.results.length} total applied).`);
   } catch (error) {
     console.error('[gatekeeper] FATAL: Migration gatekeeper failed:', error);
-    try { await mf.dispose(); } catch { /* ignore */ }
     throw error;
+  } finally {
+    await mf.dispose();
   }
-
-  await mf.dispose();
   console.log('[gatekeeper] Gatekeeper completed and SQLite handles released.');
 }
 
@@ -103,12 +118,16 @@ export class ResilientCronScheduler {
   }
 
   start(cronMinute = 17) {
+    if (this.intervalId) throw new Error('Scheduler already started.');
+    let lastHour = '';
     this.intervalId = setInterval(() => {
       const now = new Date();
-      if (now.getMinutes() === cronMinute) {
-        this.dispatchScheduled(now);
+      const hour = now.toISOString().slice(0, 13);
+      if (now.getUTCMinutes() === cronMinute && hour !== lastHour) {
+        lastHour = hour;
+        void this.dispatchScheduled(now);
       }
-    }, 60_000);
+    }, 1000);
   }
 
   async dispatchScheduled(scheduledTime = new Date()) {
@@ -164,9 +183,9 @@ export class ResilientCronScheduler {
  * Decoupled Health Check Server on port 8792.
  */
 export function createHealthServer(statusGetter, port = 8792) {
-  const server = http.createServer((req, res) => {
+  const server = http.createServer(async (req, res) => {
     if (req.url === '/healthz' || req.url === '/health') {
-      const status = statusGetter();
+      const status = await statusGetter();
       if (!status.isReady || status.isShuttingDown) {
         res.writeHead(503, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ status: 'unavailable', ...status }));
@@ -178,7 +197,7 @@ export function createHealthServer(statusGetter, port = 8792) {
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
-  server.listen(port, '0.0.0.0');
+  server.listen(port, '127.0.0.1');
   return server;
 }
 
@@ -205,181 +224,198 @@ export async function ensureDataDirectories(dataDir) {
   await unlink(testFile);
 }
 
-/**
- * Load runtime bindings from wrangler.json and process.env.
- */
-export async function loadRuntimeBindings() {
-  let vars = {};
-  try {
-    const wranglerContent = await readFile(path.resolve('wrangler.json'), 'utf8');
-    const wranglerConfig = JSON.parse(wranglerContent);
-    vars = wranglerConfig.vars || {};
-  } catch (err) {
-    console.warn('[config] Could not read wrangler.json vars, using defaults:', err.message);
+/** Load the same defaults as Cloudflare, with explicit server overrides. */
+export async function loadRuntimeBindings(dataDir = process.env.DATA_DIR || '/data', env = process.env) {
+  const config = JSON.parse(await readFile(path.resolve('wrangler.json'), 'utf8'));
+  const bindings = { ...config.vars };
+  for (const key of Object.keys(bindings)) {
+    if (env[key] !== undefined) bindings[key] = env[key];
   }
-
-  const bindings = { ...vars };
-
-  // Explicit env overrides
-  if (process.env.ALLOW_LOCAL_HTTP !== undefined) {
-    bindings.ALLOW_LOCAL_HTTP = process.env.ALLOW_LOCAL_HTTP;
+  if (env.INITIAL_OWNER) bindings.INITIAL_OWNER = env.INITIAL_OWNER;
+  else {
+    try { bindings.INITIAL_OWNER = await readFile(env.INITIAL_OWNER_FILE || path.join(dataDir, 'initial-owner.json'), 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT' || env.INITIAL_OWNER_FILE) throw error; }
   }
-  if (process.env.INITIAL_OWNER) {
-    bindings.INITIAL_OWNER = process.env.INITIAL_OWNER;
-  }
-
   return bindings;
 }
 
-/**
- * Main application bootstrap.
- */
-async function main() {
-  console.log('=== EasyNote Linux Container Host starting ===');
+export function publicOrigin(env = process.env) {
+  if (!env.PUBLIC_ORIGIN) throw new Error('PUBLIC_ORIGIN is required (for example https://notes.example.com).');
+  const url = new URL(env.PUBLIC_ORIGIN);
+  if (url.origin !== env.PUBLIC_ORIGIN || url.username || url.password ||
+      (url.protocol !== 'https:' && !(url.protocol === 'http:' && env.ALLOW_LOCAL_HTTP === 'true' &&
+        ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))) {
+    throw new Error('PUBLIC_ORIGIN must be an HTTPS origin; HTTP is allowed only for explicit loopback development.');
+  }
+  return url;
+}
 
+/** Keep Miniflare control routes and headers off the public socket, including upgrades. */
+export function createIngress(target, origin, trustProxy = false) {
+  function headersFor(req) {
+    const pathname = new URL(req.url, origin).pathname;
+    if (!req.url.startsWith('/') || req.url.startsWith('//') ||
+        decodeURIComponent(pathname).startsWith('/cdn-cgi/')) return null;
+    if (req.headers.host !== origin.host) return null;
+    const headers = { ...req.headers };
+    for (const key of Object.keys(headers)) {
+      if (/^(mf-|cf-|x-forwarded-|x-real-ip$|forwarded$)/i.test(key)) delete headers[key];
+    }
+    const ip = trustProxy && typeof req.headers['x-real-ip'] === 'string' && isIP(req.headers['x-real-ip'])
+      ? req.headers['x-real-ip'] : req.socket.remoteAddress;
+    headers['cf-connecting-ip'] = ip;
+    headers['x-forwarded-proto'] = origin.protocol.slice(0, -1);
+    headers['x-forwarded-host'] = origin.host;
+    return headers;
+  }
+  const server = http.createServer((req, res) => {
+    let headers;
+    try { headers = headersFor(req); } catch { /* malformed URL */ }
+    if (!headers) { res.writeHead(400); res.end(); return; }
+    // A rejected Worker request may leave its body unread; do not reuse that upstream connection.
+    const upstream = http.request(target, {
+      method: req.method, path: req.url, agent: false, headers: { ...headers, connection: 'close' },
+    }, (response) => {
+      res.writeHead(response.statusCode, response.headers);
+      response.on('error', () => res.destroy());
+      response.pipe(res);
+    });
+    upstream.on('error', (error) => {
+      console.error(JSON.stringify({ event: 'ingress-upstream-error', code: error.code }));
+      if (!res.headersSent) res.writeHead(502);
+      res.end();
+    });
+    req.on('aborted', () => upstream.destroy());
+    res.on('close', () => { if (!res.writableFinished) upstream.destroy(); });
+    req.pipe(upstream);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    let headers;
+    try { headers = headersFor(req); } catch { /* malformed URL */ }
+    if (!headers) { socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); return; }
+    const upstream = http.request(target, { method: req.method, path: req.url, headers });
+    upstream.on('upgrade', (response, peer, peerHead) => {
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\n${Object.entries(response.headers)
+        .map(([key, value]) => `${key}: ${value}`).join('\r\n')}\r\n\r\n`);
+      if (peerHead.length) socket.write(peerHead);
+      if (head.length) peer.write(head);
+      peer.on('error', () => socket.destroy());
+      socket.on('error', () => peer.destroy());
+      socket.on('close', () => peer.destroy());
+      peer.on('close', () => socket.destroy());
+      peer.pipe(socket).pipe(peer);
+    });
+    upstream.on('response', (response) => {
+      socket.write(`HTTP/1.1 ${response.statusCode} Rejected\r\nConnection: close\r\n\r\n`);
+      response.pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+    socket.on('close', () => upstream.destroy());
+    upstream.end();
+  });
+  return server;
+}
+
+async function main() {
   const dataDir = process.env.DATA_DIR || '/data';
+  const origin = publicOrigin();
   const port = Number(process.env.PORT || 8791);
   const healthPort = Number(process.env.HEALTH_PORT || 8792);
-
-  const status = {
-    isReady: false,
-    isShuttingDown: false,
-    startTime: Date.now(),
-    cron: null,
-  };
-
-  let cronScheduler = null;
-  let healthServer = null;
-  let mf = null;
-
-  // Graceful shutdown registration
-  const shutdown = async (signal) => {
+  for (const value of [port, healthPort]) {
+    if (!Number.isInteger(value) || value < 1024 || value > 65535) throw new Error('Invalid server port.');
+  }
+  const status = { isReady: false, isShuttingDown: false };
+  let mf;
+  let ingress;
+  let healthServer;
+  let cronScheduler;
+  const sockets = new Set();
+  const shutdown = async () => {
     if (status.isShuttingDown) return;
     status.isShuttingDown = true;
-    console.log(`\n[lifecycle] Received ${signal}. Initiating graceful shutdown...`);
-
-    if (cronScheduler) {
-      cronScheduler.stop();
-    }
-
-    if (healthServer) {
-      healthServer.close();
-    }
-
-    const graceMs = Number(process.env.SHUTDOWN_GRACE_MS ?? 1000);
-    if (graceMs > 0) {
-      console.log(`[lifecycle] Waiting for in-flight requests (grace period ${graceMs}ms)...`);
-      await new Promise((resolve) => setTimeout(resolve, graceMs));
-    }
-
-    if (mf) {
-      console.log('[lifecycle] Disposing Miniflare runtime and flushing SQLite WAL...');
-      try {
-        await mf.dispose();
-      } catch (err) {
-        console.error('[lifecycle] Error disposing Miniflare:', err);
-      }
-    }
-
-    console.log('[lifecycle] Clean exit completed.');
-    process.exit(0);
+    cronScheduler?.stop();
+    healthServer?.close();
+    const closed = ingress ? new Promise((resolve) => ingress.close(resolve)) : Promise.resolve();
+    const deadline = setTimeout(() => { for (const socket of sockets) socket.destroy(); }, 5000);
+    deadline.unref();
+    await closed;
+    clearTimeout(deadline);
+    // Wait for a scheduled cleanup before disposing its database handles.
+    while (cronScheduler?.state.running) await new Promise((resolve) => setTimeout(resolve, 50));
+    await mf?.dispose();
   };
-
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-
   try {
-    // 1. Data directories & permissions
-    console.log(`[storage] Verifying data volume at ${dataDir}...`);
     await ensureDataDirectories(dataDir);
-    console.log('[storage] Storage directories verified and writable.');
-
-    // 2. Migration Gatekeeper
     await runMigrationGatekeeper(dataDir);
-
-    // 3. Prepare bindings & Miniflare 4 configuration
-    const runtimeBindings = await loadRuntimeBindings();
-    console.log(`[config] Loaded runtime bindings: ALLOW_LOCAL_HTTP=${runtimeBindings.ALLOW_LOCAL_HTTP}`);
-
-    const clientDir = path.resolve('dist/client');
-    const workerScript = path.resolve('dist/worker/index.js');
-
-    // Miniflare 4 stable configuration
-    const mfConfig = convertOptions({
-      modules: true,
-      scriptPath: workerScript,
-      compatibilityDate: '2026-08-06',
-      compatibilityFlags: ['nodejs_compat'],
-      bindings: runtimeBindings,
-
-      d1Databases: {
-        DB: 'easynote-db',
-      },
-      r2Buckets: {
-        IMAGES: 'easynote-images',
-      },
-      durableObjects: {
-        NOTE_EVENTS: 'NoteEvents',
-      },
-
-      defaultPersistRoot: path.join(dataDir, 'state'),
-      d1Persist: path.join(dataDir, 'state', 'd1'),
-      r2Persist: path.join(dataDir, 'state', 'r2'),
-      durableObjectsPersist: path.join(dataDir, 'state', 'do'),
-
+    const bindings = await loadRuntimeBindings(dataDir);
+    // Container traffic is HTTP internally; only explicit loopback development may use dev cookies.
+    bindings.ALLOW_LOCAL_HTTP = origin.protocol === 'http:' ? 'true' : 'false';
+    const config = JSON.parse(await readFile(path.resolve('wrangler.json'), 'utf8'));
+    mf = new Miniflare(convertOptions({
+      modules: true, scriptPath: path.resolve('dist/worker/index.js'),
+      compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
+      bindings, cf: false,
+      d1Databases: { DB: 'easynote-db' }, r2Buckets: { IMAGES: 'easynote-images' },
+      durableObjects: { NOTE_EVENTS: { className: 'NoteEvents', useSQLite: true } },
+      d1Persist: path.join(dataDir, 'state/d1'), r2Persist: path.join(dataDir, 'state/r2'),
+      durableObjectsPersist: path.join(dataDir, 'state/do'),
       assets: {
-        directory: clientDir,
-        binding: 'ASSETS',
-        routerConfig: {
-          has_user_worker: true,
-        },
-        assetConfig: {
-          html_handling: 'auto-trailing-slash',
-          not_found_handling: 'single-page-application',
-        },
+        directory: path.resolve('dist/client'), binding: 'ASSETS', run_worker_first: true,
+        routerConfig: { has_user_worker: true },
+        assetConfig: { html_handling: 'auto-trailing-slash', not_found_handling: 'single-page-application' },
       },
-
-      handleSIGINT: false,
-      handleSIGTERM: false,
-
-      ...(process.env.HTTPS === 'true' || process.env.ENABLE_HTTPS === 'true' ? { https: true } : {}),
-
-      host: '0.0.0.0',
-      port,
+      host: '127.0.0.1', port: 0, upstream: origin.origin,
+      unsafeProxySharedSecret: randomBytes(32).toString('hex'),
+      handleSIGINT: false, handleSIGTERM: false,
+    }));
+    const target = await mf.ready;
+    const probe = async () => {
+      const response = await fetch(new URL('/api/session', target), {
+        headers: { Host: origin.host }, signal: AbortSignal.timeout(2000),
+      });
+      if (!response.ok) throw new Error('Worker readiness probe failed.');
+      return response.json();
+    };
+    const session = await probe();
+    if (!session.configured) throw new Error('Owner not configured. Run docker compose run --rm easynote node scripts/setup.mjs --docker.');
+    ingress = createIngress(target, origin, process.env.TRUST_PROXY === 'true');
+    ingress.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
+    await new Promise((resolve, reject) => {
+      ingress.once('error', reject);
+      ingress.listen(port, '0.0.0.0', resolve);
     });
-
-    console.log(`[runtime] Launching Miniflare on 0.0.0.0:${port}...`);
-    mf = new Miniflare(mfConfig);
-    await mf.ready;
-    console.log(`[runtime] Worker service is listening on http://0.0.0.0:${port}`);
-
-    // 4. Start Cron Scheduler
     cronScheduler = new ResilientCronScheduler(mf);
-    cronScheduler.start(17);
-    console.log('[cron] ResilientCronScheduler started (runs at minute 17 each hour).');
-
-    // 5. Start Health Check Server
-    healthServer = createHealthServer(() => ({
-      isReady: status.isReady,
-      isShuttingDown: status.isShuttingDown,
-      uptime: Math.floor((Date.now() - status.startTime) / 1000),
-      cron: cronScheduler.getStatus(),
-    }), healthPort);
-    console.log(`[health] Decoupled health service listening on 127.0.0.1:${healthPort}/healthz`);
-
-    // 6. Mark ready
+    cronScheduler.start();
+    healthServer = createHealthServer(async () => {
+      let workerReady = false;
+      try { workerReady = (await probe()).configured === true; } catch { /* unhealthy runtime */ }
+      return { ...status, isReady: status.isReady && workerReady, cron: cronScheduler.getStatus() };
+    }, healthPort);
+    await new Promise((resolve, reject) => { healthServer.once('error', reject); healthServer.once('listening', resolve); });
     status.isReady = true;
-    console.log('=== EasyNote container is READY and accepting traffic ===');
+    process.on('message', (message) => {
+      if (message?.type !== 'easynote-shutdown') return;
+      void shutdown().then(() => process.exit(0), (error) => { console.error(error); process.exit(1); });
+    });
+    process.on('disconnect', () => { void shutdown().finally(() => process.exit(1)); });
+    console.log(`EasyNote READY at ${origin.origin}; local ingress port ${port}.`);
   } catch (error) {
-    console.error('[fatal] Startup failure:', error);
-    if (mf) {
-      try { await mf.dispose(); } catch { /* ignore */ }
-    }
-    process.exit(1);
+    await shutdown();
+    throw error;
   }
 }
 
-// Only run automatically if executed directly as script
-if (process.argv[1] && (process.argv[1].endsWith('server.mjs') || process.argv[1].endsWith('server.js'))) {
-  main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  if (process.argv[2] === '--runtime') {
+    main().catch((error) => { console.error(`EasyNote: ${error.message}`); process.exitCode = 1; });
+  } else {
+    // Miniflare installs synchronous exit hooks. Relay signals over IPC so disposal can finish first.
+    const child = fork(fileURLToPath(import.meta.url), ['--runtime'], { stdio: ['inherit', 'inherit', 'inherit', 'ipc'] });
+    for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
+      if (child.connected) child.send({ type: 'easynote-shutdown' });
+    });
+    child.on('error', (error) => { console.error(error.message); process.exitCode = 1; });
+    child.on('exit', (code) => { process.exitCode = code ?? 1; });
+  }
 }

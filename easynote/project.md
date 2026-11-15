@@ -11,8 +11,8 @@ EasyNote 是面向个人或小团队的自托管 Markdown 笔记应用，当前�
 - 前端：React 19、TypeScript、Vite、CodeMirror 6。
 - Markdown：markdown-it、DOMPurify、highlight.js、Mermaid。
 - 离线与 PWA：IndexedDB、Service Worker、vite-plugin-pwa。
-- 服务端：Cloudflare Worker。
-- 数据：D1 保存账号和笔记数据，私有 R2 保存图片与附件。
+- 服务端：同一份 Worker 支持 Cloudflare 托管或 Docker 中的本地 workerd / Miniflare 兼容运行时。
+- 数据：D1 保存账号和笔记数据，私有 R2 保存图片与附件；Docker 使用相同 API 对应的本地 SQLite 和对象存储，持久化到 `/data/state`。
 - 实时同步：Durable Object WebSocket 通知，增量同步和轮询兜底。
 - AI：同一 Worker 暴露远程 MCP 端点，使用独立的受限令牌。
 - 测试：Node Test Runner、Miniflare、Playwright。
@@ -86,9 +86,14 @@ easynote/
 - `transfer.ts`：EasyNote ZIP、Obsidian/通用 Markdown 导入，附件重映射、重复检测与数据校验。
 - `pdf.ts`：将预览 DOM 转换为 pdfmake 文档，处理图片/Mermaid、字体、分页预览和平台导出。
 - `knowledge.ts`：标题提取及稳定的内部笔记链接。
+- `NoteNavigation.tsx`：右侧笔记导航，顶部提供“目录 / 引用 / 反向链接”选项卡，打开面板及切换笔记时默认显示目录，支持方向键切换。
 - `NoteOutline.tsx`：将标题级别组织为可折叠的树形大纲，展示当前阅读章节；正文滚动与编辑器定位由 `App.tsx` 和 `Editor.tsx` 接入。
+- `NoteConnections.tsx`、`NoteLinkPicker.tsx`、`ReferencePreview.tsx` 维护关联列表、带直属实体计数的折叠目录选择器与居中引用弹窗。引用支持逐层打开、逐层关闭、关闭全部及全屏，并保留每层阅读位置。笔记读取继续通过 `useNotebook.ts` 的草稿、离线镜像和 API 边界，关闭预览恢复来源位置。
 - `i18n.ts`：中英文词典和运行时语言切换；键一致性由脚本检查。
-- `AccountSecurity.tsx`、`UserManagement.tsx`、`AiAccess.tsx`、`NoteSharing.tsx`、`ShareManagement.tsx`：设置页中的独立功能面板。
+- `LlmSettings.tsx` 管理按账号保存在当前浏览器的供应商基础地址、模型与 API Key；凭据不参与备份或服务端同步。`api.ts` 动态加载 OpenAI SDK，直连 OpenAI 兼容 Chat Completions 接口，省略 Cookie、禁用重定向与自动重试。供应商必须支持 CORS。`public/_headers` 的 connect-src 允许 HTTPS 供应商和本机 HTTP，脚本策略保持同源。
+- `NoteAiChat.tsx` 提供右侧全文问答与正文选区问答；所有入口仅打开面板，用户提交问题后全文问答附上当前笔记与对话，选区问答发送选中文字与对话，勾选上下文后附上所在完整段落与下一个段落。通过 OpenAI SDK 流式读取文本，要求模型输出 Markdown，并复用安全预览实时渲染（Mermaid 待生成结束后渲染）；支持停止保留部分回答、按原问题及上下文重试、Ctrl/⌘+Enter 发送与 Enter 换行，用户上翻阅读时暂停自动滚动。`SelectionAi.tsx` 从当前阅读 DOM 的 Range 定位段落，在选区上方显示轻量提问入口，点击后将选区滚到阅读区上方，在选区下方打开原生模态对话，锁定底层正文滚动并约束焦点，关闭后恢复原阅读位置。初始桌面宽度为正文的 80% 并水平居中，窄屏适配可用宽度，四边和四角支持拖动与方向键缩放，窗口始终限定在选区下方和阅读区内。输入区可折叠并保留草稿。AI 消息居左、用户消息居右，会话独立滚动。切换笔记、关闭问答或重绘正文会结束该对话。
+- `SettingsPage.tsx` 提供独立的 `/settings/:section` 设置页，支持浏览器历史、直接访问、分组按需挂载和组间表单保留。打开设置时工作台保持挂载，返回后保留文档与编辑状态。
+- `AccountSecurity.tsx`、`UserManagement.tsx`、`AiAccess.tsx`、`StoragePanel.tsx` 作为设置页中的功能面板。`NoteSharing.tsx`、`ShareManagement.tsx` 负责笔记分享和分享管理。
 - `styles.css`：全局视觉系统和桌面/移动响应式样式。
 
 前端最关键的数据流：
@@ -113,6 +118,7 @@ easynote/
 - `core.ts`：`Env` 绑定、运行参数验证、JSON/字节读取限制、摘要和通用 `ApiError`。
 - `auth.ts`：初始化管理员、会话 Cookie、CSRF/Origin、登录限流、注册审批、恢复代码、账号安全和管理员用户管理。
 - `notes.ts`：笔记 CRUD、分页/搜索、标签、版本、回收站、墓碑、附件引用、幂等操作、乐观并发和增量同步。
+- `noteLinks.ts` 按租户分页查询出链与反向链接，复用 trigram 全文索引筛选候选，再以共享 Markdown 解析规则排除代码与注释。旧笔记自动参与查询。
 - `folders.ts`：按租户隔离的嵌套文件夹 CRUD、同级重名和循环校验，以及删除文件夹树时的笔记保留策略。
 - `images.ts`：图片/附件上传下载、类型和大小校验、R2 配额预留、对象状态转换及清理。
 - `features.ts`：任务中心、分享管理和公开只读分享。
@@ -137,10 +143,13 @@ easynote/
 
 `src/ai/client.ts` 是 MCP 工具到 `/api/integrations/*` 的窄客户端，负责 URL/令牌格式校验、Bearer 鉴权、超时和错误保真。AI 写入始终带预期 revision，并由 Worker 写入正常版本历史。
 
+MCP 通过 `easynote_get_note_links` 查询入链和出链。创建笔记时可携带 `linked_note_ids` 一次写入正文与关联，并可提供固定 `id`、`operation_id` 安全重试。`easynote_link_notes` 为已有笔记追加关联，保留 revision 校验。关联的目标标题由服务端批量解析，反向链接自动由正文计算。
+
 ### 3.4 共享层 `src/shared`
 
 - `types.ts`：跨运行时数据契约、ID/指纹规则、笔记输入规范化、内部文件/笔记链接解析和内容指纹。
 - `tasks.ts`：从 Markdown 中提取未完成任务的纯函数。
+- `noteLinks.ts` 解析有效 WikiLink、引用次数和私有附件链接，统一生成稳定链接及多篇关联的 Markdown 列表。
 - `version.ts`：构建时注入的应用版本。
 
 共享层不得依赖 DOM、React 或 Cloudflare 运行时专属对象，以便浏览器、Worker 和测试共同复用。
@@ -206,6 +215,12 @@ npm run dev:client
 - `wrangler.deploy.json`：忽略提交的生产资源 ID，权限应保持 `0600`。
 - `vite.config.ts`：读取上层仓库 `versions.json` 中的 `easynote` 版本；不要单独手改显示版本。
 
+### 6.1 独立服务器 / Docker
+
+详见 [`docs/DOCKER.md`](docs/DOCKER.md)（英文版 [`docs/DOCKER.en.md`](docs/DOCKER.en.md)）。`Dockerfile` 构建同一份前端和 Worker；`scripts/server.mjs` 负责本地绑定、事务 migration、安全入口、WebSocket 转发、Cron、健康检查及停机释放。`scripts/setup.mjs --docker` 交互生成管理员验证器。`scripts/server-import.mjs` 校验并导入当前版本的完整灾备，拒绝覆盖已有状态。`scripts/backup.sh` 提供服务器停机一致性冷备份；根目录同名入口仍面向 Cloudflare/Wrangler。每个目录仅支持单实例，不能多个副本共享文件。
+
+Docker 不依赖 Cloudflare 云服务；Miniflare/workerd 仍是锁定的本地兼容运行时依赖。`.env` 指定 `PUBLIC_ORIGIN`，入口仅经可信 HTTPS 代理发布，不允许将 Miniflare 内部控制端点暴露公网。前端及领域逻辑不分叉。
+
 ## 7. 测试架构与验证方式
 
 测试运行时 `test/runtime.ts` 会用 esbuild 打包真实 Worker，启动隔离的 Miniflare D1/R2/DO 环境，按 migration 初始化 Schema，并创建测试账号和会话。API 测试不是路由 mock；它们验证真实 Worker 行为。
@@ -215,7 +230,7 @@ npm run dev:client
 | `npm run check` | i18n 键一致性、应用 TypeScript、测试 TypeScript | 所有代码和配置改动 |
 | `npm run test:api` | 认证、笔记、租户隔离、文件、同步、分享、合并单测 | Worker、共享模型、API 或同步逻辑改动 |
 | `npm run test:ai` | 远程 MCP 鉴权、读取和写入工具 | `src/ai`、MCP 或集成 API 改动 |
-| `npm run test:scripts` | 初始化、开发、部署、灾备和密码重置脚本 | Shell、`scripts/`、部署/维护配置改动 |
+| `npm run test:scripts` | 初始化、开发、部署、灾备、密码重置、真实服务器重启及备份导入 | Shell、`scripts/`、部署/维护配置改动 |
 | `npm run test:ui` | Playwright 桌面/移动、离线、PWA、编辑和导入导出 | UI、样式、编辑器、离线或端到端行为改动 |
 | `npm test` | `test:api` + `test:ai` | 合并前的服务端/AI 回归 |
 | `npm run build` | 完整静态检查和 Vite/PWA 生产构建 | 所有准备提交的功能改动 |

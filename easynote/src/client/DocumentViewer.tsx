@@ -84,6 +84,16 @@ export function DocumentViewer({
   resolveFile,
 }: DocumentViewerProps) {
   const [currentFile, setCurrentFile] = useState<DocumentViewerFile>(initialFile);
+  const modal = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (embedded) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const frame = requestAnimationFrame(() => modal.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus());
+    return () => {
+      cancelAnimationFrame(frame);
+      if (previous?.isConnected) previous.focus({ preventScroll: true });
+    };
+  }, [embedded]);
   const [toastMessage, setToastMessage] = useState<string>('');
 
   // Toast helper
@@ -220,23 +230,30 @@ export function DocumentViewer({
     if (currentFile.type !== 'txt') return;
 
     let cancelled = false;
+    let cachedObjectUrl: string | null = null;
     setTxtLoading(true);
     setTxtError('');
 
     const loadTxt = async () => {
       try {
         let text = '';
+        let loaded = false;
         if (currentFile.blob) {
           text = await currentFile.blob.text();
+          loaded = true;
         } else if (currentFile.id && resolveFile) {
           const cachedUrl = await resolveFile(currentFile.id);
           if (cachedUrl) {
+            if (cancelled) { URL.revokeObjectURL(cachedUrl); return; }
+            cachedObjectUrl = cachedUrl;
             const resp = await fetch(cachedUrl);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
             text = await resp.text();
+            loaded = true;
           }
         }
 
-        if (!text && currentFile.url) {
+        if (!loaded && currentFile.url) {
           const resp = await fetch(currentFile.url, { credentials: 'same-origin' });
           if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
           text = await resp.text();
@@ -245,9 +262,9 @@ export function DocumentViewer({
         if (cancelled) return;
         setTextContent(text);
         setTxtLoading(false);
-      } catch (err: any) {
+      } catch (err: unknown) {
         if (!cancelled) {
-          setTxtError(t('文档加载失败：{0}', err?.message || String(err)));
+          setTxtError(t('文档加载失败：{0}', err instanceof Error ? err.message : String(err)));
           setTxtLoading(false);
         }
       }
@@ -257,6 +274,7 @@ export function DocumentViewer({
 
     return () => {
       cancelled = true;
+      if (cachedObjectUrl) URL.revokeObjectURL(cachedObjectUrl);
     };
   }, [currentFile, resolveFile]);
 
@@ -1026,14 +1044,22 @@ export function DocumentViewer({
 
   return (
     <div
+      ref={modal}
       className="doc-viewer-modal-backdrop"
       role="dialog"
       aria-modal="true"
       aria-label={t('文档阅读与批注')}
       onKeyDown={(e) => {
         if (e.key === 'Escape') {
+          e.stopPropagation();
           if (commentDialog) setCommentDialog(null);
           else onClose?.();
+        } else if (e.key === 'Tab') {
+          const controls = [...(modal.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), textarea, [tabindex="0"]') ?? [])]
+            .filter((element) => element.getClientRects().length > 0);
+          const first = controls[0], last = controls[controls.length - 1];
+          if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
+          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
         }
       }}
     >

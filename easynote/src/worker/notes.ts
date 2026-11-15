@@ -14,6 +14,8 @@ import {
 import { ApiError, clientConfig, digest, json, numberSetting, readJson, type Env } from './core';
 import type { Identity } from './auth';
 import { publishNoteChanges } from './events';
+import { appendNoteLinks, noteLinkIds } from '../shared/noteLinks';
+import { noteLinks } from './noteLinks';
 
 export interface NoteRow {
   id: string; user_id: string; title: string; content: string; tags: string; pinned: number; archived: number;
@@ -72,6 +74,11 @@ function validate(data: Record<string, unknown>, env: Env): NoteInput {
 export async function saveNote(request: Request, env: Env, user: Identity, id: string, create: boolean): Promise<Response> {
   const data = await readJson(request, clientConfig(env).maxNoteBytes * 6 + 8192);
   const input = validate(data, env);
+  if (data.linkedNoteIds !== undefined && (!Array.isArray(data.linkedNoteIds) || data.linkedNoteIds.length > 20 ||
+      data.linkedNoteIds.some((target) => typeof target !== 'string' || !idPattern.test(target) || target.toLowerCase() === id.toLowerCase()))) {
+    throw new ApiError(400, 'Provide at most 20 valid target note IDs, excluding the source note.');
+  }
+  const linkedIds = [...new Set((data.linkedNoteIds as string[] | undefined)?.map((target) => target.toLowerCase()) ?? [])];
   if (!idPattern.test(id) || typeof data.operationId !== 'string' || !idPattern.test(data.operationId) ||
       !Number.isSafeInteger(data.revision) || Number(data.revision) < 0 ||
       data.createVersion !== undefined && typeof data.createVersion !== 'boolean' ||
@@ -89,8 +96,9 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   if (input.folderId && !await env.DB.prepare('SELECT 1 FROM folders WHERE id=? AND user_id=?')
       .bind(input.folderId, user.id).first()) throw new ApiError(404, 'Folder not found.');
   const createVersion = user.actorType === 'ai' || data.createVersion === true;
-  const dedupHash = await noteFingerprint(input.title, input.content);
-  const hash = await digest(JSON.stringify({ ...input, revision: data.revision, createVersion }));
+  const hash = await digest(JSON.stringify({ ...input, revision: data.revision, createVersion,
+    ...(linkedIds.length ? { linkedNoteIds: linkedIds } : {}),
+  }));
   if (current?.mutation_id === data.operationId) {
     if (current.mutation_hash !== hash) throw new ApiError(409, 'Operation ID reused with different content.');
     return json({ note: toNote(current) });
@@ -101,6 +109,19 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   if (current && (create || current.revision !== data.revision)) {
     throw new ApiError(409, 'The note changed on another device.', { current: toNote(current) });
   }
+  if (linkedIds.length) {
+    const targets = await env.DB.prepare(`SELECT id,title FROM notes WHERE user_id=? AND deleted_at IS NULL
+      AND id COLLATE NOCASE IN (SELECT value FROM json_each(?))`).bind(user.id, JSON.stringify(linkedIds)).all<{ id: string; title: string }>();
+    if (targets.results.length !== linkedIds.length) throw new ApiError(404, 'One or more linked notes were not found.');
+    const byId = new Map(targets.results.map((target) => [target.id.toLowerCase(), target]));
+    input.content = appendNoteLinks(input.content, linkedIds.map((target) => byId.get(target)!));
+    validate({ ...input }, env);
+    const savedLinks = new Set(noteLinkIds(input.content));
+    if (linkedIds.some((target) => !savedLinks.has(target))) {
+      throw new ApiError(400, 'Close Markdown code fences or HTML blocks before adding note links.');
+    }
+  }
+  const dedupHash = await noteFingerprint(input.title, input.content);
   const currentInput = current ? noteInput(toNote(current)) : null;
   const latestVersion = createVersion && current
     ? await env.DB.prepare(`SELECT title,content,tags,pinned,archived,folder_id,deleted_at
@@ -224,6 +245,13 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
 
 export async function noteRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
   const url = new URL(request.url);
+  if (path === '/api/notes/link-target-counts' && request.method === 'GET') {
+    const counts = await env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM notes WHERE user_id=? AND deleted_at IS NULL AND folder_id IS NULL) AS rootNotes,
+      (SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND mime NOT LIKE 'image/%') AS files`)
+      .bind(user.id, user.id).first<{ rootNotes: number; files: number }>();
+    return json(counts ?? { rootNotes: 0, files: 0 });
+  }
   if (path === '/api/sync/cursor' && request.method === 'GET') {
     const head = await env.DB.prepare('SELECT COALESCE(MAX(sequence),0) AS cursor FROM note_changes WHERE user_id=?')
       .bind(user.id).first<{ cursor: number }>();
@@ -355,25 +383,28 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
     const row = await loadBlank(env, user.id, rawFolderId && rawFolderId !== 'root' ? rawFolderId : null);
     return json({ note: row ? toNote(row) : null });
   }
-  const match = /^\/api\/notes\/([^/]+)(?:\/(versions|backlinks))?$/.exec(path);
+  if (path === '/api/notes/metadata' && request.method === 'GET') {
+    const ids = (url.searchParams.get('ids') ?? '').split(',');
+    if (ids.length < 1 || ids.length > 200 || ids.some((id) => !idPattern.test(id))) throw new ApiError(400, 'Provide 1 to 200 note IDs.');
+    const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,is_quick,archived,
+      folder_id,deleted_at,created_at,updated_at,revision FROM notes WHERE user_id=? AND deleted_at IS NULL
+      AND id COLLATE NOCASE IN (SELECT value FROM json_each(?))`).bind(user.id, JSON.stringify(ids)).all<NoteRow>();
+    return json({ notes: rows.results.map((row) => { const { content, ...metadata } = toNote(row); return { ...metadata, excerpt: content }; }) });
+  }
+  const match = /^\/api\/notes\/([^/]+)(?:\/(versions|backlinks|links))?$/.exec(path);
   if (!match) return null;
   const id = match[1];
   if (!idPattern.test(id)) throw new ApiError(404, 'Note not found.');
   if (match[2] && request.method === 'GET') {
-    if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
-    if (match[2] === 'backlinks') {
-      const escaped = id.replace(/[\\%_]/g, '\\$&');
-      const rows = await env.DB.prepare(`SELECT id,title,substr(content,1,180) AS content,tags,pinned,is_quick,archived,folder_id,
-        deleted_at,created_at,updated_at,revision FROM notes
-        WHERE user_id=? AND deleted_at IS NULL AND content LIKE ? ESCAPE '\\'
-        ORDER BY updated_at DESC,id ASC LIMIT 200`).bind(user.id, `%[[${escaped}|%`).all<NoteRow>();
-      return json({
-        notes: rows.results.map((row) => {
-          const { content, ...note } = toNote(row);
-          return { ...note, excerpt: content };
-        }),
-      });
+    if (match[2] === 'backlinks' || match[2] === 'links') {
+      const direction = match[2] === 'backlinks' ? 'incoming' : url.searchParams.get('direction') ?? 'outgoing';
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      const limit = Number(url.searchParams.get('limit') ?? (match[2] === 'backlinks' ? 200 : 50));
+      if (!['incoming', 'outgoing'].includes(direction) || !Number.isSafeInteger(offset) || offset < 0 ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new ApiError(400, 'Invalid link pagination or direction.');
+      return json(await noteLinks(env, user.id, id, direction as 'incoming' | 'outgoing', offset, limit));
     }
+    if (!await loadNote(env, user.id, id)) throw new ApiError(404, 'Note not found.');
     const rows = await env.DB.prepare('SELECT * FROM note_versions WHERE note_id=? ORDER BY revision DESC')
       .bind(id).all<NoteRow & { saved_at: number; actor_type: 'user' | 'ai'; actor_name: string }>();
     const versions: Version[] = rows.results.map((row) => ({

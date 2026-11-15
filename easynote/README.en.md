@@ -4,7 +4,12 @@
 
 Current Version: `0.7.8`
 
-A self-hosted Markdown note-taking application for individuals or small teams. React + TypeScript frontend, pdfmake PDF generation with PDF.js paginated preview, Cloudflare Worker API, D1 database for accounts and notes, and private R2 object storage for images and attachments.
+A self-hosted Markdown note-taking application for individuals or small teams. React + TypeScript frontend, pdfmake PDF generation with PDF.js paginated preview, a backend that supports either Cloudflare Workers (D1 + private R2) or Docker on an independent server (local SQLite + compatible object storage), sharing the same frontend and APIs.
+
+## Deployment options
+
+- **Independent server / Docker**: No Cloudflare account or cloud resources required. See [Docker deployment, compatibility, and data migration](docs/DOCKER.en.md).
+- **Cloudflare**: Continue using `bash deploy.sh` as documented below. Existing deployments remain supported.
 
 ## 0.10.2 Release Notes (2026-10-15)
 
@@ -247,13 +252,15 @@ In preview mode, clicking a superscript (e.g. `[1]`) smoothly scrolls down to th
 
 ### Knowledge Links (WikiLinks) & Backlinks
 
-Use `[[Note UUID|Display Title]]` or `[[Note UUID]]` to build bidirectional links between notes. Links are permanently bound to the note's UUID, so renaming a target note's title will not break existing links. Clicking a link in preview mode directly navigates to the target note in-app.
+Use `[[Note UUID|Display Title]]` to link notes by stable UUID. Renaming the target preserves the reference. The link picker supports selecting multiple notes and existing attachments. A single link is inserted at the cursor, while multiple selections become a Markdown list rendered as compact reference rows with current titles and folder paths.
+
+Click a note or PDF/text attachment to read it in a side preview. Follow further references and go back within that preview. Close it or press Esc to restore the original reading position and focus. On phones, use “Back to original note”. “Open in main pane” preserves a return action in the toolbar. Notes containing only a PDF/TXT attachment continue using the embedded reader.
 
 ```markdown
-See reference document: [[00000000-0000-0000-0000-000000000001|Project Specification]]
+See reference document [[00000000-0000-4000-8000-000000000001|Project Specification]]
 ```
 
-The sidebar outline panel scans active notes in real time to display "Backlinks" (all notes referencing the current note), establishing a two-way knowledge graph.
+The navigation panel displays outgoing references, attachments, and backlinks, with actions to locate references in the body. Server queries use the full-text index to select candidates and Markdown parsing to exclude code examples and comments. Offline queries use the local mirror and drafts. Archived notes are included, trashed notes are excluded, and long lists support pagination.
 
 ### Diagrams & HTML
 

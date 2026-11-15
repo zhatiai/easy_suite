@@ -1,3 +1,4 @@
+import { folderEntityCounts } from './knowledge';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ChevronDown,
@@ -17,7 +18,6 @@ import {
 } from 'lucide-react';
 import type { Folder } from '../shared/types';
 import type { ExplorerFolderState } from './useNotebook';
-import { updateTruncatedTitle } from './truncatedTitle';
 import { dateLocale, t } from './i18n';
 
 interface FolderOverviewProps {
@@ -44,6 +44,7 @@ interface MatchItem {
 }
 
 export function FolderOverview(props: FolderOverviewProps) {
+  const entityCounts = useMemo(() => folderEntityCounts(props.folders), [props.folders]);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMatchIndex, setActiveMatchIndex] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -185,10 +186,10 @@ export function FolderOverview(props: FolderOverviewProps) {
         const folderItemId = `folder-${child.id}`;
         const isCurrent = matches[activeMatchIndex]?.id === folderItemId;
         return <li className={`folder-overview-branch ${isCurrent ? 'search-match-active' : ''}`} key={child.id} data-search-id={folderItemId}>
-          <div className="folder-overview-folder" onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget, event.currentTarget.querySelector<HTMLElement>('strong'))}>
+          <div className="folder-overview-folder" data-full-name>
             <FolderOpen size={18} />
-            <strong>{renderHighlightedText(child.name, folderItemId)}</strong>
-            <small>{t('{0} 个文件', child.noteCount)}</small>
+            <strong data-full-name-label>{renderHighlightedText(child.name, folderItemId)}</strong>
+            <small aria-label={t('direct_entity_count', entityCounts.get(child.id) ?? 0)}>{t('entity_count', entityCounts.get(child.id) ?? 0)}</small>
           </div>
           {renderContents(child)}
         </li>;
@@ -198,10 +199,10 @@ export function FolderOverview(props: FolderOverviewProps) {
         const isCurrent = matches[activeMatchIndex]?.id === noteItemId;
         const title = note.title || t('untitled_note');
         return <li key={note.id} data-search-id={noteItemId} className={isCurrent ? 'search-match-active' : ''}>
-          <button onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget, event.currentTarget.querySelector<HTMLElement>('strong'))} className="folder-overview-file" onClick={() => props.openNote(note.id)}>
+          <button data-full-name className="folder-overview-file" onClick={() => props.openNote(note.id)}>
             <FileText size={17} />
             <span>
-              <strong>{renderHighlightedText(title, noteItemId)}</strong>
+              <strong data-full-name-label>{renderHighlightedText(title, noteItemId)}</strong>
               <small>{new Date(note.updatedAt).toLocaleString(dateLocale(), { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · {t('修订 {0}', note.revision)}</small>
             </span>
           </button>
@@ -220,7 +221,7 @@ export function FolderOverview(props: FolderOverviewProps) {
           <div className="folder-overview-intro">
             <div className="folder-overview-heading">
               <FolderOpen size={32} />
-              <h1 id="folder-overview-title" onPointerEnter={(event) => updateTruncatedTitle(event.currentTarget)}>{props.folder.name}</h1>
+              <h1 id="folder-overview-title" data-full-name>{props.folder.name}</h1>
             </div>
             {(props.folder.description || props.editFolder) && <div className="folder-description-row">
               {props.folder.description && <p className="folder-overview-description">{props.folder.description}</p>}
@@ -246,6 +247,7 @@ export function FolderOverview(props: FolderOverviewProps) {
 
         <dl className="folder-overview-meta">
           <div><dt>{t('created_at')}</dt><dd>{new Date(props.folder.createdAt).toLocaleString(dateLocale(), { year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</dd></div>
+          <div><dt>{t('direct_items')}</dt><dd aria-label={t('direct_entity_count', entityCounts.get(props.folder.id) ?? 0)}>{t('entity_count', entityCounts.get(props.folder.id) ?? 0)}</dd></div>
           <div><dt>{t('total_files')}</dt><dd>{t('{0} 个文件', totalFiles)}</dd></div>
         </dl>
 

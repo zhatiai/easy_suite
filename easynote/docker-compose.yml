@@ -1,17 +1,23 @@
 services:
   easynote:
-    image: easynote:0.7.8
+    build: .
+    image: easynote:local
     container_name: easynote
     restart: unless-stopped
     init: true
     stop_grace_period: 30s
     environment:
-      - PORT=8791
-      - HEALTH_PORT=8792
-      - DATA_DIR=/data
-      - ALLOW_LOCAL_HTTP=true
+      PORT: "8791"
+      HEALTH_PORT: "8792"
+      DATA_DIR: /data
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env (see .env.docker.example)}
+      ALLOW_LOCAL_HTTP: ${ALLOW_LOCAL_HTTP:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:
-      - "8791:8791"
-      - "127.0.0.1:8792:8792"
+      - "127.0.0.1:${EASYNOTE_PORT:-8791}:8791"
     volumes:
-      - /var/lib/easynote/data:/data
+      - ${EASYNOTE_DATA_DIR:-/var/lib/easynote/data}:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

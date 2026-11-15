@@ -1,0 +1,6 @@
+services:
+  easynote:
+    build:
+      target: runtime
+    volumes:
+      - ${EASYNOTE_DIST_DIR:-./dist}:/app/dist:ro

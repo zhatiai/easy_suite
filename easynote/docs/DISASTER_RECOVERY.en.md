@@ -1,5 +1,7 @@
 # EasyNote Disaster Recovery
 
+> For Docker cold backups, restoration, and migration from Cloudflare, see [Docker deployment](DOCKER.en.md). The root-level maintenance commands below target Cloudflare/Wrangler.
+
 [简体中文](DISASTER_RECOVERY.md) | [English](DISASTER_RECOVERY.en.md)
 
 ## Three Types of Exports

@@ -15,6 +15,17 @@ export interface Note {
 
 export type NoteInput = Pick<Note, 'title' | 'content' | 'tags' | 'pinned' | 'quick' | 'archived' | 'folderId' | 'deletedAt'>;
 export type NoteSummary = Omit<Note, 'content'> & { excerpt: string };
+export type NoteLinkDirection = 'incoming' | 'outgoing';
+export interface NoteLinkPage {
+  notes: NoteSummary[];
+  missingIds: string[];
+  nextOffset: number | null;
+}
+export interface LinkedFile {
+  id: string;
+  filename: string;
+  url: string;
+}
 export interface Folder {
   description: string;
   id: string;
@@ -245,8 +256,3 @@ export function storedFileIds(content: string): string[] {
 }
 
 export const imageIds = storedFileIds;
-
-export function noteLinkIds(content: string): string[] {
-  return [...new Set([...content.matchAll(/\[\[([0-9a-f-]{36})\|[^\]\r\n]{1,256}\]\]/gi)]
-    .map((match) => match[1]).filter((id) => idPattern.test(id)))];
-}

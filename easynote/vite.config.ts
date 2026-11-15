@@ -45,7 +45,7 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'script-defer',
-      includeAssets: ['apple-touch-icon.png'],
+      includeAssets: ['easynote-knowledge-apple.png'],
       manifest: {
         id: '/',
         name: 'EasyNote',
@@ -59,9 +59,9 @@ export default defineConfig({
         theme_color: '#f9f9f9',
         categories: ['productivity'],
         icons: [
-          { src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-          { src: '/pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+          { src: '/easynote-knowledge-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+          { src: '/easynote-knowledge-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          { src: '/easynote-knowledge-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
       workbox: {

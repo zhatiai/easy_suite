@@ -302,6 +302,10 @@ export async function integrationRoutes(
     if (missingIds.length) throw new ApiError(404, 'One or more notes were not found.', { missingIds });
     return json({ notes: ids.map((id) => notesById.get(id)!) });
   }
+  const linkMatch = /^\/api\/integrations\/notes\/([^/]+)\/(links|backlinks)$/.exec(path);
+  if (linkMatch && request.method === 'GET') {
+    return noteRoutes(request, env, user, `/api/notes/${linkMatch[1]}/${linkMatch[2]}`);
+  }
   const noteMatch = /^\/api\/integrations\/notes\/([^/]+)$/.exec(path);
   if (noteMatch && ['GET', 'POST', 'PUT'].includes(request.method)) {
     if (request.method !== 'GET' && user.access !== 'read-write') {

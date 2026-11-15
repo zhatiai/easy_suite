@@ -272,3 +272,21 @@ export async function clearAccountStorage(userId: string): Promise<void> {
     await tx.done;
   } finally { db.close(); }
 }
+
+export interface LlmConfig { baseURL: string; model: string; apiKey: string }
+const llmConfigKey = (userId: string) => `easynote-llm-v1:${userId}`;
+
+export function loadLlmConfig(userId: string): LlmConfig {
+  const empty = { baseURL: '', model: '', apiKey: '' };
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(llmConfigKey(userId)) ?? 'null');
+    if (!value || typeof value !== 'object' || !('baseURL' in value) || !('model' in value) || !('apiKey' in value)) return empty;
+    return typeof value.baseURL === 'string' && typeof value.model === 'string' && typeof value.apiKey === 'string'
+      ? { baseURL: value.baseURL, model: value.model, apiKey: value.apiKey } : empty;
+  } catch { return empty; }
+}
+
+export function saveLlmConfig(userId: string, config: LlmConfig | null): void {
+  if (config) localStorage.setItem(llmConfigKey(userId), JSON.stringify(config));
+  else localStorage.removeItem(llmConfigKey(userId));
+}

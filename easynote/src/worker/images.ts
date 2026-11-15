@@ -16,6 +16,18 @@ const record = (row: StoredFileRow): StoredFile => ({
 });
 
 export async function imageRoutes(request: Request, env: Env, user: Identity, path: string): Promise<Response | null> {
+  if (path === '/api/files' && request.method === 'GET') {
+    const url = new URL(request.url);
+    const query = (url.searchParams.get('q') ?? '').slice(0, 200);
+    const offset = Number(url.searchParams.get('offset') ?? 0);
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid file offset.');
+    const escaped = query.replace(/[\\%_]/g, '\\$&');
+    const rows = await env.DB.prepare(`SELECT id,filename FROM images WHERE user_id=? AND status='ready'
+      AND mime NOT LIKE 'image/%' AND filename LIKE ? ESCAPE '\\' ORDER BY created_at DESC,id ASC LIMIT 51 OFFSET ?`)
+      .bind(user.id, `%${escaped}%`, offset).all<{ id: string; filename: string }>();
+    return json({ files: rows.results.slice(0, 50).map((row) => ({ ...row, url: filePath(row.id) })),
+      nextOffset: rows.results.length > 50 ? offset + 50 : null });
+  }
   const match = /^\/api\/(images|files)\/([^/]+)$/.exec(path);
   if (!match) return null;
   const [, route, id] = match;

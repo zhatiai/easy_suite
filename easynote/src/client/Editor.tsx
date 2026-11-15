@@ -1,3 +1,4 @@
+import { SelectionAi } from './SelectionAi';
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Compartment, EditorState, Facet, StateField, type Range } from '@codemirror/state';
@@ -8,7 +9,7 @@ import MarkdownIt from 'markdown-it';
 import footnote from 'markdown-it-footnote';
 import DOMPurify from 'dompurify';
 import katex from 'katex';
-import { idPattern } from '../shared/types';
+import { folderRelativePath, idPattern, type Folder, type NoteSummary } from '../shared/types';
 import { t } from './i18n';
 import { slugify, updateToc } from './toc';
 import { headings } from './knowledge';
@@ -39,10 +40,10 @@ interface Props {
 
 export interface EditorHandle {
   markInsertion(): string;
-  insertAt(insertion: string, value: string): boolean;
+  insertAt(insertion: string, value: string, inline?: boolean): boolean;
   releaseInsertion(insertion: string): void;
   cursor(): number;
-  goTo(offset: number, alignToTop?: boolean): void;
+  goTo(offset: number, alignToTop?: boolean, viewportTop?: number): void;
   readingOffset(viewportTop: number): number;
   focus(): void;
 }
@@ -1064,13 +1065,13 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
 
   useImperativeHandle(ref, () => ({
     markInsertion,
-    insertAt(insertion, text) {
+    insertAt(insertion, text, inline = false) {
       const editor = view.current;
       const marked = insertions.current.get(insertion);
       if (!editor || marked === undefined) return false;
       const position = Math.min(marked, editor.state.doc.length);
-      const before = position > 0 && editor.state.doc.sliceString(position - 1, position) !== '\n' ? '\n\n' : '';
-      const after = position < editor.state.doc.length && editor.state.doc.sliceString(position, position + 1) !== '\n' ? '\n\n' : '\n';
+      const before = !inline && position > 0 && editor.state.doc.sliceString(position - 1, position) !== '\n' ? '\n\n' : '';
+      const after = inline ? '' : position < editor.state.doc.length && editor.state.doc.sliceString(position, position + 1) !== '\n' ? '\n\n' : '\n';
       const inserted = `${before}${text}${after}`;
       editor.dispatch({
         changes: { from: position, insert: inserted },
@@ -1090,7 +1091,7 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
       if (viewportTop <= bounds.top) return 0;
       return editor.posAtCoords({ x: bounds.left + 8, y: viewportTop }, false) ?? editor.viewport.from;
     },
-    goTo(offset, alignToTop = false) {
+    goTo(offset, alignToTop = false, viewportTop) {
       const editor = view.current;
       if (!editor) return;
       const position = Math.max(0, Math.min(offset, editor.state.doc.length));
@@ -1100,6 +1101,16 @@ export const Editor = forwardRef<EditorHandle, Props>(function Editor({
         effects: alignToTop ? EditorView.scrollIntoView(position, { y: 'start', yMargin: 24 }) : [],
       });
       editor.focus();
+      if (viewportTop !== undefined) requestAnimationFrame(() => {
+        if (view.current !== editor || !editor.dom.isConnected) return;
+        editor.requestMeasure({
+          read: () => editor.coordsAtPos(position),
+          write: (bounds) => {
+            const scroll = editor.dom.closest<HTMLElement>('.document-scroll');
+            if (bounds && scroll) scroll.scrollTop += bounds.top - viewportTop;
+          },
+        });
+      });
     },
     focus() { view.current?.focus(); },
   }), []);
@@ -1390,11 +1401,17 @@ renderer.core.ruler.push('heading_slugs', (state) => {
 });
 const defaultText = renderer.renderer.rules.text;
 renderer.renderer.rules.text = (tokens, index, options, env, self) => {
-  const rendered = defaultText
-    ? defaultText(tokens, index, options, env, self)
-    : renderer.utils.escapeHtml(tokens[index].content);
-  return rendered.replace(/\[\[([0-9a-f-]{36})\|([^\]\r\n]{1,256})\]\]/gi, (source, id: string, label: string) =>
-    idPattern.test(id) ? `<a href="#note-${id}" data-note-id="${id}">${label}</a>` : source);
+  const source = tokens[index].content;
+  let rendered = '';
+  let offset = 0;
+  for (const match of source.matchAll(/\[\[([0-9a-f-]{36})\|([^\]\r\n]{1,256})\]\]/gi)) {
+    if (!idPattern.test(match[1])) continue;
+    rendered += renderer.utils.escapeHtml(source.slice(offset, match.index));
+    rendered += `<a href="#note-${match[1]}" data-note-id="${match[1]}">${renderer.utils.escapeHtml(match[2])}</a>`;
+    offset = match.index! + match[0].length;
+  }
+  if (!offset) return defaultText ? defaultText(tokens, index, options, env, self) : renderer.utils.escapeHtml(source);
+  return rendered + renderer.utils.escapeHtml(source.slice(offset));
 };
 renderer.renderer.rules.fence = (tokens, index) => {
   const token = tokens[index];
@@ -1599,9 +1616,10 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
       link.removeAttribute('target');
       link.removeAttribute('rel');
       const text = link.textContent?.trim() || '';
+      link.setAttribute('aria-label', text || t('insert_attachment'));
       const href = link.getAttribute('href') || '';
       const isPdf = /\.pdf$/i.test(text) || /\.pdf$/i.test(href);
-      const isTxt = /\.txt$/i.test(text) || /\.txt$/i.test(href);
+      const isTxt = /\.(?:txt|md|markdown|csv|json)$/i.test(text);
       if (isPdf || isTxt) {
         link.classList.add(isPdf ? 'doc-link-pdf' : 'doc-link-txt');
         link.dataset.docType = isPdf ? 'pdf' : 'txt';
@@ -1617,6 +1635,26 @@ function renderMarkdown(content: string, interactiveTasks: boolean, searchQuery:
     }
     link.setAttribute('target', '_blank');
     link.setAttribute('rel', 'noopener noreferrer');
+  });
+  parsed.body.querySelectorAll<HTMLElement>('ul, ol').forEach((list) => {
+    const items = [...list.children];
+    const links = items.map((item) => item.querySelector<HTMLAnchorElement>('a[data-note-id], a[data-private-file]'));
+    if (!items.length || links.some((link, index) => !link || items[index].querySelectorAll('a').length !== 1 ||
+        items[index].textContent?.trim() !== link.textContent?.trim())) return;
+    list.classList.add('note-reference-list');
+    for (const link of links) {
+      if (!link) continue;
+      link.classList.add('note-reference-link');
+      const title = parsed.createElement('span');
+      title.className = 'reference-note-title';
+      title.textContent = link.textContent;
+      link.setAttribute('aria-label', title.textContent || t('untitled_note'));
+      const path = parsed.createElement('small');
+      path.className = 'reference-note-path';
+      path.setAttribute('aria-hidden', 'true');
+      path.textContent = t(link.dataset.noteId ? 'note_reference' : 'insert_attachment');
+      link.replaceChildren(title, path);
+    }
   });
   let taskIndex = 0;
   parsed.body.querySelectorAll<HTMLLIElement>('li').forEach((item) => {
@@ -1674,13 +1712,76 @@ function diagramError(element: HTMLElement, error: unknown, source = element.tex
   element.replaceChildren(message, pre);
 }
 
-function sizeDiagram(element: HTMLElement) {
+const minDiagramScale = 0.25;
+const maxDiagramScale = 2.5;
+const diagramScaleStep = 0.2;
+
+function diagramWidth(element: HTMLElement) {
   const svg = element.querySelector<SVGSVGElement>('svg');
   const width = svg?.viewBox.baseVal.width ?? 0;
-  if (!svg || width <= 0) return;
-  svg.style.width = `${Math.ceil(width)}px`;
-  svg.style.maxWidth = 'none';
-  svg.style.height = 'auto';
+  return svg && width > 0 ? { svg, width } : null;
+}
+
+function setDiagramScale(element: HTMLElement, scale: number, mode: 'fit' | 'manual') {
+  const diagram = diagramWidth(element);
+  if (!diagram) return;
+  const nextScale = mode === 'fit'
+    ? Math.min(1, Math.max(0.01, scale))
+    : Math.min(maxDiagramScale, Math.max(minDiagramScale, scale));
+  diagram.svg.style.width = `${Math.ceil(diagram.width * nextScale)}px`;
+  diagram.svg.style.maxWidth = 'none';
+  diagram.svg.style.height = 'auto';
+  element.dataset.mermaidScale = String(nextScale);
+  element.dataset.mermaidScaleMode = mode;
+  const status = element.querySelector<HTMLOutputElement>('[data-mermaid-scale]');
+  if (status) {
+    status.value = `${Math.round(nextScale * 100)}%`;
+    status.textContent = status.value;
+  }
+}
+
+function fitDiagram(element: HTMLElement) {
+  const diagram = diagramWidth(element);
+  if (!diagram || element.clientWidth <= 0) return;
+  setDiagramScale(element, Math.min(1, element.clientWidth / diagram.width), 'fit');
+}
+
+function addDiagramControls(element: HTMLElement) {
+  const controls = document.createElement('div');
+  controls.className = 'mermaid-controls';
+  controls.setAttribute('role', 'group');
+  controls.setAttribute('aria-label', t('图表操作'));
+
+  const addButton = (action: 'zoom-out' | 'fit' | 'zoom-in', label: string, text: string) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'mermaid-control';
+    button.dataset.mermaidAction = action;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+    button.textContent = text;
+    controls.appendChild(button);
+  };
+
+  addButton('zoom-out', t('缩小图表'), '−');
+  const status = document.createElement('output');
+  status.className = 'mermaid-scale';
+  status.dataset.mermaidScale = 'true';
+  status.setAttribute('aria-live', 'polite');
+  controls.appendChild(status);
+  addButton('fit', t('自适应图表'), t('适应'));
+  addButton('zoom-in', t('放大图表'), '+');
+  element.insertBefore(controls, element.firstChild);
+}
+
+function controlDiagram(element: HTMLElement, action: string) {
+  if (action === 'fit') {
+    fitDiagram(element);
+    return;
+  }
+  const currentScale = Number(element.dataset.mermaidScale) || 1;
+  const adjustment = action === 'zoom-in' ? diagramScaleStep : -diagramScaleStep;
+  setDiagramScale(element, currentScale + adjustment, 'manual');
 }
 
 function escapeRegex(str: string): string {
@@ -1689,6 +1790,8 @@ function escapeRegex(str: string): string {
 
 export function Preview({
   content,
+  aiUserId,
+  onConfigureAi,
   userId,
   onImage,
   onNote,
@@ -1700,27 +1803,40 @@ export function Preview({
   resolveFile,
   dark = false,
   eagerImages = false,
+  streaming = false,
+  embedDocuments = true,
   searchQuery = '',
   onRefreshToc,
+  resolveNoteLinks,
+  folders = [],
+  linksRevision,
 }: {
   content: string;
+  aiUserId?: string;
+  onConfigureAi?(): void;
   userId?: string;
   onImage(src: string): void;
-  onNote?(id: string): void;
+  onNote?(id: string, trigger?: HTMLElement): void;
   onFile?(id: string, href: string): void;
-  onViewDocument?(file: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }): void;
+  onViewDocument?(file: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }, trigger?: HTMLElement): void;
   onInsertToNote?(markdown: string): void;
   onCreateNoteFromContent?(title: string, markdown: string): void;
   onTask?(index: number, checked: boolean): void;
   resolveFile?(id: string): Promise<string | null>;
   dark?: boolean;
   eagerImages?: boolean;
+  streaming?: boolean;
+  embedDocuments?: boolean;
   searchQuery?: string;
   onRefreshToc?(): void;
+  resolveNoteLinks?(ids: string[], signal?: AbortSignal): Promise<NoteSummary[]>;
+  folders?: Folder[];
+  linksRevision?: unknown;
 }) {
   const host = useRef<HTMLElement>(null);
   const diagramSources = useRef(new WeakMap<HTMLElement, string>());
   const embeddedDocs = useMemo(() => {
+    if (!embedDocuments) return [];
     const matches = Array.from(content.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g));
     const docs: { id?: string; url: string; filename: string; type: 'pdf' | 'txt' }[] = [];
     for (const m of matches) {
@@ -1731,6 +1847,7 @@ export function Preview({
       if (!isPdf && !isTxt) continue;
       const fileId = /^(?:\/api\/files\/|\/api\/public\/shares\/[a-f0-9]{64}\/files\/)([0-9a-f-]{36})$/i
         .exec(href)?.[1];
+      if (!fileId || !idPattern.test(fileId)) continue;
       docs.push({
         id: fileId && idPattern.test(fileId) ? fileId : undefined,
         url: href,
@@ -1739,7 +1856,7 @@ export function Preview({
       });
     }
     return docs;
-  }, [content]);
+  }, [content, embedDocuments]);
 
   // Strip duplicate H1 heading matching document name and embedded doc links from preview
   const { cleanedContent, hasOtherText } = useMemo(() => {
@@ -1785,7 +1902,7 @@ export function Preview({
     }
     const remainingText = res.replace(/^[>\s]+$/g, '').trim();
     return {
-      cleanedContent: remainingText.length > 0 ? res : '',
+      cleanedContent: remainingText.length > 0 ? content : '',
       hasOtherText: remainingText.length > 0,
     };
   }, [content, embeddedDocs]);
@@ -1795,14 +1912,44 @@ export function Preview({
     [cleanedContent, !!onTask, searchQuery, !!onRefreshToc]
   );
   useEffect(() => {
-    const elements = [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source], .mermaid-diagram') ?? [])];
+    if (!resolveNoteLinks || !host.current) return;
+    const anchors = [...host.current.querySelectorAll<HTMLAnchorElement>('a[data-note-id]')];
+    const ids = [...new Set(anchors.map((anchor) => anchor.dataset.noteId!.toLowerCase()))];
+    if (!ids.length) return;
+    const controller = new AbortController();
+    void resolveNoteLinks(ids, controller.signal).then((notes) => {
+      if (controller.signal.aborted) return;
+      const byId = new Map(notes.map((note) => [note.id.toLowerCase(), note]));
+      for (const anchor of anchors) {
+        const note = byId.get(anchor.dataset.noteId!.toLowerCase());
+        anchor.classList.toggle('note-link-unavailable', !note);
+        const path = anchor.querySelector<HTMLElement>('.reference-note-path');
+        if (!note) {
+          anchor.title = t('note_link_unavailable');
+          if (path) path.textContent = t('note_link_unavailable');
+          continue;
+        }
+        anchor.title = `${note.title || t('untitled_note')} · ${folderRelativePath(note.folderId, folders) || t('根目录')}`;
+        const title = anchor.querySelector<HTMLElement>('.reference-note-title');
+        if (title) {
+          title.textContent = note.title || t('untitled_note');
+          anchor.setAttribute('aria-label', title.textContent);
+        }
+        if (path) path.textContent = folderRelativePath(note.folderId, folders) || t('根目录');
+      }
+    }).catch(() => { /* Opening a link reports read errors without interrupting the current note. */ });
+    return () => controller.abort();
+  }, [html, resolveNoteLinks, folders, linksRevision]);
+  useEffect(() => {
+    // Keep incomplete diagrams as escaped source until the streamed answer settles.
+    const elements = streaming ? [] : [...(host.current?.querySelectorAll<HTMLElement>('[data-mermaid-source], .mermaid-diagram') ?? [])];
     const codeBlocks = [...(host.current?.querySelectorAll<HTMLElement>('code[data-code-language]') ?? [])];
     const privateImages = [...(host.current?.querySelectorAll<HTMLImageElement>('img[data-private-image]') ?? [])];
     const docLinks = [...(host.current?.querySelectorAll<HTMLAnchorElement>('a.doc-link-pdf, a.doc-link-txt') ?? [])];
     for (const link of docLinks) {
       const href = link.getAttribute('href') || '';
       const pId = link.dataset.privateFile || '';
-      const isEmbedded = embeddedDocs.some(
+      const isEmbedded = !hasOtherText && embeddedDocs.some(
         (d) => (d.id && d.id === pId) || d.url === href || d.filename === (link.dataset.docFilename || link.textContent?.trim())
       );
       if (isEmbedded) {
@@ -1814,6 +1961,12 @@ export function Preview({
       element.setAttribute('aria-busy', 'true');
     }
     const objectUrls: string[] = [];
+    const diagramResizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const element = entry.target as HTMLElement;
+        if (element.dataset.mermaidScaleMode === 'fit') fitDiagram(element);
+      }
+    });
     let cancelled = false;
     if (eagerImages) privateImages.forEach((image) => { image.loading = 'eager'; });
     if (resolveFile) {
@@ -1866,7 +2019,9 @@ export function Preview({
             element.setAttribute('aria-label', t('Mermaid 图表'));
             element.removeAttribute('data-mermaid-source');
             element.removeAttribute('aria-busy');
-            sizeDiagram(element);
+            addDiagramControls(element);
+            fitDiagram(element);
+            diagramResizeObserver?.observe(element);
             bindFunctions?.(element);
           } catch (error) {
             diagramError(element, error, source);
@@ -1878,12 +2033,20 @@ export function Preview({
     })();
     return () => {
       cancelled = true;
+      diagramResizeObserver?.disconnect();
       objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [html, dark, resolveFile, eagerImages]);
+  }, [html, dark, resolveFile, eagerImages, streaming]);
 
   return (<>{hasOtherText && html.trim() ? <article ref={host} className="markdown" onClick={(event) => {
     const target = event.target as HTMLElement;
+    const diagramAction = target.closest<HTMLButtonElement>('[data-mermaid-action]');
+    if (diagramAction) {
+      event.preventDefault();
+      const diagram = diagramAction.closest<HTMLElement>('.mermaid-diagram');
+      if (diagram) controlDiagram(diagram, diagramAction.dataset.mermaidAction ?? '');
+      return;
+    }
     const refreshBtn = target.closest<HTMLElement>('[data-toc-action="refresh"]');
     if (refreshBtn) {
       event.preventDefault();
@@ -1915,7 +2078,7 @@ export function Preview({
     const note = target.closest<HTMLAnchorElement>('a[data-note-id]');
     if (note?.dataset.noteId && onNote) {
       event.preventDefault();
-      onNote(note.dataset.noteId);
+      onNote(note.dataset.noteId, note);
       return;
     }
     const file = target.closest<HTMLAnchorElement>('a[data-private-file]');
@@ -1924,7 +2087,7 @@ export function Preview({
       const docType = file.dataset.docType as ('pdf' | 'txt' | undefined);
       if ((docType === 'pdf' || docType === 'txt' || /\.pdf$/i.test(filename) || /\.txt$/i.test(filename))) {
         event.preventDefault();
-        const isEmbedded = embeddedDocs.some(
+        const isEmbedded = !hasOtherText && embeddedDocs.some(
           (d) => (d.id && d.id === file.dataset.privateFile) || d.url === file.getAttribute('href') || d.filename === filename
         );
         if (isEmbedded) {
@@ -1939,7 +2102,7 @@ export function Preview({
             url: file.href,
             filename,
             type: docType || (/\.pdf$/i.test(filename) ? 'pdf' : 'txt'),
-          });
+          }, file);
           return;
         }
       }
@@ -1964,7 +2127,8 @@ export function Preview({
       }
     }
   }} dangerouslySetInnerHTML={{ __html: html }} /> : null}
-  {embeddedDocs.map((doc, index) => (
+  {hasOtherText && aiUserId && onConfigureAi && <SelectionAi key={html} article={host} userId={aiUserId} dark={dark} onConfigure={onConfigureAi} />}
+  {!hasOtherText && embeddedDocs.map((doc, index) => (
     <div key={`${doc.url}-${index}`} className="doc-embed-slot">
       <DocumentViewer
         embedded={true}

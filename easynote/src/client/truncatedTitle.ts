@@ -1,7 +1,6 @@
-export function updateTruncatedTitle(owner: HTMLElement, label: HTMLElement | null = owner): void {
-  if (label && label.scrollWidth > label.clientWidth && label.textContent) {
-    owner.title = label.textContent;
-  } else {
-    owner.removeAttribute('title');
-  }
+export function isTitleTruncated(label: HTMLElement): boolean {
+  const range = document.createRange();
+  range.selectNodeContents(label);
+  return label.scrollWidth > label.clientWidth
+    || range.getBoundingClientRect().width > label.getBoundingClientRect().width + 0.5;
 }

@@ -8,3 +8,9 @@ playwright-report/
 backups/
 *.log
 .DS_Store
+
+# Server configuration and persistent volumes
+.env
+.env.*
+!.env.docker.example
+data/

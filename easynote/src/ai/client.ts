@@ -1,4 +1,4 @@
-import type { Folder, IntegrationNoteSummary, Note, NoteInput } from '../shared/types.js';
+import type { Folder, IntegrationNoteSummary, Note, NoteInput, NoteLinkDirection, NoteLinkPage } from '../shared/types.js';
 
 export interface BridgeConfig {
   url: string;
@@ -126,12 +126,17 @@ export class EasyNoteClient {
     return this.json(`/api/integrations/notes/batch?${parameters}`);
   }
 
-  save(id: string, input: NoteInput, revision: number, operationId: string): Promise<{ note: Note; unchanged?: boolean }> {
+  links(id: string, direction: NoteLinkDirection, offset: number, limit: number): Promise<NoteLinkPage> {
+    return this.json(`/api/integrations/notes/${encodeURIComponent(id)}/links?${new URLSearchParams({ direction, offset: String(offset), limit: String(limit) })}`);
+  }
+
+  save(id: string, input: NoteInput, revision: number, operationId: string, linkedNoteIds: string[] = []): Promise<{ note: Note; unchanged?: boolean }> {
     return this.json(`/api/integrations/notes/${encodeURIComponent(id)}`, revision === 0 ? 'POST' : 'PUT', {
       ...input,
       revision,
       operationId,
       createVersion: true,
+      ...(linkedNoteIds.length ? { linkedNoteIds } : {}),
     });
   }
 

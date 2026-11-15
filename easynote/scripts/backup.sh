@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 # EasyNote Linux 容器冷备份脚本 (v3.1)
 # 采用停机一致性冷备份 (Consistent Cold Backup)，确保 D1/R2/DO 跨资源强一致。
@@ -42,6 +43,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+[[ "$KEEP_COUNT" =~ ^[1-9][0-9]*$ ]] || { echo "--keep must be a positive integer." >&2; exit 1; }
+# Refuse to copy a possibly live database when Docker cannot establish its state.
+RUNNING=$(docker inspect --format='{{.State.Running}}' "$CONTAINER_NAME")
+MOUNT_SOURCE=$(docker inspect --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER_NAME")
+[[ -d "$DATA_DIR" && -n "$MOUNT_SOURCE" && "$(cd "$DATA_DIR" && pwd -P)" == "$(cd "$MOUNT_SOURCE" && pwd -P)" ]] || {
+  echo "--data-dir does not match the container /data bind mount." >&2; exit 1;
+}
 echo "=== EasyNote Cold Backup started ==="
 echo "Data Directory:    ${DATA_DIR}"
 echo "Backup Directory:  ${BACKUP_DIR}"
@@ -55,14 +63,14 @@ fi
 mkdir -p "${BACKUP_DIR}"
 
 WAS_RUNNING=0
-if docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+if [[ "$RUNNING" == "true" ]]; then
   WAS_RUNNING=1
 fi
 
 # If container was running, ensure it gets restarted even if backup fails
 cleanup() {
   if [[ "${WAS_RUNNING}" -eq 1 ]]; then
-    if ! docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+    if [[ "$(docker inspect --format='{{.State.Running}}' "$CONTAINER_NAME")" != "true" ]]; then
       echo "[backup] Restarting container ${CONTAINER_NAME}..."
       docker start "${CONTAINER_NAME}" || true
     fi
@@ -78,7 +86,7 @@ else
   echo "[backup] Container ${CONTAINER_NAME} is not currently running. Proceeding with cold backup."
 fi
 
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+TIMESTAMP="$(date +"%Y%m%d_%H%M%S")_$$"
 BACKUP_ARCHIVE="${BACKUP_DIR}/easynote_backup_${TIMESTAMP}.tar.gz"
 CHECKSUM_FILE="${BACKUP_ARCHIVE}.sha256"
 
@@ -87,9 +95,9 @@ tar -czf "${BACKUP_ARCHIVE}" -C "${DATA_DIR}" state
 
 echo "[backup] Calculating SHA-256 checksum..."
 if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "${BACKUP_ARCHIVE}" > "${CHECKSUM_FILE}"
+  (cd "$BACKUP_DIR" && sha256sum "${BACKUP_ARCHIVE##*/}") > "${CHECKSUM_FILE}"
 else
-  shasum -a 256 "${BACKUP_ARCHIVE}" > "${CHECKSUM_FILE}"
+  (cd "$BACKUP_DIR" && shasum -a 256 "${BACKUP_ARCHIVE##*/}") > "${CHECKSUM_FILE}"
 fi
 
 ARCHIVE_SIZE=$(ls -lh "${BACKUP_ARCHIVE}" | awk '{print $5}')
@@ -113,7 +121,8 @@ if [[ "${WAS_RUNNING}" -eq 1 ]]; then
   if [[ "${READY}" -eq 1 ]]; then
     echo "[backup] Container is healthy and accepting traffic."
   else
-    echo "[backup] Warning: Container started, health status: ${HEALTH_STATUS} (will verify in background)."
+    echo "[backup] Container did not become healthy: ${HEALTH_STATUS}" >&2
+    exit 1
   fi
 fi
 

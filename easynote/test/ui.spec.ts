@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { createServer, type ServerResponse } from 'node:http';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { testToken, testCsrf, testPassword, testUserId } from './runtime';
 
@@ -32,7 +33,7 @@ async function disableOfflineLibrary(page: Page) {
   await offline.click();
   await refreshed;
   await expect(offline).toHaveAttribute('aria-checked', 'false');
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
 }
 async function openMobileNavigation(page: Page) {
   await page.getByRole('button', { name: '打开导航菜单', exact: true }).click();
@@ -141,6 +142,8 @@ test('nested folders create notes, move notes, and keep notes on deletion', asyn
   await parentRow.locator('.folder-tree-select').click();
   const folderOverview = page.locator('.folder-overview');
   await expect(folderOverview).toBeVisible();
+  await expect(parentRow.locator('.folder-tree-select')).toHaveAttribute('aria-expanded', 'false');
+  await parentRow.getByRole('button', { name: '展开文件夹', exact: true }).click();
   const overviewCreateChild = folderOverview.getByRole('button', { name: '新建子文件夹' });
   await expect(overviewCreateChild).toBeVisible();
   await overviewCreateChild.click();
@@ -213,7 +216,7 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await expect(folderMenu).toBeHidden();
   await expect(sourceRow.getByLabel('文件夹操作')).toBeFocused();
   await sourceRow.getByLabel('文件夹操作').click();
-  await expect(folderMenu.getByRole('menuitem')).toHaveText(['新建文件夹', '新建文件', '上传文件', '移动文件夹', '分享文件夹', '下载 ZIP', '复制路径', '复制 ID', '删除文件夹', '合并文件到...']);
+  await expect(folderMenu.getByRole('menuitem')).toHaveText(['编辑名称与描述', '新建文件夹', '新建文件', '上传文件', '移动文件夹', '分享文件夹', '下载 ZIP', '复制路径', '复制 ID', '删除文件夹', '合并文件到...']);
   await expect(folderMenu.getByRole('menuitem', { name: '重命名文件夹' })).toHaveCount(0);
   const [menuBox, menuTriggerBox] = await Promise.all([folderMenu.boundingBox(), sourceRow.getByLabel('文件夹操作').boundingBox()]);
   expect(menuBox).not.toBeNull();
@@ -246,6 +249,8 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await expect(page.locator('.explorer-note-item').filter({ hasText: rootTitle })).toHaveCount(0);
   const childRow = page.locator('.folder-tree-row').filter({ hasText: child }).first();
   await expect(childRow).toBeVisible();
+  await page.mouse.move(700, 200);
+  await expect.poll(async () => (await page.locator('#navigation-rail').boundingBox())!.width).toBeCloseTo(52, 0);
   await childRow.locator('.folder-tree-select').click();
   await expect(page.locator('.explorer-header h1')).toHaveText(target);
   await expect(page.locator('.folder-tree-row').filter({ hasText: target }).first()).toBeVisible();
@@ -388,13 +393,13 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await emptyRow.getByRole('button', { name: '展开文件夹' }).click();
   const emptyLabel = page.locator('.explorer-empty-label').filter({ hasText: '暂无笔记' });
   await expect(emptyLabel).toBeVisible();
-  const [emptyBox, fileNameBox] = await Promise.all([
-    emptyLabel.boundingBox(),
-    page.locator('.explorer-note-item').filter({ hasText: title }).first().locator('.explorer-note-copy').boundingBox(),
-  ]);
-  expect(emptyBox).not.toBeNull();
-  expect(fileNameBox).not.toBeNull();
-  expect(Math.abs(emptyBox!.x - fileNameBox!.x)).toBeLessThanOrEqual(1);
+  await expect.poll(async () => {
+    const [emptyBox, fileNameBox] = await Promise.all([
+      emptyLabel.boundingBox(),
+      page.locator('.explorer-note-item').filter({ hasText: title }).first().locator('.explorer-note-copy').boundingBox(),
+    ]);
+    return emptyBox && fileNameBox ? Math.abs(emptyBox.x - fileNameBox.x) : Infinity;
+  }).toBeLessThanOrEqual(1);
   await page.locator('.notebook-explorer').screenshot({ path: 'test-results/folder-tree-alignment.png' });
 
   await page.setViewportSize({ width: 1900, height: 1080 });
@@ -517,22 +522,156 @@ test('move actions move notes and folders to target destinations', async ({ page
   await expect(page.getByRole('status')).toContainText(`已移动到文件夹“${folderBName}”`);
 });
 
-test('light background variants persist independently from dark appearance', async ({ page }) => {
+test('knowledge background is the default and variants persist independently from dark appearance', async ({ page }) => {
   await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'knowledge');
   await page.locator('.account').click();
-  const background = page.getByRole('combobox', { name: '浅色背景' });
+  const background = page.getByRole('combobox', { name: '知识库背景' });
   await background.selectOption('white');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'white');
   await background.selectOption('warm');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'warm');
+  await background.selectOption('knowledge');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'knowledge');
+  await page.getByRole('button', { name: '返回笔记' }).click();
+  await expect(page.locator('.navigation-rail')).toHaveCSS('background-image', 'none');
+  await expect(page.locator('.navigation-rail')).toHaveCSS('background-color', 'rgb(238, 237, 231)');
+  await expect(page.locator('.notebook-explorer')).toHaveCSS('background-color', 'rgb(238, 237, 231)');
+  await expect(page.locator('.navigation-search')).toHaveCSS('background-color', 'rgb(233, 232, 225)');
+  await expect(page.locator('.workspace')).toHaveCSS('background-color', 'rgb(251, 250, 247)');
+  await expect(page.locator('.workspace')).toHaveCSS('border-radius', '0px');
+  await expect(page.locator('.workspace')).toHaveCSS('box-shadow', 'none');
+  await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute('content', '#fbfaf7');
+  await expect.poll(() => page.locator('html').evaluate((element) =>
+    getComputedStyle(element).getPropertyValue('--paper').trim(),
+  )).toBe('#fbfaf7');
   await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'knowledge');
+});
+
+test('standalone settings supports history, direct links and preserves the open document and forms', async ({ page }) => {
+  await page.goto('/');
+  const title = `设置返回-${randomUUID().slice(0, 6)}`;
+  const content = ['切换设置后保留正文', ...Array.from({ length: 60 }, (_, index) => `段落 ${index}，验证页面返回时的阅读位置。`)].join('\n\n');
+  await newNote(page, title, content);
+  await page.locator('.document-scroll').evaluate((element) => { element.scrollTop = 240; });
+  const scrollTop = await page.locator('.document-scroll').evaluate((element) => element.scrollTop);
+  let tokenRequests = 0;
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/api/integrations/tokens') tokenRequests++;
+  });
+  await page.locator('.account').click();
+  await expect(page).toHaveURL('/settings/general');
+  await expect(page.getByRole('main')).toHaveCount(1);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '通用', exact: true })).toBeFocused();
+  expect(tokenRequests).toBe(0);
+  await page.screenshot({ path: 'test-results/settings-general-desktop.png', animations: 'disabled' });
+
+  const navigation = page.getByRole('navigation', { name: '设置分类' });
+  await navigation.getByRole('link', { name: '账户安全', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect(page).toHaveURL('/settings/security');
+  await page.getByLabel('新密码', { exact: true }).fill('settings-form-test');
+  await navigation.getByRole('link', { name: '通用', exact: true }).click();
+  await navigation.getByRole('link', { name: '账户安全', exact: true }).click();
+  await expect(page.getByLabel('新密码', { exact: true })).toHaveValue('settings-form-test');
+
+  await page.goBack();
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText('切换设置后保留正文');
+  await expect(page.locator('.account')).toBeFocused();
+  await expect.poll(() => page.locator('.document-scroll').evaluate((element) => element.scrollTop)).toBe(scrollTop);
+  await page.goForward();
+  await expect(page).toHaveURL('/settings/security');
+  await expect(page.getByRole('heading', { name: '账户安全', exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: '账户安全', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '返回笔记' }).click();
+  await expect(page).toHaveURL('/');
+  await page.goto('/settings/data');
+  await expect(page.getByRole('button', { name: '导出 ZIP' })).toBeVisible();
+  const fileChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '导入文件', exact: true }).click();
+  await (await fileChooser).setFiles([]);
+  const folderChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '导入目录', exact: true }).click();
+  expect(await (await folderChooser).element().getAttribute('webkitdirectory')).toBe('');
+  await page.getByRole('button', { name: '返回笔记' }).click();
+  await expect(page).toHaveURL('/');
+});
+
+test('settings sections fit narrow screens in both languages and respect reduced motion', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto('/settings/general');
+  await expect(page.locator('.settings-page')).toHaveCSS('animation-name', 'none');
+  await page.getByRole('switch', { name: '深色外观' }).click();
+  await page.getByRole('combobox', { name: '知识库背景' }).selectOption('warm');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.screenshot({ path: 'test-results/settings-general-dark.png', animations: 'disabled' });
+  await page.getByRole('switch', { name: '深色外观' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'warm');
+
+  for (const language of ['zh', 'en']) {
+    await page.evaluate((value) => localStorage.setItem('easynote-language', value), language);
+    await page.reload();
+    for (const width of [320, 390]) {
+      await page.setViewportSize({ width, height: 740 });
+      const links = page.locator('.settings-sidebar a');
+      for (let index = 0; index < await links.count(); index++) {
+        const alreadyActive = await links.nth(index).getAttribute('aria-current') === 'page';
+        await links.nth(index).click();
+        await expect(links.nth(index)).toHaveAttribute('aria-current', 'page');
+        if (alreadyActive) await expect(links.nth(index)).toBeFocused();
+        else await expect(page.locator('.settings-heading h2')).toBeFocused();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        expect(await page.locator('.settings-scroll').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      }
+      await links.first().click();
+      await page.screenshot({ path: `test-results/settings-${language}-${width}.png`, animations: 'disabled' });
+    }
+  }
+});
+
+test('settings displays request errors and offline restrictions inside the page', async ({ page, context }) => {
+  await page.route('**/api/integrations/tokens', (route) => route.fulfill({
+    status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Settings test unavailable' }),
+  }));
+  await page.goto('/settings/ai');
+  await expect(page.getByRole('alert')).toContainText('操作未完成');
+  await expect(page.locator('.settings-feedback [role="alert"]')).toBeVisible();
+  await page.getByRole('button', { name: '关闭错误' }).click();
+  await expect(page.getByRole('alert')).toBeHidden();
+  await page.getByRole('link', { name: '通用', exact: true }).click();
+  await context.setOffline(true);
+  await expect(page.locator('.settings-offline')).toBeVisible();
+  await expect(page.getByRole('switch', { name: '离线笔记库' })).toBeDisabled();
+  await expect(page.getByRole('switch', { name: '深色外观' })).toBeEnabled();
+  await page.getByRole('link', { name: '导入与备份', exact: true }).click();
+  await expect(page.getByRole('button', { name: '导出 ZIP' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '导入文件' })).toBeDisabled();
+  await context.setOffline(false);
+  await expect(page.getByRole('button', { name: '导出 ZIP' })).toBeEnabled();
+});
+
+test('settings redirects admin-only links for ordinary accounts', async ({ page }) => {
+  const username = `settings-${randomUUID().slice(0, 8)}`;
+  expect((await page.request.post('/api/admin/users', {
+    headers, data: { username, password: testPassword, role: 'user' },
+  })).status()).toBe(201);
+  expect((await page.request.post('/api/login', { headers, data: { username, password: testPassword } })).status()).toBe(200);
+  await page.goto('/settings/users');
+  await expect(page).toHaveURL('/settings/general');
+  await expect(page.getByRole('link', { name: '用户与注册' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '通用', exact: true })).toBeVisible();
 });
 
 test('switches to English without mobile horizontal overflow', async ({ page }) => {
   await page.goto('/');
   await page.locator('.account').click();
   await page.getByRole('combobox', { name: '语言' }).selectOption('en');
+  await page.getByRole('button', { name: 'Back to notes' }).click();
   await page.setViewportSize({ width: 320, height: 740 });
   await expect(page.getByRole('button', { name: 'Open navigation menu' })).toBeVisible();
   await page.getByRole('button', { name: 'Open navigation menu' }).click();
@@ -695,7 +834,7 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await page.goto('/');
   const manifestLink = page.locator('link[rel="manifest"]');
   await expect(manifestLink).toHaveAttribute('href', '/manifest.webmanifest');
-  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/apple-touch-icon.png');
+  await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('href', '/easynote-knowledge-apple.png');
   await expect(page.locator('link[rel="apple-touch-icon"]')).toHaveAttribute('sizes', '180x180');
   const manifestResponse = await page.request.get('/manifest.webmanifest');
   expect(manifestResponse.status()).toBe(200);
@@ -707,14 +846,21 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   });
   expect(manifest).not.toHaveProperty('share_target');
   expect(manifest.icons).toEqual(expect.arrayContaining([
-    expect.objectContaining({ sizes: '192x192', type: 'image/png', purpose: 'any' }),
-    expect.objectContaining({ sizes: '512x512', type: 'image/png', purpose: 'any' }),
-    expect.objectContaining({ sizes: '512x512', purpose: 'maskable' }),
+    expect.objectContaining({ src: '/easynote-knowledge-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' }),
+    expect.objectContaining({ src: '/easynote-knowledge-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' }),
+    expect.objectContaining({ src: '/easynote-knowledge-maskable.png', sizes: '512x512', purpose: 'maskable' }),
   ]));
-  for (const path of ['/pwa-192x192.png', '/pwa-512x512.png', '/pwa-maskable-512x512.png', '/apple-touch-icon.png']) {
+  for (const [path, size] of [
+    ['/easynote-knowledge-192.png', 192], ['/easynote-knowledge-512.png', 512],
+    ['/easynote-knowledge-maskable.png', 512], ['/easynote-knowledge-apple.png', 180],
+  ] as const) {
     const icon = await page.request.get(path);
     expect(icon.status()).toBe(200);
     expect(icon.headers()['content-type']).toContain('image/png');
+    const bytes = await icon.body();
+    const png = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    expect(png.getUint32(16)).toBe(size);
+    expect(png.getUint32(20)).toBe(size);
   }
   const worker = await page.request.get('/sw.js');
   expect(worker.status()).toBe(200);
@@ -730,7 +876,10 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
     return urls;
   });
   expect(cachedUrls.some((url) => new URL(url).pathname === '/index.html')).toBe(true);
+  expect(cachedUrls.some((url) => new URL(url).pathname === '/easynote-knowledge.svg')).toBe(true);
   expect(cachedUrls.some((url) => new URL(url).pathname.startsWith('/api/'))).toBe(false);
+  await expect.poll(() => page.locator('.navigation-brand .brand-icon').evaluate((image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0)).toBe(true);
+  await page.screenshot({ path: 'test-results/knowledge-icon-desktop.png' });
 
   await page.evaluate(() => {
     const state = window as typeof window & { installPrompted?: boolean };
@@ -746,11 +895,13 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await page.getByRole('button', { name: '安装 EasyNote' }).click();
   expect(await page.evaluate(() => (window as typeof window & { installPrompted?: boolean }).installPrompted)).toBe(true);
   await expect(page.getByRole('button', { name: '安装 EasyNote' })).toBeHidden();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.locator('.app-shell')).toBeVisible();
+  await expect(page.locator('.navigation-brand .brand-icon')).toHaveAttribute('src', '/easynote-knowledge.svg');
+  await expect.poll(() => page.locator('.navigation-brand .brand-icon').evaluate((image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0)).toBe(true);
   await context.setOffline(false);
 });
 
@@ -761,7 +912,7 @@ test('offline library is enabled by default and an explicit opt-out persists', a
   await expect(offline).toHaveAttribute('aria-checked', 'true');
   await offline.click();
   await expect(offline).toHaveAttribute('aria-checked', 'false');
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
 
   await page.reload();
   await page.locator('.account').click();
@@ -926,9 +1077,10 @@ test('an external PWA launch restores the session through the same-origin bootst
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeHidden();
 });
 
-test('AI integration tokens can be created once, listed and revoked', async ({ page }) => {
+test('AI integration tokens can be created once, listed and revoked', async ({ page, context }) => {
   await page.goto('/');
   await page.locator('.account').click();
+  await page.getByRole('link', { name: 'AI 接入', exact: true }).click();
   await page.getByLabel('名称').fill('桌面 AI');
   await page.getByLabel('有效期').selectOption('permanent');
   await page.getByRole('button', { name: '创建令牌' }).click();
@@ -936,6 +1088,14 @@ test('AI integration tokens can be created once, listed and revoked', async ({ p
   await expect(page.locator('.token-secret code').first()).toHaveText(/^enai_[a-f0-9]{64}$/);
   await expect(page.getByText('桌面 AI', { exact: true })).toBeVisible();
   await expect(page.getByText('读取和写入 · 永久有效', { exact: true })).toBeVisible();
+  const secret = await page.locator('.token-secret code').first().textContent();
+  await context.setOffline(true);
+  await expect(page.locator('.settings-offline')).toBeVisible();
+  await expect(page.locator('.token-secret code').first()).toHaveText(secret!);
+  await context.setOffline(false);
+  await page.getByRole('link', { name: '通用', exact: true }).click();
+  await page.getByRole('link', { name: 'AI 接入', exact: true }).click();
+  await expect(page.locator('.token-secret code').first()).toHaveText(secret!);
   await page.screenshot({ path: 'test-results/desktop-ai-access.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -949,8 +1109,8 @@ test('administrator user management creates and removes an isolated tenant', asy
   const username = `ui-user-${randomUUID().slice(0, 7)}`;
   await page.goto('/');
   await page.locator('.account').click();
-  await page.getByRole('button', { name: '管理用户', exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  await page.getByRole('link', { name: '用户与注册', exact: true }).click();
+  const dialog = page.getByRole('region', { name: '用户与注册', exact: true });
   await expect(dialog.getByText('tester（当前）', { exact: true })).toBeVisible();
   await dialog.getByLabel('新用户用户名').fill(username);
   await dialog.getByLabel('新用户密码').fill('UI-Managed-Password-482!');
@@ -964,11 +1124,15 @@ test('administrator user management creates and removes an isolated tenant', asy
 test('create, autosave, reload, edit Markdown and preview safely', async ({ page }) => {
   const title = `读书记录-${randomUUID().slice(0, 8)}`;
   await page.goto('/');
-  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/easynote-icon.svg');
-  const icon = await page.request.get('/easynote-icon.svg');
+  await expect(page.locator('link[rel="icon"]')).toHaveAttribute('href', '/easynote-knowledge.svg');
+  await expect(page.locator('.navigation-brand .brand-icon')).toHaveAttribute('src', '/easynote-knowledge.svg');
+  const icon = await page.request.get('/easynote-knowledge.svg');
   expect(icon.status()).toBe(200);
   expect(icon.headers()['content-type']).toContain('image/svg+xml');
-  expect(await icon.text()).toContain('fill="#0071e3"');
+  const svg = await icon.text();
+  expect(svg).toContain('fill="#08112e"');
+  expect(svg).toContain('fill="#258cff"');
+  expect(svg.match(/<circle\b/g)).toHaveLength(5);
   await newNote(page, title, '# 本周阅读\n\n记录一些值得留下的想法。\n\n- 保持简单\n- 定期整理\n\n<script>alert(1)</script>');
   const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(title)}`)).json();
   const automaticHistory = await (await page.request.get(`/api/notes/${listed.notes[0].id}/versions`)).json();
@@ -1421,8 +1585,20 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
   );
   expect(scrollMetrics.every(({ clientWidth, scrollWidth, svgWidth, viewBoxWidth }) =>
     scrollWidth >= clientWidth
-    && Math.abs(svgWidth - Math.ceil(viewBoxWidth)) <= 1
+    && svgWidth > 0
+    && viewBoxWidth > 0
   )).toBe(true);
+  const firstChart = page.locator('.mermaid-diagram').first();
+  const chartSvg = firstChart.locator('svg');
+  const initialChartWidth = (await chartSvg.boundingBox())!.width;
+  await expect(firstChart.getByRole('group', { name: '图表操作' })).toBeVisible();
+  await expect(firstChart.getByRole('button', { name: '缩小图表' })).toBeVisible();
+  await expect(firstChart.getByRole('button', { name: '自适应图表' })).toBeVisible();
+  await firstChart.getByRole('button', { name: '放大图表' }).click();
+  expect((await chartSvg.boundingBox())!.width).toBeGreaterThan(initialChartWidth);
+  await firstChart.getByRole('button', { name: '自适应图表' }).click();
+  const chartClientWidth = await firstChart.evaluate((element) => element.clientWidth + 1);
+  expect((await chartSvg.boundingBox())!.width).toBeLessThanOrEqual(chartClientWidth);
   const mindmapRootAlignment = await diagrams.nth(1).evaluate((svg) => {
     const rootNode = svg.querySelector<SVGGElement>('.mindmap-node.section-root');
     const label = rootNode?.querySelector<SVGGraphicsElement>('text');
@@ -1488,7 +1664,7 @@ test('Mermaid flowcharts, mindmaps and sanitized HTML blocks render safely', asy
   await page.screenshot({ path: 'test-results/desktop-diagrams-html.png', fullPage: true });
   await page.locator('.account').click();
   await page.getByRole('switch', { name: '深色外观' }).click();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(page.locator('.mermaid-diagram svg')).toHaveCount(4, { timeout: 15000 });
   await page.screenshot({ path: 'test-results/desktop-diagrams-dark.png', fullPage: true });
@@ -1531,7 +1707,7 @@ test('Mermaid ELK keeps cyclic diagrams readable across themes, mobile and publi
 
   await page.locator('.account').click();
   await page.getByRole('switch', { name: '深色外观' }).click();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
   await expect(diagram.locator('svg')).not.toHaveAttribute('id', lightSvg!);
   await expect.poll(() => node.evaluate((element) => getComputedStyle(element).fill)).not.toBe(lightFill);
   await expect(diagram.locator('svg .node')).toHaveCount(8);
@@ -1800,6 +1976,7 @@ test('images render, export includes bytes, and import creates a readable copy',
     return result.notes.some((note: { title: string }) => note.title === title);
   }).toBe(true);
   await page.locator('.account').click();
+  await page.getByRole('link', { name: '导入与备份', exact: true }).click();
   await page.getByText('查看导入格式示例', { exact: true }).click();
   await expect(page.getByText('请选择 EasyNote 导出的完整 ZIP，不要解压后逐个选择笔记文件。', { exact: true })).toBeVisible();
   await expect(page.locator('.import-guide pre').first()).toContainText('示例笔记.md');
@@ -2528,7 +2705,7 @@ test('dark theme persists and the narrow mobile layout has no horizontal overflo
   await navigation.getByRole('button', { name: '设置', exact: true }).click();
   await page.getByRole('switch', { name: '深色外观' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
   await newNote(page, '窄屏排版', '深色主题下的笔记');
   await page.screenshot({ path: 'test-results/mobile-dark.png', fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -2553,7 +2730,9 @@ test('command palette, cursor-position image insertion and private attachments w
     return (await (await page.request.get(`/api/notes/${listed.notes[0].id}`)).json()).note.content;
   }).toMatch(/开头\n!\[光标图片\.png\]\(\/api\/images\/[0-9a-f-]{36}\)\n\n结尾/);
 
-  await page.locator('input[type=file][accept*="application/pdf"]').setInputFiles({
+  const attachmentChooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: '插入附件', exact: true }).click();
+  await (await attachmentChooser).setFiles({
     name: '资料.pdf',
     mimeType: 'application/pdf',
     buffer: Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF'),
@@ -2611,7 +2790,7 @@ test('editing shortcuts and keyboard navigation work without pointer input', asy
   await expect(palette.getByRole('button', { name: '打开设置' })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
-  await page.getByRole('button', { name: '关闭' }).click();
+  await page.getByRole('button', { name: '返回笔记' }).click();
 
   await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
   await page.getByRole('textbox', { name: '笔记标题' }).fill(`第二篇-${randomUUID().slice(0, 6)}`);
@@ -2846,12 +3025,15 @@ for (const width of [1440, 390, 320]) {
     ].join('\n\n');
     await page.goto('/');
     await newNote(page, `大纲阅读-${randomUUID().slice(0, 6)}`, content);
-    await page.setViewportSize({ width, height: 960 });
+    await page.setViewportSize({ width, height: width === 320 ? 740 : 960 });
     if (width < 640) {
       const actions = await openMobileNoteActions(page);
       await actions.getByRole('button', { name: '大纲与链接', exact: true }).click();
     } else await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
     const panel = page.getByRole('complementary', { name: '笔记导航' });
+    const paperColor = await page.locator('.document-scroll').evaluate((element) => getComputedStyle(element).backgroundColor);
+    await expect(panel).toHaveCSS('background-color', paperColor);
+    await expect(panel.locator(':scope > header')).toHaveCSS('background-color', paperColor);
     const nav = panel.getByRole('navigation', { name: '大纲', exact: true });
     const section = (name: string) => nav.getByRole('button', { name, exact: true });
     await expect(section('代码中的标题')).toHaveCount(0);
@@ -2935,7 +3117,7 @@ test('English outline keeps preview navigation aligned after embedded-document c
   await page.goto('/');
   await page.locator('[data-note-row]').filter({ hasText: title }).click();
   await page.getByRole('button', { name: 'Preview Mode', exact: true }).click();
-  await page.getByRole('button', { name: 'More Note Actions', exact: true }).click();
+  await page.locator('.workspace-toolbar').getByRole('button', { name: 'More Note Actions', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Outline & Links', exact: true }).click();
   const panel = page.getByRole('complementary', { name: 'Note Navigation' });
   const nav = panel.getByRole('navigation', { name: 'Outline', exact: true });
@@ -2975,7 +3157,8 @@ test('outline, stable internal links and backlinks navigate between notes', asyn
   await page.getByRole('button', { name: '插入内部链接' }).click();
   const picker = page.getByRole('dialog');
   await picker.getByLabel('搜索链接目标').fill(targetTitle);
-  await picker.getByRole('button', { name: targetTitle, exact: true }).click();
+  await picker.getByRole('checkbox', { name: targetTitle, exact: true }).check();
+  await picker.getByRole('button', { name: '插入所选链接' }).click();
   await expect(page.locator('.cm-live-link')).toHaveText(targetTitle);
   await expect(page.getByRole('textbox', { name: '笔记正文' })).not.toContainText('[[');
   await page.getByRole('group', { name: '编辑模式选择' }).getByRole('button', { name: 'MD 语法' }).click();
@@ -2983,9 +3166,197 @@ test('outline, stable internal links and backlinks navigate between notes', asyn
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: '预览模式' }).click();
   await page.getByRole('link', { name: targetTitle }).click();
+  const reference = page.getByRole('dialog', { name: '关联资料预览' });
+  await expect(reference.getByRole('heading', { name: targetTitle, exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(sourceTitle);
+  await reference.getByRole('button', { name: '在主区打开' }).click();
   await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(targetTitle);
+  await panel.getByRole('tab', { name: '反向链接', exact: true }).click();
   await expect(panel.getByRole('button', { name: sourceTitle, exact: true })).toBeVisible();
+  await page.getByRole('button', { name: `返回笔记“${sourceTitle}”` }).click();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(sourceTitle);
   await page.screenshot({ path: 'test-results/desktop-knowledge-navigation.png', fullPage: true });
+});
+
+test('multiple note links render as rows and nested previews preserve the source reading position', async ({ page }) => {
+  const marker = randomUUID().slice(0, 7);
+  const firstId = randomUUID(), secondId = randomUUID();
+  const firstTitle = `关联设计-${marker}`, secondTitle = `关联规范-${marker}`, sourceTitle = `关联来源-${marker}`;
+  for (const [id, title, content] of [[secondId, secondTitle, '## 规范内容\n\n保持阅读连续。'],
+    [firstId, firstTitle, `## 设计内容\n\n[[${secondId}|${secondTitle}]]`]]) {
+    expect((await page.request.post(`/api/notes/${id}`, { headers, data: {
+      title, content, tags: [], pinned: false, archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+  }
+  await page.goto('/');
+  await newNote(page, sourceTitle, Array.from({ length: 20 }, (_, index) => `## 章节 ${index + 1}\n\n需要继续阅读的原始内容。`).join('\n\n'));
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const picker = page.getByRole('dialog');
+  await picker.getByLabel('搜索链接目标').fill(firstTitle);
+  await picker.getByRole('checkbox', { name: firstTitle, exact: true }).check();
+  await picker.getByLabel('搜索链接目标').fill(secondTitle);
+  await picker.getByRole('checkbox', { name: secondTitle, exact: true }).check();
+  await expect(picker.getByText('已选择 2 项', { exact: true })).toBeVisible();
+  await picker.getByRole('button', { name: '插入所选链接' }).click();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const rows = page.locator('.document-scroll .note-reference-list');
+  await expect(rows.getByRole('link')).toHaveCount(2);
+  const sourceLink = rows.getByRole('link', { name: firstTitle, exact: true });
+  await sourceLink.scrollIntoViewIfNeeded();
+  const position = await page.locator('.document-scroll').evaluate((element) => element.scrollTop);
+  await sourceLink.click();
+  const preview = page.locator('.reference-preview');
+  await expect(preview.getByRole('heading', { name: firstTitle, exact: true })).toBeVisible();
+  await preview.getByRole('link', { name: secondTitle, exact: true }).click();
+  await expect(preview.getByRole('heading', { name: secondTitle, exact: true })).toBeVisible();
+  await preview.getByRole('button', { name: '关闭当前引用' }).click();
+  await expect(preview.getByRole('heading', { name: firstTitle, exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/linked-note-side-preview.png', fullPage: true });
+  await page.keyboard.press('Escape');
+  await expect(preview).toHaveCount(0);
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(sourceTitle);
+  await expect.poll(() => page.locator('.document-scroll').evaluate((element) => element.scrollTop)).toBe(position);
+  await expect(sourceLink).toBeFocused();
+  await page.context().setOffline(true);
+  await sourceLink.click();
+  await expect(preview.getByRole('heading', { name: firstTitle, exact: true })).toBeVisible();
+  await preview.getByRole('button', { name: '关闭当前引用' }).click();
+  await page.context().setOffline(false);
+});
+
+test('linked text files open in a side preview and mobile previews return to the original note', async ({ page }) => {
+  const marker = randomUUID().slice(0, 7), fileId = randomUUID();
+  const filename = `关联资料-${marker}.txt`, title = `文件来源-${marker}`;
+  expect((await page.request.put(`/api/files/${fileId}`, { headers: { ...headers, 'Content-Type': 'text/plain', 'X-Filename': encodeURIComponent(filename) },
+    data: '附件阅读内容\n关闭后继续阅读原笔记。' })).status()).toBe(201);
+  await page.goto('/');
+  await newNote(page, title, '## 原始章节\n\n保留这一段原始内容。');
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const picker = page.getByRole('dialog');
+  await picker.getByLabel('搜索链接目标').fill(filename);
+  await picker.getByRole('checkbox', { name: filename, exact: true }).check();
+  await picker.getByRole('button', { name: '插入所选链接' }).click();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const fileLink = page.getByRole('link', { name: filename, exact: true });
+  await fileLink.click();
+  const preview = page.locator('.reference-preview');
+  await expect(preview.getByText('附件阅读内容', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
+  await preview.getByRole('button', { name: '全屏显示引用', exact: true }).click();
+  await expect(preview).toHaveClass(/reference-fullscreen/);
+  await expect(preview.getByText('附件阅读内容', { exact: true })).toBeVisible();
+  await preview.getByRole('button', { name: '退出引用全屏', exact: true }).click();
+  await expect(preview).not.toHaveClass(/reference-fullscreen/);
+  await preview.getByRole('button', { name: '关闭当前引用' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await fileLink.click();
+  await expect(preview.getByRole('button', { name: '关闭当前引用', exact: true })).toBeVisible();
+  await expect(preview.getByText('附件阅读内容', { exact: true })).toBeVisible();
+  expect(await preview.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/linked-file-mobile-preview.png', fullPage: true });
+  await preview.getByRole('button', { name: '关闭当前引用', exact: true }).click();
+  await expect(preview).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: '原始章节' })).toBeVisible();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await fileLink.click();
+  expect(await preview.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await preview.getByRole('button', { name: '关闭当前引用', exact: true }).click();
+});
+
+for (const offlineLibrary of [true, false]) {
+  test(`backlinks update for archived sources outside the visible list with offline library ${offlineLibrary}`, async ({ page }) => {
+    const marker = randomUUID().slice(0, 7), sourceId = randomUUID();
+    const targetTitle = `实时目标-${marker}`, sourceTitle = `归档来源-${marker}`;
+    await page.goto('/');
+    await newNote(page, targetTitle, '## 当前阅读\n\n目标正文保持原值。');
+    if (!offlineLibrary) await disableOfflineLibrary(page);
+    const listed = await (await page.request.get(`/api/notes?q=${encodeURIComponent(targetTitle)}`)).json() as { notes: Array<{ id: string; revision: number }> };
+    const target = listed.notes[0];
+    await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
+    const panel = page.getByRole('complementary', { name: '笔记导航' });
+    await panel.getByRole('tab', { name: '反向链接', exact: true }).click();
+    const incoming = panel.getByRole('region', { name: '反向链接', exact: true });
+    await expect(incoming.getByText('没有反向链接', { exact: true })).toBeVisible();
+    const source = { title: sourceTitle, content: `[[${target.id}|${targetTitle}]]`, tags: [], pinned: false,
+      archived: true, deletedAt: null, revision: 0, operationId: randomUUID() };
+    expect((await page.request.post(`/api/notes/${sourceId}`, { headers, data: source })).status()).toBe(201);
+    await expect(incoming.getByRole('button', { name: sourceTitle, exact: true })).toBeVisible();
+    const unchanged = await (await page.request.get(`/api/notes/${target.id}`)).json() as { note: { revision: number } };
+    expect(unchanged.note.revision).toBe(target.revision);
+    expect((await page.request.put(`/api/notes/${sourceId}`, { headers, data: { ...source, archived: false, deletedAt: Date.now(), revision: 1, operationId: randomUUID() } })).status()).toBe(200);
+    await expect(incoming.getByRole('button', { name: sourceTitle, exact: true })).toHaveCount(0);
+    await expect(incoming.getByText('没有反向链接', { exact: true })).toBeVisible();
+  });
+}
+
+test('unavailable references show a recoverable error while preserving the source note', async ({ page }) => {
+  const id = randomUUID(), title = `失效引用-${randomUUID().slice(0, 7)}`;
+  await page.goto('/');
+  await newNote(page, title, `## 当前章节\n\n[[${id}|待恢复资料]]`);
+  await page.getByRole('button', { name: '预览模式' }).click();
+  await page.getByRole('link', { name: '待恢复资料', exact: true }).click();
+  const preview = page.getByRole('dialog', { name: '关联资料预览' });
+  await expect(preview.getByRole('alert')).toContainText('链接目标已删除或当前账号无法访问。');
+  await expect(page.getByRole('textbox', { name: '笔记标题' })).toHaveValue(title);
+  await preview.getByRole('button', { name: '关闭当前引用' }).click();
+  await expect(page.getByRole('heading', { name: '当前章节', exact: true })).toBeVisible();
+  expect((await page.request.post(`/api/notes/${id}`, { headers, data: {
+    title: '已恢复资料', content: '恢复后可继续查阅。', tags: [], pinned: false, archived: false, deletedAt: null,
+    revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.getByRole('link', { name: '待恢复资料', exact: true }).click();
+  await expect(preview.getByRole('heading', { name: '已恢复资料', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+});
+
+test('link selection tolerates file search failures and the preview fits English dark mode at 320px', async ({ page }) => {
+  const id = randomUUID(), marker = randomUUID().slice(0, 7), title = `Link target ${marker}`;
+  expect((await page.request.post(`/api/notes/${id}`, { headers, data: {
+    title, content: '## Reference details\n\nReadable in a narrow preview.', tags: [], pinned: false, archived: false, deletedAt: null,
+    revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.goto('/');
+  await newNote(page, `Link source ${marker}`, 'Source reading position.');
+  await page.route('**/api/files?*', (route) => route.fulfill({ status: 503, json: { error: { message: 'Temporary file lookup failure' } } }));
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const picker = page.getByRole('dialog');
+  await picker.getByLabel('搜索链接目标').fill(title);
+  await expect(picker.getByRole('alert')).toContainText('部分链接目标加载失败');
+  await picker.getByRole('checkbox', { name: title, exact: true }).check();
+  await picker.getByRole('button', { name: '插入所选链接' }).click();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await page.unroute('**/api/files?*');
+  await page.getByRole('button', { name: '预览模式' }).click();
+  const sourceId = (await (await page.request.get(`/api/notes?q=${encodeURIComponent(`Link source ${marker}`)}`)).json() as { notes: Array<{ id: string }> }).notes[0].id;
+  await page.evaluate(() => { localStorage.setItem('easynote-language', 'en'); localStorage.setItem('easynote-theme', 'dark'); });
+  await page.reload();
+  await page.locator('[data-note-row]').filter({ hasText: `Link source ${marker}` }).click();
+  await expect(page.getByRole('textbox', { name: 'Note Title' })).toHaveValue(`Link source ${marker}`);
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.getByRole('link', { name: title, exact: true }).click();
+  const preview = page.getByRole('dialog', { name: 'Reference preview' });
+  await expect(preview.getByRole('heading', { name: title, exact: true })).toBeVisible();
+  expect(await preview.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/linked-note-english-dark-320.png', fullPage: true });
+  await preview.getByRole('button', { name: 'Open in main pane' }).click();
+  await expect(page.getByRole('textbox', { name: 'Note Title' })).toHaveValue(title);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('button', { name: `Return to “Link source ${marker}”` }).click();
+  await expect(page.getByRole('textbox', { name: 'Note Title' })).toHaveValue(`Link source ${marker}`);
+  expect((await (await page.request.get(`/api/notes/${sourceId}`)).json() as { note: { content: string } }).note.content).toContain(id);
+  await page.locator('.mobile-note-menu-trigger').click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Insert Internal Link', exact: true }).click();
+  const mobilePicker = page.getByRole('dialog');
+  await mobilePicker.getByRole('textbox', { name: 'Search Link Target' }).fill(title);
+  await mobilePicker.getByRole('checkbox', { name: title, exact: true }).check();
+  expect(await mobilePicker.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const pickerBox = (await mobilePicker.boundingBox())!;
+  const insertBox = (await mobilePicker.getByRole('button', { name: 'Insert selected links' }).boundingBox())!;
+  expect(insertBox.x + insertBox.width).toBeLessThanOrEqual(pickerBox.x + pickerBox.width);
+  await page.screenshot({ path: 'test-results/link-picker-english-dark-320.png', fullPage: true });
+  await mobilePicker.getByRole('button', { name: 'Cancel', exact: true }).click();
 });
 
 test('offline library opens a cached note before remote revalidation finishes', async ({ page }) => {
@@ -3005,8 +3376,8 @@ test('offline library opens a cached note before remote revalidation finishes', 
   await page.goto('/');
   await page.locator('.account').click();
   await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.getByText(/已缓存 \d+ 篇笔记/)).toBeVisible();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
 
   let release!: () => void;
   const remoteResponse = new Promise<void>((resolve) => { release = resolve; });
@@ -3039,7 +3410,7 @@ test('full offline library supports cold start, full-text search and note readin
   await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
   await page.locator('.account').click();
   await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
+  await expect(page.getByText(/已缓存 \d+ 篇笔记/)).toBeVisible();
   await expect.poll(async () => page.evaluate(async () => {
     const urls: string[] = [];
     for (const name of await caches.keys()) {
@@ -3060,7 +3431,7 @@ test('full offline library supports cold start, full-text search and note readin
     regularFont: true,
     boldFont: true,
   });
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
 
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -3161,8 +3532,8 @@ test('a revoked offline session is removed as soon as the device reconnects', as
   await page.reload();
   await page.locator('.account').click();
   await expect(page.getByRole('switch', { name: '离线笔记库' })).toHaveAttribute('aria-checked', 'true');
-  await expect(page.getByText(/离线笔记库 · \d+ 篇/)).toBeVisible();
-  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(page.getByText(/已缓存 \d+ 篇笔记/)).toBeVisible();
+  await page.getByRole('button', { name: '返回笔记', exact: true }).click();
   await context.setOffline(true);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByText('仅保存在本机', { exact: true })).toBeVisible();
@@ -3191,7 +3562,7 @@ test('a revoked offline session is removed as soon as the device reconnects', as
 
 for (const width of [1440, 390]) {
   test(`descriptions persist and creation focuses the name at ${width}px`, async ({ page }) => {
-    await page.setViewportSize({ width, height: 960 });
+    await page.setViewportSize({ width, height: width === 320 ? 740 : 960 });
     const name = `描述目录-${randomUUID().slice(0, 8)}`;
     await page.goto('/');
     if (width <= 640) {
@@ -3313,10 +3684,13 @@ test('navigation search layout stays aligned with categories in short and tall w
   const rail = page.locator('#navigation-rail');
   const search = rail.getByRole('button', { name: '搜索笔记', exact: true });
   const allNotes = rail.getByRole('button', { name: '全部笔记', exact: true });
+  const wordmark = rail.locator('.brand-wordmark');
   for (const height of [960, 480]) {
     await page.setViewportSize({ width: 1440, height });
     await rail.locator('.navigation-brand').hover();
     await expect.poll(async () => (await rail.boundingBox())!.width).toBeCloseTo(248, 0);
+    await expect(wordmark).toHaveText('EasyNote');
+    await expect(wordmark.locator('span').last()).toHaveText('Note');
     const searchBox = (await search.boundingBox())!;
     const categoryBox = (await allNotes.boundingBox())!;
     expect(searchBox.height).toBe(40);
@@ -3343,10 +3717,14 @@ test('navigation search layout stays aligned with categories in short and tall w
 
 test('account security changes the password and logs out every device', async ({ page }) => {
   const newPassword = 'Changed-EasyNote-Password-842!';
+  const username = `security-${randomUUID().slice(0, 8)}`;
+  // Security actions must not revoke the shared fixture session used by subsequent tests.
+  expect((await page.request.post('/api/admin/users', { headers, data: { username, password: testPassword, role: 'user' } })).status()).toBe(201);
+  expect((await page.request.post('/api/login', { headers, data: { username, password: testPassword } })).status()).toBe(200);
   await page.goto('/');
   await page.locator('.account').click();
-  await page.getByRole('button', { name: '管理', exact: true }).click();
-  const dialog = page.getByRole('dialog');
+  await page.getByRole('link', { name: '账户安全', exact: true }).click();
+  const dialog = page.getByRole('region', { name: '账户安全', exact: true });
   await dialog.getByLabel('当前密码').nth(0).fill(testPassword);
   await dialog.getByLabel('新密码', { exact: true }).fill(newPassword);
   await dialog.getByLabel('确认新密码').fill(newPassword);
@@ -3355,7 +3733,7 @@ test('account security changes the password and logs out every device', async ({
   await dialog.getByLabel('当前密码').nth(1).fill(newPassword);
   await dialog.getByRole('button', { name: '登出所有设备' }).click();
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
-  await page.getByLabel('用户名').fill('tester');
+  await page.getByLabel('用户名').fill(username);
   await page.getByLabel('密码').fill(newPassword);
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
@@ -3535,7 +3913,8 @@ test('copies note markdown content from toolbar and command palette', async ({ p
   await expect(paletteCopyButton).toBeVisible();
   await paletteCopyButton.click();
 
-  await expect(page.locator('.toast')).toHaveText('已复制 Markdown 内容');
+  const noticeToast = page.locator('.toast:not(.toolbar-copy-toast)');
+  await expect(noticeToast).toHaveText('已复制 Markdown 内容');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(markdown);
 
   // 3. Mobile actions dialog
@@ -3545,7 +3924,7 @@ test('copies note markdown content from toolbar and command palette', async ({ p
   const mobileCopyButton = mobileDialog.getByRole('button', { name: '复制 Markdown 内容' });
   await expect(mobileCopyButton).toBeVisible();
   await mobileCopyButton.click();
-  await expect(page.locator('.toast')).toHaveText('已复制 Markdown 内容');
+  await expect(noticeToast).toHaveText('已复制 Markdown 内容');
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(markdown);
 });
 
@@ -4610,12 +4989,21 @@ test('folder ZIP downloads include paginated notes, descendants and attachments 
 
 
 
-test('file and folder names show their full title only when truncated', async ({ page }) => {
+test('file and folder names show responsive full-name tooltips only when truncated', async ({ page }) => {
   const suffix = randomUUID().slice(0, 6);
   const shortName = `短名-${suffix}`;
   const longFolder = `完整文件夹-${suffix}-` + '用于验证悬浮时显示全部文件夹名称'.repeat(3);
   const longNote = `完整笔记-${suffix}-` + '用于验证悬浮时显示全部笔记标题'.repeat(4);
-  const resizableNote = '用于验证调整列表宽度后的文件名称';
+  const resizableNote = `调整列表宽度后的文件名称-${suffix}`;
+  for (let index = 0; index < 18; index++) {
+    expect((await page.request.post('/api/folders', { headers, data: {
+      id: randomUUID(), name: `AAA 滚动目录-${suffix}-${index}`, parentId: null,
+    } })).status()).toBe(201);
+    expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+      title: `滚动笔记-${suffix}-${index}`, content: '测试正文', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+  }
   for (const name of [shortName, longFolder]) {
     expect((await page.request.post('/api/folders', { headers, data: { id: randomUUID(), name, parentId: null } })).status()).toBe(201);
   }
@@ -4632,30 +5020,1175 @@ test('file and folder names show their full title only when truncated', async ({
   const longFile = page.locator('.explorer-note-item').filter({ hasText: longNote }).getByRole('button', { name: new RegExp(longNote) });
   const shortFolder = page.locator('.folder-tree-row').filter({ hasText: shortName }).locator('.folder-tree-select');
   const folder = page.locator('.folder-tree-row').filter({ hasText: longFolder }).locator('.folder-tree-select');
+  const tooltip = page.getByRole('tooltip');
   await longFile.hover();
-  await expect(longFile).toHaveAttribute('title', longNote);
+  await expect(tooltip).toHaveText(longNote, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  const [noteBox, noteLabelBox, noteTooltipBox] = await Promise.all([
+    longFile.boundingBox(), longFile.locator('[data-full-name-label]').boundingBox(), tooltip.boundingBox(),
+  ]);
+  expect(Math.abs(noteTooltipBox!.x - noteLabelBox!.x)).toBeLessThanOrEqual(1);
+  expect(noteTooltipBox!.y + noteTooltipBox!.height).toBeLessThanOrEqual(noteBox!.y - 3);
+  expect(noteTooltipBox!.width).toBeGreaterThan(480);
+  await longFile.locator('svg').hover();
+  await expect(tooltip).toHaveText(longNote);
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
   await shortFile.hover();
-  await expect(shortFile).not.toHaveAttribute('title');
+  await expect(tooltip).toBeHidden();
   await folder.hover();
-  await expect(folder).toHaveAttribute('title', longFolder);
+  await expect(tooltip).toHaveText(longFolder, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  const [folderBox, folderLabelBox, folderTooltipBox] = await Promise.all([
+    folder.locator('..').boundingBox(), folder.locator('[data-full-name-label]').boundingBox(), tooltip.boundingBox(),
+  ]);
+  expect(Math.abs(folderTooltipBox!.x - folderLabelBox!.x)).toBeLessThanOrEqual(1);
+  expect(folderTooltipBox!.y + folderTooltipBox!.height).toBeLessThanOrEqual(folderBox!.y - 3);
   await shortFolder.hover();
-  await expect(shortFolder).not.toHaveAttribute('title');
+  await expect(tooltip).toBeHidden();
+  const folderRow = folder.locator('..');
+  await folderRow.hover({ position: { x: 5, y: 20 } });
+  await expect(tooltip).toHaveText(longFolder, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  await page.mouse.move(700, 200);
+  await folder.focus();
+  await expect(tooltip).toHaveText(longFolder);
+  await expect(tooltip).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
   const changingFile = page.locator('.explorer-note-item').filter({ hasText: resizableNote }).getByRole('button', { name: new RegExp(resizableNote) });
   await changingFile.hover();
-  await expect(changingFile).toHaveAttribute('title', resizableNote);
+  await expect(tooltip).toHaveText(resizableNote, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
   const separator = page.getByRole('separator', { name: '调整笔记列表宽度' });
   await separator.focus();
   await page.keyboard.press('End');
   await expect(separator).toHaveAttribute('aria-valuenow', '440');
+  await expect(tooltip).toBeHidden();
   await page.mouse.move(700, 200);
   await changingFile.hover();
-  await expect(changingFile).not.toHaveAttribute('title');
+  await expect(tooltip).toBeHidden();
   const rail = page.locator('#navigation-rail');
   await rail.hover();
   await expect.poll(async () => (await rail.boundingBox())!.width).toBeCloseTo(248, 0);
   const railFolder = rail.locator('.folder-nav button').filter({ hasText: longFolder });
   await railFolder.hover();
-  await expect(railFolder).toHaveAttribute('title', longFolder);
+  await expect(tooltip).toHaveText(longFolder, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  const tooltipBox = (await tooltip.boundingBox())!;
+  expect(tooltipBox.x).toBeGreaterThanOrEqual(8);
+  expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(1440 - 8);
+  await page.mouse.move(700, 200);
+  await page.getByRole('textbox', { name: '搜索笔记', exact: true }).fill('完整笔记');
+  const searchFile = page.locator('.explorer-note-item').filter({ hasText: longNote }).locator('.note-row');
+  await searchFile.hover();
+  await expect(tooltip).toHaveText(longNote, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  await page.screenshot({ path: 'test-results/full-name-tooltip-search.png' });
 });
 
+test('full-name tooltips align above deeply nested folder and file labels', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6);
+  const parentId = randomUUID(), childId = randomUUID(), leafId = randomUUID();
+  const parentName = `工作-${marker}`, childName = `Agent 服务-${marker}`;
+  const leafName = `设计-${marker}-` + '完整文件夹名称'.repeat(6);
+  const title = `[设计] ${marker} 会话 Run 事件流与对账、认证委托与写操作审批及边界分析`;
+  for (const folder of [
+    { id: parentId, name: parentName, parentId: null },
+    { id: childId, name: childName, parentId },
+    { id: leafId, name: leafName, parentId: childId },
+  ]) expect((await page.request.post('/api/folders', { headers, data: folder })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+    title, content: '正文', folderId: leafId, tags: [], pinned: false, archived: false, deletedAt: null,
+    revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.goto('/');
+  for (const name of [parentName, childName, leafName]) {
+    await page.locator('.folder-tree-row').filter({ hasText: name }).locator('.folder-tree-select').click();
+  }
+  const tooltip = page.getByRole('tooltip');
+  const folder = page.locator('.folder-tree-row').filter({ hasText: leafName });
+  const file = page.locator('.explorer-note-item').filter({ hasText: title }).locator('.note-row');
+  for (const [row, name] of [[folder, leafName], [file, title]] as const) {
+    await row.hover();
+    await expect(tooltip).toHaveText(name, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    const [rowBox, labelBox, tooltipBox] = await Promise.all([
+      row.boundingBox(), row.locator('[data-full-name-label]').boundingBox(), tooltip.boundingBox(),
+    ]);
+    expect(Math.abs(tooltipBox!.x - labelBox!.x)).toBeLessThanOrEqual(1);
+    expect(tooltipBox!.y + tooltipBox!.height).toBeLessThanOrEqual(rowBox!.y - 3);
+    expect(tooltipBox!.x + tooltipBox!.width).toBeLessThanOrEqual(1432);
+    expect(tooltipBox!.height).toBeLessThanOrEqual(34);
+  }
+  await page.screenshot({ path: 'test-results/full-name-tooltip-nested-above.png' });
+});
 
+test('full-name tooltips work in folder overviews and modal link pickers', async ({ page }) => {
+  const folderId = randomUUID(), marker = randomUUID().slice(0, 6);
+  const folderName = `目录-${marker}-` + '完整文件夹名称'.repeat(12);
+  const title = `笔记-${marker}-` + '完整的长文件名称'.repeat(18);
+  expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+    title, content: '正文', folderId, tags: [], pinned: false, archived: false, deletedAt: null,
+    revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.goto('/');
+  await page.locator('.folder-tree-row').filter({ hasText: folderName }).locator('.folder-tree-select').click();
+  const tooltip = page.getByRole('tooltip');
+  await page.locator('.folder-overview-file').filter({ hasText: title }).hover();
+  await expect(tooltip).toHaveText(title, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  await newNote(page, `提示来源-${marker}`, '正文');
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const folder = dialog.locator('summary').filter({ hasText: folderName });
+  await folder.hover();
+  await expect(tooltip).toHaveText(folderName, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  await folder.click();
+  await dialog.locator('.link-picker-row').filter({ hasText: title }).hover();
+  await expect(tooltip).toHaveText(title, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+});
+
+test('full-name tooltips fit a narrow English dark viewport and dismiss on scroll', async ({ page }) => {
+  const title = `Full document name ${randomUUID().slice(0, 6)} ` + 'UnbrokenFilename'.repeat(10);
+  expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+    title, content: 'Content', tags: [], pinned: false, archived: false, deletedAt: null,
+    revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  await page.addInitScript(() => {
+    localStorage.setItem('easynote-language', 'en');
+    localStorage.setItem('easynote-theme', 'dark');
+  });
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto('/');
+  const row = page.locator('.explorer-note-item').filter({ hasText: title }).locator('.note-row');
+  const tooltip = page.getByRole('tooltip');
+  await row.hover();
+  await expect(tooltip).toHaveText(title, { timeout: 1000 });
+  await expect(tooltip).toBeVisible();
+  const box = (await tooltip.boundingBox())!;
+  expect(box.x).toBeGreaterThanOrEqual(8);
+  expect(box.x + box.width).toBeLessThanOrEqual(312);
+  expect(box.y).toBeGreaterThanOrEqual(8);
+  expect(box.y + box.height).toBeLessThanOrEqual(732);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/full-name-tooltip-english-dark-320.png' });
+  await page.locator('.explorer-scroll').dispatchEvent('scroll');
+  await expect(tooltip).toBeHidden();
+});
+
+for (const width of [1440, 390]) {
+  test(`folder name clicks toggle expanded state at ${width}px`, async ({ page }) => {
+    const marker = randomUUID().slice(0, 6);
+    const parentId = randomUUID(), childId = randomUUID();
+    const parentName = `点击目录-${marker}`, childName = `子目录-${marker}`, noteName = `目录笔记-${marker}`;
+    for (const folder of [{ id: parentId, name: parentName, parentId: null }, { id: childId, name: childName, parentId }]) {
+      expect((await page.request.post('/api/folders', { headers, data: folder })).status()).toBe(201);
+    }
+    expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+      title: noteName, content: '测试正文', folderId: childId, tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+    await page.setViewportSize({ width, height: width === 320 ? 740 : 960 });
+    await page.goto('/');
+    const parentRow = page.locator('.folder-tree-row').filter({ hasText: parentName });
+    const parent = parentRow.locator('.folder-tree-select');
+    const childRow = page.locator('.folder-tree-row').filter({ hasText: childName });
+    const child = childRow.locator('.folder-tree-select');
+    const note = page.locator('.explorer-note-item').filter({ hasText: noteName });
+    const returnToList = async () => {
+      if (width <= 640) await page.getByRole('button', { name: '返回笔记列表', exact: true }).click();
+    };
+    await expect(parent).toHaveAttribute('aria-expanded', 'false');
+    await parent.click();
+    await returnToList();
+    await expect(parent).toHaveAttribute('aria-expanded', 'true');
+    await expect(child).toBeVisible();
+    await child.click();
+    await returnToList();
+    await expect(child).toHaveAttribute('aria-expanded', 'true');
+    await expect(note).toBeVisible();
+    await child.click();
+    await returnToList();
+    await expect(child).toHaveAttribute('aria-expanded', 'false');
+    await expect(note).toBeHidden();
+    // The parent is already expanded, but a different folder is selected.
+    await parent.click();
+    await returnToList();
+    await expect(parent).toHaveAttribute('aria-expanded', 'false');
+    await expect(child).toBeHidden();
+    await parent.press('Enter');
+    await returnToList();
+    await expect(parent).toHaveAttribute('aria-expanded', 'true');
+    await expect(child).toBeVisible();
+    await parent.press('Space');
+    await returnToList();
+    await expect(parent).toHaveAttribute('aria-expanded', 'false');
+    await expect(child).toBeHidden();
+  });
+}
+
+
+
+for (const width of [1440, 390]) {
+  test(`ellipsis menus edit file and folder names and descriptions at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 320 ? 740 : 960 });
+    const folderId = randomUUID(), noteId = randomUUID(), marker = randomUUID().slice(0, 6);
+    const folderName = `菜单目录-${marker}`, noteName = `菜单文件-${marker}`;
+    expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+    expect((await page.request.post(`/api/notes/${noteId}`, { headers, data: {
+      title: noteName, content: '> 原始描述\n\n## 保留正文', folderId, tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+    if (width <= 640) {
+      for (let index = 0; index < 30; index++) {
+        expect((await page.request.post('/api/folders', { headers, data: { id: randomUUID(), name: `排版菜单-${marker}-${index}`, parentId: null } })).status()).toBe(201);
+      }
+      for (let index = 0; index < 52; index++) {
+        expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+          title: `滚动文件-${marker}-${index}`, content: '正文', tags: [], pinned: false, archived: false,
+          deletedAt: null, revision: 0, operationId: randomUUID(),
+        } })).status()).toBe(201);
+      }
+    }
+    await page.goto('/');
+    const folderRow = page.locator('.folder-tree-row').filter({ hasText: folderName }).first();
+    await folderRow.getByLabel('文件夹操作').click();
+    await folderRow.getByRole('menuitem', { name: '编辑名称与描述', exact: true }).click();
+    const folderDialog = page.getByRole('dialog');
+    await folderDialog.getByRole('textbox', { name: '文件夹名称', exact: true }).fill(`${folderName}-更新`);
+    await folderDialog.getByRole('textbox', { name: '文件夹描述', exact: true }).fill('目录用途已更新');
+    await folderDialog.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(folderDialog).toBeHidden();
+    await folderRow.getByRole('button', { name: '展开文件夹', exact: true }).click();
+    const row = page.locator('.explorer-note-item').filter({ hasText: noteName });
+    await row.getByLabel('更多笔记操作').click();
+    if (width <= 640) await page.getByRole('dialog').getByRole('button', { name: '编辑名称与描述' }).click();
+    else await page.getByRole('menu', { name: '笔记操作', exact: true }).getByRole('menuitem', { name: '编辑名称与描述' }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog.getByRole('textbox', { name: '笔记标题', exact: true })).toBeFocused();
+    await expect(dialog.getByRole('textbox', { name: '文件描述', exact: true })).toHaveValue('原始描述');
+    await dialog.getByRole('textbox', { name: '笔记标题', exact: true }).fill(`${noteName}-更新`);
+    await dialog.getByRole('textbox', { name: '文件描述', exact: true }).fill('更新后的文件用途');
+    await dialog.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+    const saved = await (await page.request.get(`/api/notes/${noteId}`)).json() as { note: { title: string; content: string } };
+    expect(saved.note).toMatchObject({ title: `${noteName}-更新`, content: '> 更新后的文件用途\n\n## 保留正文' });
+    const folders = await (await page.request.get('/api/folders')).json() as { folders: Array<{ id: string; name: string; description: string }> };
+    expect(folders.folders.find((folder) => folder.id === folderId)).toMatchObject({ name: `${folderName}-更新`, description: '目录用途已更新' });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/ellipsis-edit-${width}.png` });
+  });
+}
+
+for (const offlineLibrary of [true, false]) {
+  test(`internal link directories start folded and retain selections with offline library ${offlineLibrary}`, async ({ page }) => {
+    const parentId = randomUUID(), childId = randomUUID(), marker = randomUUID().slice(0, 6);
+    const parentName = `折叠目录-${marker}`, childName = `二级目录-${marker}`;
+    for (const folder of [{ id: parentId, name: parentName, parentId: null }, { id: childId, name: childName, parentId }]) {
+      expect((await page.request.post('/api/folders', { headers, data: folder })).status()).toBe(201);
+    }
+    const targetId = randomUUID(), targetName = `深层文件-${marker}`, archivedId = randomUUID();
+    for (const [id, title, archived, deletedAt] of [[targetId, targetName, false, null], [archivedId, `归档文件-${marker}`, true, null],
+      [randomUUID(), `已删除-${marker}`, false, Date.now()]] as const) {
+      expect((await page.request.post(`/api/notes/${id}`, { headers, data: {
+        title, content: '正文', folderId: childId, tags: [], pinned: false, archived, deletedAt, revision: 0, operationId: randomUUID(),
+      } })).status()).toBe(201);
+    }
+    await page.goto('/');
+    await newNote(page, `链接目录来源-${marker}`, '正文');
+    if (!offlineLibrary) await disableOfflineLibrary(page);
+    if (offlineLibrary) await page.context().setOffline(true);
+    const requestedFolders: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname === '/api/notes' && url.searchParams.get('view') === 'export') requestedFolders.push(url.searchParams.get('folderId') ?? '');
+    });
+    await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+    const picker = page.getByRole('dialog');
+    const parent = picker.locator('summary').filter({ hasText: parentName });
+    const child = picker.locator('summary').filter({ hasText: childName });
+    await expect(parent).toBeVisible();
+    await expect(child).toBeHidden();
+    await expect(picker.getByRole('checkbox', { name: targetName, exact: true })).toHaveCount(0);
+    expect(requestedFolders).not.toContain(childId);
+    await parent.focus();
+    await page.keyboard.press('Enter');
+    await expect(child).toBeVisible();
+    await child.click();
+    await picker.getByRole('checkbox', { name: targetName, exact: true }).check();
+    await picker.getByRole('checkbox', { name: `归档文件-${marker}`, exact: true }).check();
+    await expect(picker.getByRole('checkbox', { name: `已删除-${marker}`, exact: true })).toHaveCount(0);
+    await parent.click();
+    await expect(picker.getByRole('checkbox', { name: targetName, exact: true })).toHaveCount(0);
+    await expect(picker.getByText('已选择 2 项', { exact: true })).toBeVisible();
+    await picker.getByLabel('搜索链接目标').fill(targetName);
+    await expect(picker.getByRole('checkbox', { name: targetName, exact: true })).toBeChecked();
+    await picker.getByLabel('搜索链接目标').fill('');
+    await parent.click();
+    await child.click();
+    await expect(picker.getByRole('checkbox', { name: targetName, exact: true })).toBeChecked();
+    await page.setViewportSize({ width: 320, height: 740 });
+    expect(await picker.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/link-directory-320-${offlineLibrary}.png` });
+    if (offlineLibrary) await page.context().setOffline(false);
+    await picker.getByRole('button', { name: '插入所选链接', exact: true }).click();
+    await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(targetName);
+  });
+}
+
+test('internal link folder browsing paginates beyond the recent search limit and retries folder errors', async ({ page }) => {
+  const folderId = randomUUID(), marker = randomUUID().slice(0, 6), folderName = `分页链接-${marker}`;
+  expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  for (let index = 0; index < 52; index++) {
+    expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+      title: `分页目标-${marker}-${index}`, content: '可被目录浏览发现', folderId, tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+  }
+  await page.goto('/');
+  await newNote(page, `分页来源-${marker}`, '正文');
+  await disableOfflineLibrary(page);
+  let fail = true;
+  await page.route('**/api/notes?*', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.searchParams.get('view') === 'export' && url.searchParams.get('folderId') === folderId && fail) {
+      await route.fulfill({ status: 503, json: { error: { message: 'Folder lookup temporarily unavailable' } } });
+    } else await route.continue();
+  });
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const picker = page.getByRole('dialog');
+  const folder = picker.locator('details').filter({ has: page.locator('summary').filter({ hasText: folderName }) });
+  await folder.locator('summary').click();
+  await expect(folder.getByRole('alert')).toBeVisible();
+  fail = false;
+  await folder.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(folder.getByRole('checkbox')).toHaveCount(50);
+  await folder.getByRole('button', { name: '加载更多', exact: true }).click();
+  await expect(folder.getByRole('checkbox')).toHaveCount(52);
+  await expect(folder.getByRole('button', { name: '加载更多', exact: true })).toHaveCount(0);
+  await folder.getByRole('checkbox', { name: `分页目标-${marker}-0`, exact: true }).check();
+  await picker.getByRole('button', { name: '插入所选链接', exact: true }).click();
+  await expect(page.getByText('已保存到云端', { exact: true })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: '笔记正文' })).toContainText(`分页目标-${marker}-0`);
+});
+
+test('name and description menus and folded link directories fit English dark mode at 320px', async ({ page }) => {
+  const folderId = randomUUID(), targetId = randomUUID(), marker = randomUUID().slice(0, 6);
+  const folderName = `Z long project folder ${marker} with implementation references`;
+  expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  expect((await page.request.post(`/api/notes/${targetId}`, { headers, data: {
+    title: `Reference ${marker}`, content: 'Reference content', folderId, tags: [], pinned: false,
+    archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+  } })).status()).toBe(201);
+  for (let index = 0; index < 30; index++) {
+    expect((await page.request.post('/api/folders', { headers, data: { id: randomUUID(), name: `Menu scroll ${marker}-${index}`, parentId: null } })).status()).toBe(201);
+  }
+  await page.addInitScript(() => { localStorage.setItem('easynote-language', 'en'); localStorage.setItem('easynote-theme', 'dark'); });
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto('/');
+  const folderRow = page.locator('.folder-tree-row').filter({ hasText: folderName }).first();
+  await folderRow.getByLabel('Folder actions').click();
+  const menu = folderRow.getByRole('menu');
+  await expect(menu).toBeVisible();
+  expect(await menu.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await folderRow.getByRole('menuitem', { name: 'Edit name and description', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('textbox', { name: 'Folder name', exact: true })).toHaveValue(folderName);
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await folderRow.getByRole('button', { name: 'Expand folder', exact: true }).click();
+  await page.locator('.explorer-note-item').filter({ hasText: `Reference ${marker}` }).getByLabel('More Note Actions').click();
+  await dialog.getByRole('button', { name: 'Edit name and description', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: 'Edit File', exact: true })).toBeVisible();
+  await dialog.getByRole('textbox', { name: 'Note Title', exact: true }).fill(`Updated reference ${marker}`);
+  await dialog.getByRole('textbox', { name: 'File description', exact: true }).fill('English description');
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/ellipsis-edit-english-dark-320.png' });
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('.mobile-note-menu-trigger').click();
+  await dialog.getByRole('button', { name: 'Insert Internal Link', exact: true }).click();
+  const summary = dialog.locator('summary').filter({ hasText: folderName });
+  await expect(summary).toBeVisible();
+  await expect(summary.locator('..')).not.toHaveAttribute('open');
+  await summary.click();
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: 'test-results/link-directory-english-dark-320.png' });
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+});
+
+for (const width of [1440, 390]) {
+  for (const mode of ['live', 'markdown']) {
+    test(`reading to ${mode} editing preserves the visible paragraph at ${width}px`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto('/');
+      const content = Array.from({ length: 70 }, (_, index) => `## 阅读定位 ${index + 1}\n\n这是当前正在阅读的正文。${'保留正文上下文。'.repeat(12)}\n\n第二段正文内容。`).join('\n\n');
+      await newNote(page, `阅读切换-${mode}-${randomUUID().slice(0, 6)}`, content);
+      if (mode === 'markdown') await page.getByRole('button', { name: 'MD 语法', exact: true }).click();
+      await page.getByRole('button', { name: '预览模式', exact: true }).click();
+      const heading = page.locator('.document-scroll .markdown').getByRole('heading', { name: '阅读定位 30', exact: true });
+      const top = await heading.evaluate((element) => {
+        const scroll = element.closest('.document-scroll')!;
+        scroll.scrollTop += element.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 80;
+        return element.getBoundingClientRect().top;
+      });
+      await page.getByRole('button', { name: '编辑模式', exact: true }).click();
+      const line = page.locator('.document-scroll .cm-line').filter({ hasText: /^(?:## )?阅读定位 30$/ });
+      await expect(line).toBeInViewport();
+      await expect.poll(() => line.evaluate((element, expected) => Math.abs(element.getBoundingClientRect().top - expected), top)).toBeLessThan(26);
+      expect(await page.locator('.document-scroll').evaluate((element) => element.scrollTop)).toBeGreaterThan(1000);
+      await expect(page.getByRole('textbox', { name: '笔记正文' })).toBeFocused();
+      await page.screenshot({ path: `test-results/reading-position-${mode}-${width}.png` });
+    });
+  }
+}
+
+test('reference dialogs open three centered layers and restore each reading position', async ({ page }) => {
+  const marker = randomUUID().slice(0, 6), ids = [randomUUID(), randomUUID(), randomUUID()];
+  const titles = ids.map((_, index) => `引用第${index + 1}层-${marker}`);
+  for (let index = 0; index < ids.length; index++) {
+    const content = (index === 0 ? '```mermaid\nflowchart LR\n  A[来源] --> B[引用]\n```\n\n' : '') + Array.from({ length: 35 }, (_, paragraph) => `## 层内章节 ${paragraph + 1}\n\n${'逐层保持阅读位置。'.repeat(12)}`).join('\n\n')
+      + (index < 2 ? `\n\n[[${ids[index + 1]}|${titles[index + 1]}]]` : '');
+    expect((await page.request.post(`/api/notes/${ids[index]}`, { headers, data: { title: titles[index], content,
+      tags: [], pinned: false, archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+  }
+  await page.goto('/');
+  await newNote(page, `引用起点-${marker}`, Array.from({ length: 30 }, (_, index) => `## 起点章节 ${index}\n\n保留原始笔记。`).join('\n\n') + `\n\n[[${ids[0]}|${titles[0]}]]`);
+  await page.getByRole('button', { name: '预览模式', exact: true }).click();
+  const origin = page.locator('.document-scroll');
+  const initial = page.getByRole('link', { name: titles[0], exact: true });
+  await initial.scrollIntoViewIfNeeded();
+  const originalTop = await origin.evaluate((element) => element.scrollTop);
+  await initial.click();
+  const dialog = page.getByRole('dialog', { name: '关联资料预览', exact: true });
+  await expect(dialog.getByRole('heading', { name: titles[0], exact: true })).toBeVisible();
+  const box = (await dialog.boundingBox())!;
+  expect(Math.abs(box.x * 2 + box.width - 1440)).toBeLessThan(2);
+  expect(Math.abs(box.y * 2 + box.height - 960)).toBeLessThan(2);
+  await expect(dialog.locator('.reference-layer:not([hidden]) .reference-window-actions button')).toHaveCount(3);
+  await expect(dialog.locator('.reference-layer:not([hidden]) .mermaid-diagram svg')).toHaveCount(1);
+  const secondLink = dialog.getByRole('link', { name: titles[1], exact: true });
+  await secondLink.scrollIntoViewIfNeeded();
+  const firstTop = await dialog.locator('.reference-layer:not([hidden]) .reference-preview-content').evaluate((element) => element.scrollTop);
+  await secondLink.click();
+  await expect(dialog.getByRole('heading', { name: titles[1], exact: true })).toBeVisible();
+  const thirdLink = dialog.getByRole('link', { name: titles[2], exact: true });
+  await thirdLink.scrollIntoViewIfNeeded();
+  const secondTop = await dialog.locator('.reference-layer:not([hidden]) .reference-preview-content').evaluate((element) => element.scrollTop);
+  await thirdLink.click();
+  await expect(dialog.getByRole('heading', { name: titles[2], exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: '全屏显示引用', exact: true }).click();
+  expect((await dialog.boundingBox())!.width).toBe(1440);
+  await dialog.getByRole('button', { name: '退出引用全屏', exact: true }).click();
+  await dialog.getByRole('button', { name: '关闭当前引用', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: titles[1], exact: true })).toBeVisible();
+  await expect.poll(() => dialog.locator('.reference-layer:not([hidden]) .reference-preview-content').evaluate((element) => element.scrollTop)).toBe(secondTop);
+  await page.keyboard.press('Escape');
+  await expect(dialog.getByRole('heading', { name: titles[0], exact: true })).toBeVisible();
+  await expect.poll(() => dialog.locator('.reference-layer:not([hidden]) .reference-preview-content').evaluate((element) => element.scrollTop)).toBe(firstTop);
+  await secondLink.click();
+  await expect(dialog.getByRole('heading', { name: titles[1], exact: true })).toBeVisible();
+  await page.screenshot({ path: 'test-results/centered-reference-dialog.png' });
+  await dialog.getByRole('button', { name: '关闭全部引用笔记', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect.poll(() => origin.evaluate((element) => element.scrollTop)).toBe(originalTop);
+  await expect(initial).toBeFocused();
+});
+
+test('all directory rows count direct files and folders and group root notes in the link picker', async ({ page }) => {
+  const parent = randomUUID(), child = randomUUID(), grandchild = randomUUID(), marker = randomUUID().slice(0, 6);
+  const parentName = `直属统计-${marker}`;
+  for (const folder of [{ id: parent, name: parentName, parentId: null }, { id: child, name: `子目录-${marker}`, parentId: parent },
+    { id: grandchild, name: `孙目录-${marker}`, parentId: child }, { id: randomUUID(), name: `空目录-${marker}`, parentId: null }]) {
+    expect((await page.request.post('/api/folders', { headers, data: folder })).status()).toBe(201);
+  }
+  for (const [folderId, title, archived, deletedAt] of [[parent, `直属文件-${marker}`, false, null], [parent, `归档直属-${marker}`, true, null],
+    [child, `子层文件-${marker}`, false, null], [grandchild, `孙层文件-${marker}`, false, null], [parent, `回收站-${marker}`, false, Date.now()]] as const) {
+    expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: { title, content: '正文', folderId,
+      tags: [], pinned: false, archived, deletedAt, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+  }
+  await page.goto('/');
+  const parentRow = page.locator('.folder-tree-row').filter({ hasText: parentName }).first();
+  await expect(parentRow.getByLabel('直属子实体 3 项')).toHaveText('3');
+  await expect(page.locator('.folder-tree-row').filter({ hasText: `空目录-${marker}` }).first().getByLabel('直属子实体 0 项')).toHaveText('0');
+  await newNote(page, `统计来源-${marker}`, '正文');
+  await page.getByRole('button', { name: '插入内部链接', exact: true }).click();
+  const picker = page.getByRole('dialog');
+  const root = picker.locator('summary').filter({ hasText: '根目录笔记' });
+  await expect(root).toBeVisible();
+  await expect(picker.locator('summary').filter({ hasText: `空目录-${marker}` }).getByLabel('直属子实体 0 项')).toHaveText('0');
+  await expect(root.locator('..')).not.toHaveAttribute('open');
+  await expect(picker.getByRole('checkbox')).toHaveCount(0);
+  await expect(picker.locator('summary').filter({ hasText: parentName }).getByLabel('直属子实体 3 项')).toHaveText('3');
+  await picker.locator('summary').filter({ hasText: parentName }).click();
+  const childRow = picker.locator('summary').filter({ hasText: `子目录-${marker}` });
+  await expect(childRow.getByLabel('直属子实体 2 项')).toHaveText('2');
+  await childRow.click();
+  await expect(picker.locator('summary').filter({ hasText: `孙目录-${marker}` }).getByLabel('直属子实体 1 项')).toHaveText('1');
+  await page.screenshot({ path: 'test-results/link-picker-direct-counts.png' });
+});
+
+for (const config of [{ width: 1440, english: false }, { width: 390, english: false }, { width: 320, english: true }]) {
+  test(`note navigation switches outline references and backlinks at ${config.width}px`, async ({ page }) => {
+    const sourceId = randomUUID(), targetId = randomUUID(), incomingId = randomUUID(), marker = randomUUID().slice(0, 6);
+    const sourceTitle = `导航来源-${marker}`, targetTitle = `导航引用-${marker}`, incomingTitle = `导航反链-${marker}`;
+    const outlineName = config.english ? 'Outline' : '目录';
+    const referencesName = config.english ? 'References' : '引用';
+    const backlinksName = config.english ? 'Backlinks' : '反向链接';
+    const closeName = config.english ? 'Close Note Navigation' : '关闭笔记导航';
+    const headingContent = Array.from({ length: 24 }, (_, index) => `## 一级章节 ${index + 1}\n\n### 子章节 ${index + 1}\n\n正文段落。`).join('\n\n');
+    for (const [id, title, content] of [[targetId, targetTitle, '## 目标内容\n\n引用弹窗内容。'],
+      [sourceId, sourceTitle, `${headingContent}\n\n[[${targetId}|${targetTitle}]]`],
+      [incomingId, incomingTitle, `[[${sourceId}|${sourceTitle}]]`]]) {
+      expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content, tags: [], pinned: false,
+        archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+    }
+    if (config.english) await page.addInitScript(() => { localStorage.setItem('easynote-language', 'en'); localStorage.setItem('easynote-theme', 'dark'); });
+    await page.setViewportSize({ width: config.width, height: 960 });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${sourceTitle}，`) }).click();
+    if (config.width <= 640) {
+      await page.locator('.mobile-note-menu-trigger').click();
+      await page.getByRole('dialog').getByRole('button', { name: config.english ? 'Outline & Links' : '大纲与链接', exact: true }).click();
+    } else await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
+    const panel = page.getByRole('complementary', { name: config.english ? 'Note Navigation' : '笔记导航' });
+    const tabs = panel.getByRole('tablist');
+    await expect(tabs.getByRole('tab')).toHaveText([outlineName, referencesName, backlinksName]);
+    const outlineTab = tabs.getByRole('tab', { name: outlineName, exact: true });
+    const referenceTab = tabs.getByRole('tab', { name: referencesName, exact: true });
+    const backlinksTab = tabs.getByRole('tab', { name: backlinksName, exact: true });
+    await expect(outlineTab).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByRole('tabpanel')).toHaveCount(1);
+    const chapter = panel.getByRole('button', { name: '子章节 1', exact: true });
+    await panel.getByRole('button', { name: config.english ? 'Collapse section 一级章节 1' : '折叠章节 一级章节 1', exact: true }).click();
+    await expect(chapter).toBeHidden();
+    await referenceTab.click();
+    const references = panel.getByRole('tabpanel', { name: referencesName, exact: true });
+    await expect(references.getByRole('button', { name: targetTitle, exact: true })).toBeVisible();
+    await expect(panel.getByRole('navigation', { name: config.english ? 'Outline' : '大纲', exact: true })).toBeHidden();
+    const viewportHeight = (await references.boundingBox())!.height;
+    expect(viewportHeight).toBeGreaterThan((await panel.boundingBox())!.height * 0.8);
+    await references.getByRole('button', { name: targetTitle, exact: true }).click();
+    const preview = page.getByRole('dialog', { name: config.english ? 'Reference preview' : '关联资料预览', exact: true });
+    await expect(preview.getByRole('heading', { name: targetTitle, exact: true })).toBeVisible();
+    await preview.getByRole('button', { name: config.english ? 'Close current reference' : '关闭当前引用', exact: true }).click();
+    if (config.width <= 640) {
+      await page.locator('.mobile-note-menu-trigger').click();
+      await page.getByRole('dialog').getByRole('button', { name: config.english ? 'Outline & Links' : '大纲与链接', exact: true }).click();
+      await expect(outlineTab).toHaveAttribute('aria-selected', 'true');
+      await referenceTab.click();
+    }
+    await referenceTab.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(backlinksTab).toBeFocused();
+    await expect(backlinksTab).toHaveAttribute('aria-selected', 'true');
+    await expect(panel.getByRole('tabpanel', { name: backlinksName, exact: true }).getByRole('button', { name: incomingTitle, exact: true })).toBeVisible();
+    await page.keyboard.press('Home');
+    await expect(outlineTab).toBeFocused();
+    if (config.width > 640) await expect(chapter).toBeHidden();
+    await expect(outlineTab).toHaveAttribute('aria-selected', 'true');
+    await page.keyboard.press('End');
+    await expect(backlinksTab).toHaveAttribute('aria-selected', 'true');
+    expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/note-navigation-tabs-${config.width}.png` });
+    await panel.getByRole('button', { name: closeName, exact: true }).click();
+    if (config.width <= 640) {
+      await page.locator('.mobile-note-menu-trigger').click();
+      await page.getByRole('dialog').getByRole('button', { name: config.english ? 'Outline & Links' : '大纲与链接', exact: true }).click();
+    } else await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
+    await expect(outlineTab).toHaveAttribute('aria-selected', 'true');
+  });
+}
+
+
+for (const config of [{ width: 1440, english: false }, { width: 320, english: true }]) {
+  test(`reference hover details include complete names and paths at ${config.width}px`, async ({ page }) => {
+    const marker = randomUUID().slice(0, 6), parentId = randomUUID(), childId = randomUUID();
+    const sourceId = randomUUID(), targetId = randomUUID(), rootId = randomUUID(), incomingId = randomUUID(), fileId = randomUUID();
+    const parentName = `工作-${marker}-${'完整项目目录'.repeat(8)}`;
+    const childName = `技术方案-${'用于检验深层完整路径'.repeat(8)}`;
+    const targetTitle = `引用-${marker}-${'UI-Agent 流式通信协议与结构化任务状态设计'.repeat(6)}`;
+    const incomingTitle = `反链-${marker}-${'保留完整名称与目录路径'.repeat(8)}`;
+    const sourceTitle = `悬停来源-${marker}`;
+    const filename = `附件-${marker}-${'完整文件名称'.repeat(8)}.txt`;
+    for (const folder of [{ id: parentId, name: parentName, parentId: null }, { id: childId, name: childName, parentId }]) {
+      expect((await page.request.post('/api/folders', { headers, data: folder })).status()).toBe(201);
+    }
+    expect((await page.request.put(`/api/files/${fileId}`, { headers: { ...headers, 'Content-Type': 'text/plain', 'X-Filename': encodeURIComponent(filename) }, data: '附件正文' })).status()).toBe(201);
+    for (const [id, title, content, folderId] of [[targetId, targetTitle, '引用正文', childId], [rootId, '', '根目录正文', null],
+      [sourceId, sourceTitle, `[[${targetId}|${targetTitle}]]\n\n[[${rootId}|根目录笔记]]\n\n[${filename}](/api/files/${fileId})`, null],
+      [incomingId, incomingTitle, `[[${sourceId}|${sourceTitle}]]`, parentId]] as const) {
+      expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content, folderId, tags: [], pinned: false,
+        archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+    }
+    if (config.english) await page.addInitScript(() => { localStorage.setItem('easynote-language', 'en'); localStorage.setItem('easynote-theme', 'dark'); });
+    await page.setViewportSize({ width: config.width, height: 960 });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${sourceTitle}，`) }).click();
+    const openNavigation = async () => {
+      if (config.width <= 640) {
+        await page.locator('.mobile-note-menu-trigger').click();
+        await page.getByRole('dialog').getByRole('button', { name: config.english ? 'Outline & Links' : '大纲与链接', exact: true }).click();
+      } else await page.getByRole('button', { name: '大纲与反向链接', exact: true }).click();
+    };
+    await openNavigation();
+    const panel = page.getByRole('complementary', { name: config.english ? 'Note Navigation' : '笔记导航' });
+    const referencesTab = panel.getByRole('tab', { name: config.english ? 'References' : '引用', exact: true });
+    await referencesTab.click();
+    const noteButton = panel.getByRole('button', { name: targetTitle, exact: true });
+    const tooltip = page.getByRole('tooltip');
+    await noteButton.hover();
+    await expect(tooltip).toHaveText(`${targetTitle}\n${parentName}/${childName}`, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    await expect(noteButton).not.toHaveAttribute('title');
+    const path = noteButton.locator('.connection-copy > small');
+    await path.hover();
+    await expect(tooltip).toHaveText(`${targetTitle}\n${parentName}/${childName}`);
+    await expect(tooltip).toBeVisible();
+    expect(await path.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    expect(await noteButton.locator('.connection-copy > span').evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    const rootButton = panel.getByRole('button', { name: config.english ? 'Untitled Note' : '未命名笔记', exact: true });
+    await rootButton.hover();
+    await expect(tooltip).toHaveText(`${config.english ? 'Untitled Note' : '未命名笔记'}\n${config.english ? 'Root' : '根目录'}`, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    const fileButton = panel.getByRole('button', { name: filename, exact: true });
+    await fileButton.hover();
+    await expect(tooltip).toHaveText(`${filename}\n/api/files/${fileId}`, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    await panel.getByRole('tab', { name: config.english ? 'Backlinks' : '反向链接', exact: true }).click();
+    const incomingButton = panel.getByRole('button', { name: incomingTitle, exact: true });
+    await incomingButton.hover();
+    await expect(tooltip).toHaveText(`${incomingTitle}\n${parentName}`, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    const renamedParent = `改名后的目录-${marker}`;
+    expect((await page.request.patch(`/api/folders/${parentId}`, { headers, data: { name: renamedParent } })).status()).toBe(200);
+    await expect(tooltip).toHaveText(`${incomingTitle}\n${renamedParent}`);
+    await referencesTab.click();
+    await noteButton.hover();
+    await expect(tooltip).toHaveText(`${targetTitle}\n${renamedParent}/${childName}`, { timeout: 1000 });
+    await expect(tooltip).toBeVisible();
+    const tooltipBox = (await tooltip.boundingBox())!;
+    expect(tooltipBox.x).toBeGreaterThanOrEqual(8);
+    expect(tooltipBox.x + tooltipBox.width).toBeLessThanOrEqual(config.width - 8);
+    expect(tooltipBox.y).toBeGreaterThanOrEqual(8);
+    expect(tooltipBox.y + tooltipBox.height).toBeLessThanOrEqual(952);
+    await page.screenshot({ path: `test-results/reference-full-name-tooltip-${config.width}.png` });
+    expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await noteButton.click();
+    const preview = page.getByRole('dialog', { name: config.english ? 'Reference preview' : '关联资料预览', exact: true });
+    await expect(preview.getByRole('heading', { name: targetTitle, exact: true })).toBeVisible();
+  });
+}
+
+for (const config of [{ width: 1440, english: false }, { width: 900, english: true }]) {
+  test(`note navigation width is resizable and persistent at ${config.width}px`, async ({ page }) => {
+    const title = `导航宽度-${randomUUID().slice(0, 6)}`;
+    expect((await page.request.post(`/api/notes/${randomUUID()}`, { headers, data: {
+      title, content: '# 大纲测试\n\n## 第一部分\n\n正文', tags: [], pinned: false, archived: false,
+      deletedAt: null, revision: 0, operationId: randomUUID(),
+    } })).status()).toBe(201);
+    if (config.english) await page.addInitScript(() => {
+      localStorage.setItem('easynote-language', 'en');
+      localStorage.setItem('easynote-theme', 'dark');
+    });
+    await page.setViewportSize({ width: config.width, height: 960 });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+    const openNavigation = page.getByRole('button', { name: config.english ? 'Outline & Backlinks' : '大纲与反向链接', exact: true });
+    await openNavigation.click();
+    const panel = page.getByRole('complementary', { name: config.english ? 'Note Navigation' : '笔记导航', exact: true });
+    const separator = page.getByRole('separator', { name: config.english ? 'Resize note navigation width' : '调整笔记导航宽度', exact: true });
+    const initialWidth = config.width === 1440 ? 304 : 280;
+    const close = panel.getByRole('button', { name: config.english ? 'Close Note Navigation' : '关闭笔记导航', exact: true });
+    await expect(separator).toHaveAttribute('aria-valuenow', String(initialWidth));
+    expect((await panel.boundingBox())!.width).toBe(initialWidth);
+    await expect(separator).toHaveAttribute('aria-valuemin', '240');
+    const resizedWidth = Math.min(initialWidth + 80, Number(await separator.getAttribute('aria-valuemax')));
+    for (const [delta, expectedWidth] of [[-80, resizedWidth], [40, resizedWidth - 40], [-40, resizedWidth]] as const) {
+      const handle = (await separator.boundingBox())!;
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + 160);
+      await page.mouse.down();
+      await page.mouse.move(handle.x + handle.width / 2 + delta, handle.y + 160, { steps: 5 });
+      await page.mouse.up();
+      await expect(separator).toHaveAttribute('aria-valuenow', String(expectedWidth));
+      expect((await panel.boundingBox())!.width).toBe(expectedWidth);
+    }
+    expect(await page.evaluate(() => localStorage.getItem('easynote-note-navigation-width'))).toBe(String(resizedWidth));
+    await separator.focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(separator).toHaveAttribute('aria-valuenow', String(resizedWidth - 12));
+    await page.keyboard.press('ArrowLeft');
+    await expect(separator).toHaveAttribute('aria-valuenow', String(resizedWidth));
+    await close.click();
+    await openNavigation.click();
+    await expect(separator).toHaveAttribute('aria-valuenow', String(resizedWidth));
+    await page.reload();
+    await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+    await openNavigation.click();
+    await expect(separator).toHaveAttribute('aria-valuenow', String(resizedWidth));
+    await separator.focus();
+    await page.keyboard.press('End');
+    const maximum = Number(await separator.getAttribute('aria-valuemax'));
+    expect((await panel.boundingBox())!.width).toBe(maximum);
+    expect((await page.locator('.document-scroll').boundingBox())!.width).toBeGreaterThanOrEqual(240);
+    await page.keyboard.press('Home');
+    await expect(separator).toHaveAttribute('aria-valuenow', '240');
+    expect((await panel.boundingBox())!.width).toBe(240);
+    expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await separator.dblclick();
+    await expect(separator).toHaveAttribute('aria-valuenow', String(initialWidth));
+    expect((await panel.boundingBox())!.width).toBe(initialWidth);
+    if (config.width === 1440) {
+      await page.getByRole('button', { name: '进入全屏', exact: true }).click();
+      await expect(separator).toBeVisible();
+      await separator.focus();
+      await page.keyboard.press('ArrowLeft');
+      await expect(separator).toHaveAttribute('aria-valuenow', String(initialWidth + 12));
+      await page.getByRole('button', { name: '退出全屏', exact: true }).click();
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: `test-results/note-navigation-resizer-${config.width}.png` });
+    await page.setViewportSize({ width: 320, height: 740 });
+    await expect(separator).toBeHidden();
+    expect((await panel.boundingBox())!.width).toBeLessThanOrEqual(320);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+test('LLM configuration persists per account and can be cleared', async ({ page }) => {
+  await page.goto('/settings/llm');
+  await page.getByLabel('供应商地址', { exact: true }).fill('https://llm.example.test/v1');
+  await page.getByLabel('模型名称', { exact: true }).fill('test-model');
+  await page.getByLabel('模型 API Key', { exact: true }).fill('test-only-key');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'LLM 配置已保存。' })).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel('供应商地址', { exact: true })).toHaveValue('https://llm.example.test/v1');
+  await expect(page.getByLabel('模型 API Key', { exact: true })).toHaveValue('test-only-key');
+  await page.getByLabel('供应商地址', { exact: true }).fill('http://external.example.test/v1');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('保存失败');
+  await page.reload();
+  await expect(page.getByLabel('供应商地址', { exact: true })).toHaveValue('https://llm.example.test/v1');
+  await page.evaluate((userId) => {
+    const stored = localStorage.getItem(`easynote-llm-v1:${userId}`);
+    localStorage.removeItem(`easynote-llm-v1:${userId}`);
+    localStorage.setItem('easynote-llm-v1:another-account', stored!);
+  }, testUserId);
+  await page.reload();
+  await expect(page.getByLabel('模型 API Key', { exact: true })).toHaveValue('');
+  await page.getByLabel('供应商地址', { exact: true }).fill('https://llm.example.test/v1');
+  await page.getByLabel('模型名称', { exact: true }).fill('test-model');
+  await page.getByLabel('模型 API Key', { exact: true }).fill('test-only-key');
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByRole('button', { name: '清除配置', exact: true }).click();
+  await page.reload();
+  await expect(page.getByLabel('模型 API Key', { exact: true })).toHaveValue('');
+});
+
+for (const width of [1440, 390, 320]) {
+  test(`LLM note and inline selection chat sends only requested context at ${width}px`, async ({ page }) => {
+    const title = `LLM-test-${randomUUID().slice(0, 6)}`, id = randomUUID();
+    const content = '不应发送的前文。\n\n完整段落开始，选中短语，完整段落结束。\n\n紧随其后的完整段落。\n\n不应发送的远处段落。' + '\n\n阅读滚动验证段落。'.repeat(40);
+    expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content, tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+    await page.addInitScript(({ userId, dark }) => {
+      localStorage.setItem(`easynote-llm-v1:${userId}`, JSON.stringify({ baseURL: 'https://llm.example.test/v1', model: 'test-model', apiKey: 'test-only-key' }));
+      if (dark) localStorage.setItem('easynote-theme', 'dark');
+    }, { userId: testUserId, dark: width === 320 });
+    const requests: { model: string; stream: boolean; messages: { role: string; content: string }[] }[] = [];
+    const shortAnswer = '**测试模型回答**\n\n| 名称 | 值 |\n| --- | --- |\n| 测试 | 1 |\n\n```ts\nconst value = "' + 'a'.repeat(120) + '";\n```';
+    let fail = false;
+    await page.route('https://llm.example.test/v1/chat/completions', async (route) => {
+      requests.push(route.request().postDataJSON());
+      expect(route.request().headers()['authorization']).toBe('Bearer test-only-key');
+      expect(route.request().headers()['cookie']).toBeUndefined();
+      const answer = requests.at(-1)?.messages.at(-1)?.content === '长回答滚动'
+        ? '长回答滚动验证，窗口内滚动会话。\n'.repeat(40) : shortAnswer;
+      await route.fulfill({ status: fail ? 401 : 200, contentType: fail ? 'application/json' : 'text/event-stream', body: fail
+        ? JSON.stringify({ error: { message: 'test-only-key sensitive provider detail' } })
+        : `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: answer }, finish_reason: null }] })}\n\ndata: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n` });
+    });
+    await page.setViewportSize({ width, height: width === 320 ? 740 : 960 });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+    if (width <= 640) await page.locator('.workspace-toolbar').getByRole('button', { name: '更多笔记操作', exact: true }).click();
+    await page.getByRole('button', { name: 'AI 问答', exact: true }).click();
+    const panel = page.getByRole('complementary', { name: 'AI 问答', exact: true });
+    await expect(panel.getByText('输入你的问题，AI 将结合笔记内容回答。')).toBeVisible();
+    await expect(panel.getByLabel('输入问题', { exact: true })).toBeFocused();
+    await expect(panel.getByRole('button', { name: '发送', exact: true })).toBeDisabled();
+    expect(requests).toHaveLength(0);
+    await panel.getByLabel('输入问题', { exact: true }).fill('全文问题');
+    await panel.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(panel.getByText('测试模型回答', { exact: true })).toBeVisible();
+    await expect(panel.locator('.llm-answer table th')).toHaveText(['名称', '值']);
+    await expect(panel.locator('.llm-answer pre code')).toContainText('const value');
+    expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].model).toBe('test-model');
+    expect(requests[0].stream).toBe(true);
+    expect(requests[0].messages[0].content).toContain('Markdown');
+    expect(requests[0].messages[1].content).toContain(title);
+    expect(requests[0].messages[1].content).toContain(content);
+    expect(requests[0].messages.at(-1)?.content).toBe('全文问题');
+    await panel.getByLabel('输入问题', { exact: true }).fill('全文追问');
+    await panel.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(panel.getByRole('button', { name: '发送', exact: true })).toBeVisible();
+    expect(requests).toHaveLength(2);
+    expect(requests[1].messages.at(-1)?.content).toBe('全文追问');
+    expect(requests[1].messages[2].content).toBe('全文问题');
+    expect(requests[1].messages[3]).toEqual({ role: 'assistant', content: shortAnswer });
+    await page.screenshot({ path: `test-results/llm-note-${width}.png` });
+    await panel.getByRole('button', { name: '关闭 AI 问答', exact: true }).click();
+    const paragraph = page.locator('.document article.markdown p').filter({ hasText: '完整段落开始' });
+    const paragraphTop = await paragraph.evaluate((element) => element.getBoundingClientRect().top);
+    const followingTop = await paragraph.evaluate((element) => element.nextElementSibling!.getBoundingClientRect().top);
+    await paragraph.evaluate((element) => {
+      const node = element.firstChild!;
+      const index = node.textContent!.indexOf('选中短语');
+      const range = document.createRange(); range.setStart(node, index); range.setEnd(node, index + 4);
+      window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    });
+    const trigger = page.getByRole('button', { name: '向 AI 提问', exact: true });
+    await expect(trigger).toBeVisible();
+    expect((await trigger.boundingBox())!.y).toBeLessThan(paragraphTop);
+    expect(await paragraph.evaluate((element) => element.nextElementSibling!.getBoundingClientRect().top)).toBe(followingTop);
+    await page.screenshot({ path: `test-results/llm-selection-trigger-${width}.png` });
+    await trigger.click();
+    const inline = page.getByRole('region', { name: '选区 AI 问答', exact: true });
+    await expect(inline).toBeVisible();
+    expect(requests).toHaveLength(2);
+    const popup = page.getByRole('dialog', { name: '选区 AI 问答', exact: true });
+    await expect(popup).toHaveAttribute('aria-modal', 'true');
+    expect(await paragraph.evaluate((element) => element.getBoundingClientRect().top)).toBeLessThan(paragraphTop);
+    const popupBox = (await popup.boundingBox())!;
+    const bodyBox = (await page.locator('.document article.markdown').boundingBox())!;
+    if (width > 640) {
+      expect(Math.abs(popupBox.width - bodyBox.width * 0.8)).toBeLessThanOrEqual(1);
+      expect(Math.abs(popupBox.x + popupBox.width / 2 - bodyBox.x - bodyBox.width / 2)).toBeLessThanOrEqual(1);
+      expect(popupBox.height).toBeGreaterThan(400);
+    } else {
+      expect(popupBox.height).toBeGreaterThan(250);
+    }
+    expect(popupBox.x).toBeGreaterThanOrEqual(0);
+    expect(popupBox.x + popupBox.width).toBeLessThanOrEqual(width);
+    const selectionBottom = await paragraph.evaluate((element) => {
+      const node = element.firstChild!;
+      const start = node.textContent!.indexOf('选中短语');
+      const range = document.createRange(); range.setStart(node, start); range.setEnd(node, start + 4);
+      return range.getBoundingClientRect().bottom;
+    });
+    expect(popupBox.y).toBeGreaterThanOrEqual(selectionBottom + 7);
+    expect(popupBox.y + popupBox.height).toBeLessThanOrEqual(width === 320 ? 740 : 960);
+    await expect(inline.getByLabel('输入问题', { exact: true })).toBeFocused();
+    await inline.getByLabel('输入问题', { exact: true }).fill('保留的草稿');
+    const originalLogHeight = (await inline.getByRole('log').boundingBox())!.height;
+    await inline.getByRole('button', { name: '折叠输入框', exact: true }).click();
+    await expect(inline.getByLabel('输入问题', { exact: true })).toBeHidden();
+    expect((await inline.getByRole('log').boundingBox())!.height).toBeGreaterThan(originalLogHeight + 80);
+    await inline.getByRole('button', { name: '展开输入框', exact: true }).click();
+    await expect(inline.getByLabel('输入问题', { exact: true })).toHaveValue('保留的草稿');
+    await expect(inline.getByLabel('输入问题', { exact: true })).toBeFocused();
+    if (width === 1440) {
+      for (const [edge, horizontal, vertical] of [
+        ['right', -20, 0], ['left', 20, 0], ['bottom', 0, -20], ['top', 0, 20],
+        ['top-left', 20, 20], ['top-right', -20, 20], ['bottom-left', 20, -20], ['bottom-right', -20, -20],
+      ] as const) {
+        const direction = { right: 'e', left: 'w', bottom: 's', top: 'n', 'top-left': 'nw', 'top-right': 'ne', 'bottom-left': 'sw', 'bottom-right': 'se' }[edge];
+        const before = (await popup.boundingBox())!;
+        const handle = (await popup.locator(`.resize-${direction}`).boundingBox())!;
+        await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(handle.x + handle.width / 2 + horizontal, handle.y + handle.height / 2 + vertical, { steps: 3 });
+        await page.mouse.up();
+        const after = (await popup.boundingBox())!;
+        expect(Math.abs(after.width - (before.width - Math.abs(horizontal)))).toBeLessThanOrEqual(1);
+        expect(Math.abs(after.height - (before.height - Math.abs(vertical)))).toBeLessThanOrEqual(1);
+        expect(after.y).toBeGreaterThanOrEqual(selectionBottom + 7);
+      }
+      const rightEdge = popup.getByRole('button', { name: '调整对话框右边缘', exact: true });
+      await rightEdge.focus();
+      const beforeKey = (await popup.boundingBox())!;
+      await rightEdge.press('ArrowRight');
+      expect((await popup.boundingBox())!.width).toBe(beforeKey.width + 12);
+    }
+    await expect(inline.getByRole('checkbox', { name: '发送选中内容上下文' })).not.toBeChecked();
+    await inline.getByLabel('输入问题', { exact: true }).fill('选区问题');
+    await inline.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(inline.getByText('测试模型回答', { exact: true })).toBeVisible();
+    expect(requests[2].messages[1].content).toBe('<note_context>\n选中短语\n</note_context>');
+    expect(requests[2].messages.at(-1)?.content).toBe('选区问题');
+    const userMessage = (await inline.locator('.llm-message.user').last().boundingBox())!;
+    const aiMessage = (await inline.locator('.llm-message.assistant').last().boundingBox())!;
+    expect(userMessage.x).toBeGreaterThan(aiMessage.x);
+    expect(userMessage.x + userMessage.width).toBeGreaterThan(aiMessage.x + aiMessage.width);
+    await inline.getByRole('checkbox', { name: '发送选中内容上下文' }).check();
+    await inline.getByLabel('输入问题', { exact: true }).fill('结合上下文');
+    await inline.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(inline.getByRole('button', { name: '发送', exact: true })).toBeVisible();
+    const expanded = requests[3].messages[1].content;
+    expect(expanded).toContain('完整段落开始，选中短语，完整段落结束。');
+    expect(expanded).toContain('紧随其后的完整段落。');
+    expect(expanded).not.toContain('不应发送');
+    await page.screenshot({ path: `test-results/llm-inline-${width}.png` });
+    await inline.getByLabel('输入问题', { exact: true }).fill('长回答滚动');
+    await inline.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(inline.getByRole('button', { name: '发送', exact: true })).toBeVisible();
+    const log = inline.getByRole('log');
+    await expect.poll(() => log.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(100);
+    const noteScrollBefore = await page.locator('.document-scroll').evaluate((element) => element.scrollTop);
+    await log.evaluate((element) => { element.scrollTop = 0; });
+    const logBox = (await log.boundingBox())!;
+    await page.mouse.move(logBox.x + logBox.width / 2, logBox.y + logBox.height / 2);
+    await page.mouse.wheel(0, 160);
+    await expect.poll(() => log.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.locator('.document-scroll').evaluate((element) => element.scrollTop)).toBe(noteScrollBefore);
+    await inline.getByRole('checkbox', { name: '发送选中内容上下文' }).uncheck();
+    fail = true;
+    await inline.getByLabel('输入问题', { exact: true }).fill('失败路径');
+    await inline.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(inline.getByRole('alert')).toContainText('HTTP 401');
+    await expect(inline.getByRole('alert')).not.toContainText('test-only-key');
+    expect(requests[5].messages[1].content).not.toContain('完整段落');
+    const scroller = page.locator('.document-scroll');
+    const scrollBefore = await scroller.evaluate((element) => element.scrollTop);
+    const paragraphBox = (await paragraph.boundingBox())!;
+    await page.mouse.move(paragraphBox.x + 5, paragraphBox.y - 10);
+    await page.mouse.wheel(0, 64);
+    await expect(popup).toBeVisible();
+    expect(await scroller.evaluate((element) => element.scrollTop)).toBe(scrollBefore);
+    await page.keyboard.press('Escape');
+    await expect(inline).toHaveCount(0);
+    expect(await paragraph.evaluate((element) => element.nextElementSibling!.getBoundingClientRect().top)).toBe(followingTop);
+    await page.mouse.move(paragraphBox.x + 5, (await paragraph.boundingBox())!.y);
+    await page.mouse.wheel(0, 64);
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+for (const width of [1440, 320]) {
+  test(`LLM selection at the end of a note stays above a bounded resizable dialog at ${width}px`, async ({ page }) => {
+    const id = randomUUID(), title = `LLM-end-${randomUUID().slice(0, 6)}`;
+    const content = '正文阅读段落。\n\n'.repeat(40) + '最后一段选中文字。';
+    expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content, tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+    await page.addInitScript(({ userId, english }) => {
+      localStorage.setItem(`easynote-llm-v1:${userId}`, JSON.stringify({ baseURL: 'https://llm.example.test/v1', model: 'test-model', apiKey: 'test-only-key' }));
+      if (english) localStorage.setItem('easynote-language', 'en');
+    }, { userId: testUserId, english: width === 320 });
+    await page.setViewportSize({ width, height: 740 });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+    const paragraph = page.locator('.document article.markdown p').last();
+    await paragraph.scrollIntoViewIfNeeded();
+    const scroller = page.locator('.document-scroll');
+    const originalScroll = await scroller.evaluate((element) => element.scrollTop);
+    const originalOverflow = await scroller.evaluate((element) => element.style.overflow);
+    await paragraph.evaluate((element) => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    });
+    await page.getByRole('button', { name: width === 320 ? 'Ask AI' : '向 AI 提问', exact: true }).click();
+    const popup = page.getByRole('dialog', { name: width === 320 ? 'Selection AI chat' : '选区 AI 问答', exact: true });
+    await expect(popup).toBeVisible();
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeGreaterThan(originalScroll);
+    const anchor = await paragraph.evaluate((element) => {
+      const range = document.createRange(); range.selectNodeContents(element);
+      const rect = range.getBoundingClientRect();
+      return { y: rect.y, height: rect.height };
+    });
+    const area = (await scroller.boundingBox())!;
+    expect(anchor.y + anchor.height).toBeLessThan(area.y + 100);
+    const box = (await popup.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(anchor.y + anchor.height + 7);
+    expect(box.y + box.height).toBeLessThanOrEqual(area.y + area.height);
+    const lockPosition = await scroller.evaluate((element) => element.scrollTop);
+    await page.mouse.move(area.x + 2, area.y + 10);
+    await page.mouse.wheel(0, 500);
+    expect(await scroller.evaluate((element) => element.scrollTop)).toBe(lockPosition);
+    const input = popup.getByLabel(width === 320 ? 'Enter a question' : '输入问题', { exact: true });
+    await input.fill('保留文末问题');
+    await popup.getByRole('button', { name: width === 320 ? 'Collapse input' : '折叠输入框', exact: true }).click();
+    await expect(input).toBeHidden();
+    const handle = (await popup.locator('.resize-se').boundingBox())!;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(width + 500, 1200, { steps: 3 });
+    await page.mouse.up();
+    const enlarged = (await popup.boundingBox())!;
+    expect(enlarged.x + enlarged.width).toBeLessThanOrEqual(area.x + area.width);
+    expect(enlarged.y + enlarged.height).toBeLessThanOrEqual(area.y + area.height);
+    await popup.locator('.selection-ai-resize').last().focus();
+    await page.keyboard.press('Tab');
+    expect(await popup.evaluate((element) => element.matches(':modal'))).toBe(true);
+    const backgroundTitle = page.getByLabel(width === 320 ? 'Note Title' : '笔记标题', { exact: true });
+    await backgroundTitle.evaluate((element) => element.focus());
+    await expect(backgroundTitle).not.toBeFocused();
+    await popup.locator('button').first().focus();
+    await page.setViewportSize({ width: 320, height: 520 });
+    await expect.poll(async () => {
+      const current = (await popup.boundingBox())!;
+      return current.x >= 0 && current.x + current.width <= 320 && current.y + current.height <= 520;
+    }).toBe(true);
+    await page.screenshot({ path: `test-results/llm-selection-end-${width}.png` });
+    await page.setViewportSize({ width, height: 740 });
+    await popup.getByRole('button', { name: width === 320 ? 'Expand input' : '展开输入框', exact: true }).click();
+    await expect(input).toHaveValue('保留文末问题');
+    await page.keyboard.press('Escape');
+    await expect(popup).toHaveCount(0);
+    expect(await scroller.evaluate((element) => element.scrollTop)).toBe(originalScroll);
+    expect(await scroller.evaluate((element) => element.style.overflow)).toBe(originalOverflow);
+    expect(await page.evaluate(() => document.documentElement.style.overflow)).toBe('');
+    await page.mouse.move(area.x + area.width / 2, 300);
+    await page.mouse.wheel(0, -100);
+    await expect.poll(() => scroller.evaluate((element) => element.scrollTop)).toBeLessThan(originalScroll);
+  });
+}
+
+test('LLM streams safe Markdown before completion, preserves partial text, retries and cancels on close', async ({ page }) => {
+  const requests: { stream: boolean; messages: { role: string; content: string }[] }[] = [];
+  const responses: ServerResponse[] = [];
+  let cancelled = 0;
+  const provider = createServer((request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', origin);
+    response.setHeader('Access-Control-Allow-Headers', request.headers['access-control-request-headers'] ?? '*');
+    response.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+    if (request.method === 'OPTIONS') { response.writeHead(204).end(); return; }
+    let body = '';
+    request.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+    request.on('end', () => {
+      requests.push(JSON.parse(body));
+      responses.push(response);
+      response.on('close', () => { if (!response.writableEnded) cancelled++; });
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+      response.flushHeaders();
+    });
+  });
+  await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+  const address = provider.address();
+  if (!address || typeof address === 'string') throw new Error('Missing test provider address');
+  const delta = (index: number, content: string) => responses[index].write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: null }] })}\n\n`);
+  const finish = (index: number) => responses[index].end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\ndata: [DONE]\n\n`);
+  try {
+    const id = randomUUID(), title = `LLM-stream-${randomUUID().slice(0, 6)}`;
+    expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content: '当前笔记的上下文。', tags: [], pinned: false,
+      archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+    await page.addInitScript(({ userId, port }) => {
+      localStorage.setItem(`easynote-llm-v1:${userId}`, JSON.stringify({ baseURL: `http://127.0.0.1:${port}/v1`, model: 'test-model', apiKey: 'test-only-key' }));
+    }, { userId: testUserId, port: address.port });
+    await page.goto('/');
+    await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+    const open = page.getByRole('button', { name: 'AI 问答', exact: true });
+    await open.click();
+    const panel = page.getByRole('complementary', { name: 'AI 问答', exact: true });
+    const input = panel.getByLabel('输入问题', { exact: true });
+    await expect(input).toBeFocused();
+    await input.fill('解释笔记');
+    await input.dispatchEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true });
+    await input.press('Enter');
+    await expect(input).toHaveValue('解释笔记\n');
+    expect(requests).toHaveLength(0);
+    await input.press('Control+Enter');
+    await expect.poll(() => requests.length).toBe(1);
+    expect(requests[0].stream).toBe(true);
+    expect(requests[0].messages[0].content).toContain('Always format your answer as Markdown');
+    expect(requests[0].messages[1].content).toContain('当前笔记的上下文。');
+    expect(requests[0].messages.at(-1)?.content).toBe('解释笔记');
+    const answer = panel.locator('.llm-message.assistant');
+    delta(0, '**第一部分**和 `value`\n\n- 条目一\n\n```ts\nconst value = 1;\n');
+    await expect(answer.locator('strong').filter({ hasText: '第一部分' })).toBeVisible();
+    await expect(answer.locator('li')).toHaveText('条目一');
+    await expect(answer.locator('pre code')).toContainText('const value = 1;');
+    await expect(panel.getByRole('button', { name: '停止', exact: true })).toBeVisible();
+    await expect(panel.getByRole('log')).toHaveAttribute('aria-busy', 'true');
+    delta(0, '```\n\n## 第二部分\n\n| 名称 | 值 |\n| --- | --- |\n| 测试 | 1 |\n\n> 引用\n\n$x^2$\n\n<script>window.llmInjected = true</script><img src="https://blocked.example.test/image" onerror="alert(1)">\n\n[安全链接](https://example.com) [危险链接](javascript:alert(1))\n\n' + '历史阅读段落。\n\n'.repeat(40));
+    await expect(answer.getByRole('heading', { name: '第二部分' })).toBeVisible();
+    await expect(answer.locator('table th')).toHaveText(['名称', '值']);
+    await expect(answer.locator('.katex')).toHaveCount(1);
+    await expect(answer.locator('script, img, [onerror], a[href^="javascript:"]')).toHaveCount(0);
+    await expect(answer.getByRole('link', { name: '安全链接' })).toHaveAttribute('rel', 'noopener noreferrer');
+    const log = panel.getByRole('log');
+    await expect.poll(() => log.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(100);
+    await log.evaluate((element) => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+    delta(0, '\n\n后续实时段落');
+    await expect(answer).toContainText('后续实时段落');
+    expect(await log.evaluate((element) => element.scrollTop)).toBe(0);
+    await input.fill('下一条草稿');
+    await input.press('Control+Enter');
+    expect(requests).toHaveLength(1);
+    await panel.getByRole('button', { name: '停止', exact: true }).click();
+    await expect.poll(() => cancelled).toBe(1);
+    await expect(panel.getByText('已停止，已输出的内容已保留。')).toBeVisible();
+    await expect(answer).toContainText('后续实时段落');
+    await expect(input).toHaveValue('下一条草稿');
+    expect(requests).toHaveLength(1);
+    await panel.getByRole('button', { name: '重新生成', exact: true }).click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[1]).toEqual(requests[0]);
+    delta(1, '**失败前的部分内容**');
+    await expect(answer).toContainText('失败前的部分内容');
+    responses[1].end(`data: ${JSON.stringify({ error: { message: 'test-only-key sensitive provider detail' } })}\n\n`);
+    await expect(panel.getByRole('alert')).toContainText('AI 请求失败');
+    await expect(panel.getByRole('alert')).not.toContainText('test-only-key');
+    await expect(answer).toContainText('失败前的部分内容');
+    await panel.getByRole('button', { name: '重试', exact: true }).click();
+    await expect.poll(() => requests.length).toBe(3);
+    expect(requests[2]).toEqual(requests[0]);
+    delta(2, '## 完整回答\n\n```mermaid\ngraph TD\nA[开始] --> B[结束]\n```');
+    await expect(answer.locator('pre code')).toContainText('graph TD');
+    await expect(answer.locator('.mermaid-diagram')).toHaveCount(0);
+    finish(2);
+    await expect(answer.locator('.mermaid-diagram svg')).toBeVisible();
+    await expect(input).toHaveValue('下一条草稿');
+    await page.screenshot({ path: 'test-results/llm-stream-markdown.png' });
+    await panel.getByRole('button', { name: '发送', exact: true }).click();
+    await expect.poll(() => requests.length).toBe(4);
+    expect(requests[3].messages[3].content).toContain('完整回答');
+    expect(requests[3].messages.at(-1)?.content).toBe('下一条草稿');
+    finish(3);
+    await expect(panel.getByRole('alert')).toContainText('模型未返回文本');
+    await panel.getByRole('button', { name: '重试', exact: true }).click();
+    await expect.poll(() => requests.length).toBe(5);
+    expect(requests[4]).toEqual(requests[3]);
+    delta(4, '重新回答'); finish(4);
+    await expect(panel.getByRole('alert')).toHaveCount(0);
+    await expect(panel.locator('.llm-message.assistant').last()).toContainText('重新回答');
+    await input.fill('取消请求');
+    await panel.getByRole('button', { name: '发送', exact: true }).click();
+    await expect.poll(() => requests.length).toBe(6);
+    await panel.getByRole('button', { name: '关闭 AI 问答', exact: true }).click();
+    await expect.poll(() => cancelled).toBe(2);
+    await open.click();
+    await expect(panel.getByText('输入你的问题，AI 将结合笔记内容回答。')).toBeVisible();
+    expect(requests).toHaveLength(6);
+    await expect(panel.locator('.llm-message')).toHaveCount(0);
+  } finally {
+    provider.closeAllConnections();
+    await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('LLM setup is reachable from missing configuration in English on a narrow screen', async ({ page }) => {
+  const id = randomUUID(), title = `LLM-setup-${randomUUID().slice(0, 6)}`;
+  expect((await page.request.post(`/api/notes/${id}`, { headers, data: { title, content: 'Current note.', tags: [], pinned: false,
+    archived: false, deletedAt: null, revision: 0, operationId: randomUUID() } })).status()).toBe(201);
+  await page.addInitScript(() => localStorage.setItem('easynote-language', 'en'));
+  await page.setViewportSize({ width: 320, height: 740 });
+  await page.goto('/');
+  await page.getByRole('button', { name: new RegExp(`^${title}，`) }).click();
+  await page.locator('.workspace-toolbar').getByRole('button', { name: 'More Note Actions', exact: true }).click();
+  await page.getByRole('button', { name: 'AI chat', exact: true }).click();
+  const panel = page.getByRole('complementary', { name: 'AI chat' });
+  await expect(panel.getByText('Configure a provider URL, model name, and API key first.')).toBeVisible();
+  await panel.getByRole('button', { name: 'Open LLM configuration' }).click();
+  await expect(page).toHaveURL('/settings/llm');
+  await expect(page.getByRole('heading', { name: 'LLM configuration', exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

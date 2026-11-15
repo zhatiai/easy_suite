@@ -7,6 +7,8 @@ import { cleanup } from '../src/worker/images';
 import { passwordVerifier } from '../src/worker/auth';
 import { noteDescription, withNoteDescription } from '../src/shared/descriptions';
 import { folderRelativePath, noteFingerprint, noteRelativePath } from '../src/shared/types';
+import type { Note, NoteLinkPage } from '../src/shared/types';
+import { appendNoteLinks, fileLinks, noteLink, noteLinkIds } from '../src/shared/noteLinks';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
 const origin = 'https://easynote.example.test';
@@ -996,6 +998,139 @@ test('stable internal links expose backlinks', async () => {
   assert.ok(backlinks.notes.some((note: any) => note.id === source.id));
 });
 
+test('note link parsing excludes Markdown code and comments and normalizes IDs', () => {
+  const id = randomUUID();
+  const link = noteLink(id, 'A *special* <title> | [label]');
+  assert.deepEqual(noteLinkIds(link), [id]);
+  assert.deepEqual(noteLinkIds(`\`${link}\`\n\n~~~md\n${link}\n~~~\n\n    ${link}\n\n<!-- ${link} -->`), []);
+  assert.deepEqual(noteLinkIds(`[[${id.toUpperCase()}|Upper]]\n\n[[${id}|Duplicate]]`), [id]);
+  assert.deepEqual(noteLinkIds(`[[${id}|unterminated`), []);
+  assert.equal(appendNoteLinks(link, [{ id, title: 'Renamed' }]), link);
+  const file = `[sample.txt](/api/files/${id})`;
+  assert.deepEqual(fileLinks(`\`${file}\`\n\n~~~md\n${file}\n~~~`), []);
+  assert.deepEqual(fileLinks(file), [{ id, filename: 'sample.txt', url: `/api/files/${id}` }]);
+  assert.equal(fileLinks(`[upper.txt](/api/files/${id.toUpperCase()})`)[0].id, id.toUpperCase());
+});
+
+test('link pages preserve archived notes, paginate candidates, and hide unavailable targets', async () => {
+  const target: Note = await create({ title: '分页链接目标', content: 'Target' });
+  const real: Note = await create({ title: '真实来源', content: noteLink(target.id.toUpperCase(), target.title), archived: true });
+  const example: Note = await create({ title: '代码示例来源', content: `\`${noteLink(target.id, target.title)}\`` });
+  const malformed: Note = await create({ title: '残缺链接', content: `[[${target.id}|broken` });
+  const selfResponse = await save(target.id, target.revision, { content: noteLink(target.id, 'self') });
+  assert.equal(selfResponse.status, 200);
+  const sources: string[] = [];
+  let offset: number | null = 0;
+  do {
+    const response = await request(`/api/notes/${target.id}/links?direction=incoming&limit=1&offset=${offset}`);
+    assert.equal(response.status, 200);
+    const page = await response.json() as NoteLinkPage;
+    sources.push(...page.notes.map((item) => item.id));
+    offset = page.nextOffset;
+  } while (offset !== null);
+  assert.deepEqual(sources, [real.id]);
+  assert.ok(!sources.includes(example.id) && !sources.includes(malformed.id));
+  const missingId = randomUUID();
+  const source: Note = await create({ title: '出链来源', content: `${noteLink(real.id, 'old title')}\n\n${noteLink(missingId, 'unavailable')}` });
+  const outgoing = await (await request(`/api/notes/${source.id}/links?direction=outgoing`)).json() as NoteLinkPage;
+  assert.deepEqual(outgoing.notes.map((item) => item.id), [real.id]);
+  assert.equal(outgoing.notes[0].title, real.title);
+  assert.deepEqual(outgoing.missingIds, [missingId]);
+  assert.equal(outgoing.nextOffset, null);
+  for (const query of ['direction=invalid', 'limit=201', 'offset=-1', 'offset=1.2']) {
+    assert.equal((await request(`/api/notes/${source.id}/links?${query}`)).status, 400);
+  }
+  const legacy = await (await request(`/api/notes/${target.id}/backlinks`)).json() as NoteLinkPage;
+  assert.deepEqual(legacy.notes.map((item) => item.id), [real.id]);
+});
+
+test('linked writes are atomic, revision guarded and retryable after a target rename', async () => {
+  const target: Note = await create({ title: '关联目标', content: 'Target' });
+  const second: Note = await create({ title: '首个显示目标', content: 'Second target' });
+  const orderedResponse = await save(randomUUID(), 0, { title: '关联顺序', content: 'Ordered', linkedNoteIds: [second.id, target.id] });
+  assert.equal(orderedResponse.status, 201);
+  const ordered = (await orderedResponse.json() as { note: Note }).note;
+  assert.deepEqual(noteLinkIds(ordered.content), [second.id, target.id]);
+  assert.match(ordered.content, /\n- \[\[/);
+  const id = randomUUID();
+  const operationId = randomUUID();
+  const patch = { title: '关联创建', content: 'Body', tags: [], linkedNoteIds: [target.id, target.id] };
+  const created = await save(id, 0, patch, operationId);
+  assert.equal(created.status, 201);
+  const source = (await created.json() as { note: Note }).note;
+  assert.deepEqual(noteLinkIds(source.content), [target.id]);
+  assert.match(source.content, /关联目标/);
+  assert.equal((await save(target.id, target.revision, { title: '已重命名', content: target.content })).status, 200);
+  const retry = await save(id, 0, patch, operationId);
+  assert.equal(retry.status, 200);
+  assert.deepEqual((await retry.json() as { note: Note }).note, source);
+  assert.equal((await save(id, 0, { ...patch, linkedNoteIds: [randomUUID()] }, operationId)).status, 409);
+  assert.equal((await save(id, source.revision, { ...patch, content: `${source.content}\n\nUpdated` })).status, 200);
+  assert.equal((await save(id, source.revision, { ...patch, content: 'concurrent overwrite' })).status, 409);
+  const failedId = randomUUID();
+  assert.equal((await save(failedId, 0, { ...patch, linkedNoteIds: [randomUUID()] })).status, 404);
+  assert.equal((await request(`/api/notes/${failedId}`)).status, 404);
+  assert.equal((await save(randomUUID(), 0, { ...patch, content: '```md\nunclosed' })).status, 400);
+  assert.equal((await save(id, source.revision, { ...patch, linkedNoteIds: [id] })).status, 400);
+});
+
+test('link reads and linked writes enforce tenant isolation and trash visibility', async () => {
+  const userId = randomUUID();
+  const secret = 'f'.repeat(64);
+  const now = Date.now();
+  await instance.db.prepare(`INSERT INTO users (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(userId, `links-${userId}`, '{}', now, now, now).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)')
+    .bind(await digest(secret), userId, testCsrf, now + 60000).run();
+  const otherHeaders = { Cookie: `__Host-easynote=${secret}` };
+  const target: Note = await create({ title: '私有目标', content: 'Private' });
+  const otherId = randomUUID();
+  const body = { ...base, title: '其他租户来源', content: noteLink(target.id, 'Unknown'), revision: 0, operationId: randomUUID() };
+  assert.equal((await request(`/api/notes/${otherId}`, 'POST', body, otherHeaders)).status, 201);
+  assert.equal((await request(`/api/notes/${target.id}/links`, 'GET', undefined, otherHeaders)).status, 404);
+  const metadata = await (await request(`/api/notes/metadata?ids=${target.id},${otherId}`, 'GET', undefined, otherHeaders)).json() as { notes: Array<{ id: string; content?: string }> };
+  assert.deepEqual(metadata.notes.map((item) => item.id), [otherId]);
+  assert.equal(metadata.notes[0].content, undefined);
+  const outgoing = await (await request(`/api/notes/${otherId}/links`, 'GET', undefined, otherHeaders)).json() as NoteLinkPage;
+  assert.deepEqual(outgoing.notes, []);
+  assert.deepEqual(outgoing.missingIds, [target.id]);
+  const incoming = await (await request(`/api/notes/${target.id}/backlinks`)).json() as NoteLinkPage;
+  assert.deepEqual(incoming.notes, []);
+  const deniedId = randomUUID();
+  assert.equal((await request(`/api/notes/${deniedId}`, 'POST', { ...body, linkedNoteIds: [target.id] }, otherHeaders)).status, 404);
+  assert.equal((await request(`/api/notes/${deniedId}`, 'GET', undefined, otherHeaders)).status, 404);
+  const source: Note = await create({ title: '已删除来源', content: noteLink(target.id, 'Target') });
+  assert.equal((await save(source.id, source.revision, { content: source.content, deletedAt: now })).status, 200);
+  assert.deepEqual((await (await request(`/api/notes/${target.id}/backlinks`)).json() as NoteLinkPage).notes, []);
+  assert.equal((await save(target.id, target.revision, { content: target.content, deletedAt: now })).status, 200);
+  assert.equal((await request(`/api/notes/${target.id}/links`)).status, 404);
+  assert.equal((await save(randomUUID(), 0, { linkedNoteIds: [target.id] })).status, 404);
+});
+
+test('attachment selection lists only ready tenant files and searches filenames literally', async () => {
+  const userId = randomUUID(), secret = '3'.repeat(64), now = Date.now();
+  await instance.db.prepare(`INSERT INTO users (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(userId, `file-list-${userId}`, '{}', now, now, now).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(secret), userId, testCsrf, now + 60000).run();
+  const id = randomUUID();
+  const uploaded = await instance.runtime.dispatchFetch(`${origin}/api/files/${id}`, {
+    method: 'PUT', headers: { Origin: origin, Cookie: `__Host-easynote=${secret}`, 'X-CSRF-Token': testCsrf,
+      'Content-Type': 'text/plain', 'X-Filename': 'lookup%25_test.txt' }, body: 'Test file',
+  });
+  assert.equal(uploaded.status, 201);
+  const otherHeaders = { Cookie: `__Host-easynote=${secret}` };
+  const found = await (await request('/api/files?q=%25_', 'GET', undefined, otherHeaders)).json() as { files: Array<{ id: string; filename: string; url: string }>; nextOffset: number | null };
+  assert.deepEqual(found.files, [{ id, filename: 'lookup%_test.txt', url: `/api/files/${id}` }]);
+  assert.equal(found.nextOffset, null);
+  const privateList = await (await request('/api/files?q=lookup')).json() as { files: Array<{ id: string }> };
+  assert.ok(!privateList.files.some((file) => file.id === id));
+  await instance.db.prepare("UPDATE images SET status='pending' WHERE id=? AND user_id=?").bind(id, userId).run();
+  assert.deepEqual((await (await request('/api/files', 'GET', undefined, otherHeaders)).json() as { files: unknown[] }).files, []);
+  assert.equal((await request('/api/files?offset=-1')).status, 400);
+  assert.equal((await request('/api/notes/metadata?ids=bad')).status, 400);
+  assert.equal((await request('/api/notes/metadata')).status, 400);
+});
+
 test('private PDF and text attachments are validated and downloaded safely', async () => {
   const pdfId = randomUUID();
   const pdf = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF');
@@ -1067,4 +1202,29 @@ test('folder descriptions persist, validate input and stay isolated by tenant', 
   assert.ok(!otherFolders.folders.some((folder) => folder.id === id));
   assert.equal((await request(`/api/folders/${id}`, 'PATCH', { description: 'Stolen' }, otherHeaders)).status, 404);
   assert.equal((await request(`/api/folders/${id}`, 'PATCH', { description: '' })).status, 200);
+});
+
+
+test('link target counts exclude trashed notes, images, pending files and other tenants', async () => {
+  const userId = randomUUID(), token = randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '');
+  const now = Date.now();
+  await instance.db.prepare(`INSERT INTO users (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(userId, `counts-${userId}`, '{}', now, now, now).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(token), userId, testCsrf, now + 60000).run();
+  const tenant = { Cookie: `__Host-easynote=${token}` };
+  const folderId = randomUUID();
+  assert.equal((await request('/api/folders', 'POST', { id: folderId, name: '统计目录', parentId: null }, tenant)).status, 201);
+  for (const [folder, archived, deletedAt] of [[null, false, null], [null, true, null], [null, false, now], [folderId, false, null]] as const) {
+    assert.equal((await request(`/api/notes/${randomUUID()}`, 'POST', { ...base, title: randomUUID(), folderId: folder, archived, deletedAt,
+      revision: 0, operationId: randomUUID() }, tenant)).status, 201);
+  }
+  for (const [owner, mime, status] of [[userId, 'text/plain', 'ready'], [userId, 'image/png', 'ready'],
+    [userId, 'text/plain', 'pending'], [testUserId, 'text/plain', 'ready']] as const) {
+    await instance.db.prepare('INSERT INTO images VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(randomUUID(), owner, 'counts.txt', mime,
+      1, 1, 1, '0'.repeat(64), status, now, now).run();
+  }
+  const response = await request('/api/notes/link-target-counts', 'GET', undefined, tenant);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { rootNotes: 2, files: 1 });
+  assert.equal((await request('/api/notes/link-target-counts', 'GET', undefined, { Cookie: '' })).status, 401);
 });

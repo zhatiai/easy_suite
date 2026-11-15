@@ -589,7 +589,12 @@ export async function preparePdfExport() {
     import('./mathSvg'),
     import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
   ]);
-  await Promise.all([...PDF_FONT_PATHS.map(pdfResourceUrl), workerUrl].map(async (url) => {
+  // Modules loaded before Service Worker control must pass through its cache once more.
+  const runtimeUrls = performance.getEntriesByType('resource').map((entry) => entry.name).filter((value) => {
+    const url = new URL(value);
+    return url.origin === location.origin && /\/assets\/(?:pdfmake|pdfjs)[^/]*\.js$/.test(url.pathname);
+  });
+  await Promise.all([...new Set([...PDF_FONT_PATHS.map(pdfResourceUrl), workerUrl, ...runtimeUrls])].map(async (url) => {
     const response = await fetch(url);
     if (!response.ok) throw new Error('PDF 离线资源下载失败。');
     await response.arrayBuffer();

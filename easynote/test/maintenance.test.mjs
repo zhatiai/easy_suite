@@ -136,7 +136,7 @@ if (args[0] === 'd1' && args[1] === 'export') {
     const exportedTables = exportCall.flatMap((value, index) => value === '--table' ? [exportCall[index + 1]] : []);
     assert.deepEqual(exportedTables, [
       'users', 'sessions', 'integration_tokens', 'oauth_clients', 'login_attempts', 'account_attempts', 'app_state',
-      'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
+      'folders', 'folder_shares', 'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
     ]);
     assert.ok(!exportedTables.includes('notes_fts'));
   } finally {
@@ -186,7 +186,7 @@ appendFileSync(${JSON.stringify(join(directory, 'calls.jsonl'))}, JSON.stringify
 if (args[0] === 'd1' && args[1] === 'execute' && args.some((value) => value.includes('sqlite_master'))) {
   const tables = process.env.NEW_DATABASE === '1' && !existsSync(${JSON.stringify(join(directory, 'migrated'))}) ? [] : ${JSON.stringify([
     'users', 'sessions', 'integration_tokens', 'oauth_clients', 'login_attempts', 'account_attempts', 'app_state',
-    'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
+    'folders', 'folder_shares', 'notes', 'note_versions', 'note_changes', 'note_shares', 'images', 'image_refs', 'purged_notes',
   ].map((name) => ({ name })))};
   console.log(JSON.stringify([{results:tables}]));
 } else if (args[0] === 'd1' && args[1] === 'execute' && args.includes('--command')) {
@@ -220,7 +220,7 @@ if (args[0] === 'd1' && args[1] === 'execute' && args.some((value) => value.incl
     assert.equal(restored.status, 0, restored.stderr);
     assert.match(restored.stdout, /Restore completed/);
     const applied = await readFile(join(directory, 'applied.sql'), 'utf8');
-    assert.match(applied, /^PRAGMA foreign_keys=ON;\nDELETE FROM app_state;\n/);
+    assert.match(applied, /^PRAGMA foreign_keys=ON;\nPRAGMA defer_foreign_keys=ON;\nDELETE FROM app_state;\n/);
     assert.ok(applied.indexOf('DELETE FROM app_state;') < applied.indexOf('INSERT INTO app_state'));
 
     const newDatabase = spawnSync(process.execPath, command.filter((value) => value !== '--check'), {

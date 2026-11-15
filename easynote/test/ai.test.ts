@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { createRuntime, testUserId } from './runtime';
 import { digest } from '../src/worker/core';
+import type { Note, NoteLinkPage } from '../src/shared/types';
+import { noteLinkIds } from '../src/shared/noteLinks';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
 const origin = 'https://easynote.test';
@@ -282,6 +284,7 @@ test('read-only MCP credentials do not expose write tools', async () => {
   try {
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name), [
+      'easynote_get_note_links',
       'easynote_search_notes',
       'easynote_list_recent',
       'easynote_read_note',
@@ -293,4 +296,70 @@ test('read-only MCP credentials do not expose write tools', async () => {
   } finally {
     await client.close();
   }
+});
+
+test('MCP uploads with links in one call, exposes both directions and safely retries creation', async () => {
+  const client = await connectMcp(writeSecret);
+  const reader = await connectMcp(readSecret);
+  try {
+    const targetResult = await client.callTool({ name: 'easynote_create_note', arguments: {
+      title: 'MCP 关联目标', content: '## Target\n\nBody', archived: true,
+    } });
+    assert.ok(!targetResult.isError);
+    const target = (targetResult.structuredContent as { note: Note }).note;
+    const sourceId = randomUUID();
+    const operationId = randomUUID();
+    const args = { id: sourceId, operation_id: operationId, title: 'MCP 一次上传关联',
+      description: 'Links in the same write', content: '## Source\n\nBody', linked_note_ids: [target.id, target.id] };
+    const created = await client.callTool({ name: 'easynote_create_note', arguments: args });
+    assert.ok(!created.isError);
+    const output = created.structuredContent as { note: Note; operationId: string; uri: string; link: string };
+    assert.equal(output.note.id, sourceId);
+    assert.equal(output.operationId, operationId);
+    assert.equal(output.uri, `easynote://notes/${sourceId}.md`);
+    assert.match(output.link, new RegExp(sourceId));
+    const source = (await (await integrationRequest(readSecret, `/api/integrations/notes/${sourceId}`)).json() as { note: Note }).note;
+    assert.deepEqual(noteLinkIds(source.content), [target.id]);
+    assert.match(source.content, /^> Links in the same write/);
+    const incoming = await reader.callTool({ name: 'easynote_get_note_links', arguments: { id: target.id } });
+    assert.ok(!incoming.isError);
+    const links = incoming.structuredContent as NoteLinkPage & { notes: Array<{ link: string; uri: string }> };
+    assert.deepEqual(links.notes.map((item) => item.id), [sourceId]);
+    assert.equal(links.notes[0].uri, output.uri);
+    assert.equal(links.notes[0].link, output.link);
+    const outgoing = await reader.callTool({ name: 'easynote_get_note_links', arguments: { id: sourceId, direction: 'outgoing' } });
+    assert.deepEqual((outgoing.structuredContent as NoteLinkPage).notes.map((item) => item.id), [target.id]);
+    assert.ok(!(await client.callTool({ name: 'easynote_update_note', arguments: {
+      id: target.id, expected_revision: target.revision, title: 'MCP 目标重命名',
+    } })).isError);
+    const retry = await client.callTool({ name: 'easynote_create_note', arguments: args });
+    assert.ok(!retry.isError);
+    assert.equal((retry.structuredContent as { note: Note }).note.revision, source.revision);
+    const changedRetry = await client.callTool({ name: 'easynote_create_note', arguments: { ...args, content: 'Different' } });
+    assert.equal(changedRetry.isError, true);
+    const second = await client.callTool({ name: 'easynote_create_note', arguments: { title: 'MCP 第二目标', content: 'Second' } });
+    const secondId = (second.structuredContent as { note: Note }).note.id;
+    const linked = await client.callTool({ name: 'easynote_link_notes', arguments: {
+      id: sourceId, expected_revision: source.revision, linked_note_ids: [target.id, secondId],
+    } });
+    assert.ok(!linked.isError);
+    const revision = (linked.structuredContent as { note: Note }).note.revision;
+    assert.equal(revision, source.revision + 1);
+    const deduped = await client.callTool({ name: 'easynote_link_notes', arguments: {
+      id: sourceId, expected_revision: revision, linked_note_ids: [target.id, secondId],
+    } });
+    assert.ok(!deduped.isError);
+    assert.equal((deduped.structuredContent as { note: Note }).note.revision, revision);
+    assert.equal((await client.callTool({ name: 'easynote_link_notes', arguments: {
+      id: sourceId, expected_revision: source.revision, linked_note_ids: [secondId],
+    } })).isError, true);
+    const denied = await integrationRequest(readSecret, `/api/integrations/notes/${randomUUID()}`, 'POST', {
+      ...source, revision: 0, operationId: randomUUID(), linkedNoteIds: [target.id],
+    });
+    assert.equal(denied.status, 403);
+    const missing = await client.callTool({ name: 'easynote_create_note', arguments: {
+      title: 'Invalid link', content: 'Body', linked_note_ids: [randomUUID()],
+    } });
+    assert.equal(missing.isError, true);
+  } finally { await client.close(); await reader.close(); }
 });

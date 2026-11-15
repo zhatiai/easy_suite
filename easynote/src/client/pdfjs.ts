@@ -86,8 +86,9 @@ export async function loadPDFDocument({
   }
 
   if (id && resolveFile) {
+    let cachedUrl: string | null = null;
     try {
-      const cachedUrl = await resolveFile(id);
+      cachedUrl = await resolveFile(id);
       if (cachedUrl) {
         const resp = await fetch(cachedUrl);
         const arrayBuffer = await resp.arrayBuffer();
@@ -99,6 +100,8 @@ export async function loadPDFDocument({
       }
     } catch {
       // Fall through to network URL if cached blob fetch fails
+    } finally {
+      if (cachedUrl) URL.revokeObjectURL(cachedUrl);
     }
   }
 

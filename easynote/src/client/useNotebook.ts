@@ -3,17 +3,20 @@ import {
   filePath,
   noteFingerprint,
   noteInput,
-  noteLinkIds,
   sameNoteInput,
   storedFileIds,
   type Note,
   type Folder,
   type NoteInput,
+  type LinkedFile,
+  type NoteLinkDirection,
+  type NoteLinkPage,
   type NoteSummary,
   type Session,
   type SyncChange,
 } from '../shared/types';
 import { unfinishedTasks } from '../shared/tasks';
+import { fileLinks, noteLinkIds } from '../shared/noteLinks';
 import { api, ApiError, noteEventsUrl } from './api';
 import { mergeNoteChanges, type ConflictPreference, type NoteConflictField } from './merge';
 import { preparePdfExport } from './pdf';
@@ -337,8 +340,10 @@ export function useNotebook(session: Session) {
   const syncOfflineMirror = useCallback(async (signal?: AbortSignal) => {
     let cursor = await syncCursor(userId);
     let hasMore = true;
+    let changed = false;
     while (hasMore) {
       const page = await api.sync(cursor, signal);
+      changed ||= page.changes.length > 0;
       await applyMirrorChanges(userId, page.changes, page.cursor);
       for (const change of page.changes) {
         if (change.note) {
@@ -355,6 +360,7 @@ export function useNotebook(session: Session) {
     }
     cacheReferencedFiles();
     if (alive.current) {
+      if (changed) bump((value) => value + 1);
       setOnline(true);
       setOfflineCount(mirror.current.size);
     }
@@ -379,6 +385,7 @@ export function useNotebook(session: Session) {
       onlineCursor.current = cursor;
       return;
     }
+    if (alive.current) bump((value) => value + 1);
     invalidateExplorer();
     const data = await api.tags(view, signal);
     if (!alive.current) return;
@@ -598,6 +605,46 @@ export function useNotebook(session: Session) {
     void persist(target.id, draft).catch(() => undefined);
     notify();
     schedule(target.id);
+  };
+
+  const readNote = useCallback(async (id: string, signal?: AbortSignal): Promise<Note> => {
+    const local = drafts.current.get(id)?.note;
+    const cached = offlineLibraryRef.current ? mirror.current.get(id) ?? await loadMirroredNote(userId, id) : null;
+    const value = local ?? cached;
+    if (value) return value;
+    if (!navigator.onLine || session.offline) throw new Error('这篇笔记尚未保存到本机。');
+    return (await api.note(id, signal)).note;
+  }, [userId, session.offline]);
+
+  const resolveNoteLinks = useCallback(async (ids: string[], signal?: AbortSignal): Promise<NoteSummary[]> => {
+    const values: NoteSummary[] = [];
+    if (offlineLibraryRef.current) {
+      const available = new Map(mirror.current);
+      for (const draft of drafts.current.values()) available.set(draft.note.id, draft.note);
+      const wanted = new Set(ids.map((id) => id.toLowerCase()));
+      for (const item of available.values()) {
+        if (item.deletedAt !== null || !wanted.has(item.id.toLowerCase())) continue;
+        const { content, ...metadata } = item;
+        values.push({ ...metadata, excerpt: content.slice(0, 180) });
+      }
+      return values;
+    }
+    for (let offset = 0; offset < ids.length; offset += 200) {
+      values.push(...(await api.noteMetadata(ids.slice(offset, offset + 200), signal)).notes);
+    }
+    return values;
+  }, [userId]);
+
+  const searchFiles = async (query: string, offset = 0): Promise<{ files: LinkedFile[]; nextOffset: number | null }> => {
+    if (!offlineLibraryRef.current || navigator.onLine && !session.offline) return api.files(query, offset);
+    const files = new Map<string, LinkedFile>();
+    for (const item of await allAvailableNotes()) {
+      if (item.deletedAt !== null) continue;
+      for (const file of fileLinks(item.content)) files.set(file.id, file);
+    }
+    const needle = query.trim().toLocaleLowerCase();
+    const found = [...files.values()].filter((file) => file.filename.toLocaleLowerCase().includes(needle));
+    return { files: found.slice(offset, offset + 50), nextOffset: offset + 50 < found.length ? offset + 50 : null };
   };
 
   const select = async (id: string) => {
@@ -936,6 +983,26 @@ export function useNotebook(session: Session) {
     setTags((prev) => [...new Set([...prev, value])].sort((a, b) => a.localeCompare(b, 'zh-CN')));
   };
 
+  const linkTargetCounts = async (): Promise<{ rootNotes: number; files: number }> => {
+    if (navigator.onLine && !session.offline) return api.linkTargetCounts();
+    const notes = (await allAvailableNotes()).filter((item) => item.deletedAt === null);
+    return { rootNotes: notes.filter((item) => item.folderId === null).length,
+      files: new Set(notes.flatMap((item) => fileLinks(item.content).map((file) => file.id))).size };
+  };
+
+  const browseLinkNotes = async (folderId: string | null, offset = 0): Promise<{ notes: NoteSummary[]; nextOffset: number | null }> => {
+    if (!offlineLibraryRef.current) {
+      const page = await api.list({ view: 'export', folderId: folderId ?? 'root', offset });
+      return { ...page, notes: page.notes.filter((item) => item.deletedAt === null) };
+    }
+    const notes = (await allAvailableNotes())
+      .filter((item) => item.deletedAt === null && item.folderId === folderId)
+      .sort(compareNoteOrder)
+      .slice(offset, offset + 51);
+    return { notes: notes.slice(0, 50).map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) })),
+      nextOffset: notes.length > 50 ? offset + 50 : null };
+  };
+
   const searchAll = async (value: string): Promise<NoteSummary[]> => {
     const q = value.trim().toLocaleLowerCase();
     if (offlineLibraryRef.current) {
@@ -954,12 +1021,31 @@ export function useNotebook(session: Session) {
       .slice(0, 30);
   };
 
-  const backlinks = async (id: string): Promise<NoteSummary[]> => {
-    if (!offlineLibraryRef.current) return (await api.backlinks(id)).notes;
-    return (await allAvailableNotes())
-      .filter((item) => item.deletedAt === null && noteLinkIds(item.content).includes(id))
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) }));
+  const links = async (source: Note, direction: NoteLinkDirection, offset = 0): Promise<NoteLinkPage> => {
+    if (!offlineLibraryRef.current) return api.links(source.id, direction, offset);
+    const available = (await allAvailableNotes()).filter((item) => item.deletedAt === null && item.id !== source.id);
+    const byId = new Map(available.map((item) => [item.id, item]));
+    if (direction === 'outgoing') {
+      const ids = noteLinkIds(source.content).filter((id) => id !== source.id);
+      const page = ids.slice(offset, offset + 50);
+      return {
+        notes: page.flatMap((id) => {
+          const item = byId.get(id);
+          if (!item) return [];
+          const { content, ...metadata } = item;
+          return [{ ...metadata, excerpt: content.slice(0, 180) }];
+        }),
+        missingIds: page.filter((id) => !byId.has(id)),
+        nextOffset: offset + 50 < ids.length ? offset + 50 : null,
+      };
+    }
+    const incoming = available.filter((item) => item.content.toLowerCase().includes(source.id) && noteLinkIds(item.content).includes(source.id))
+      .sort((left, right) => right.updatedAt - left.updatedAt || left.id.localeCompare(right.id));
+    return {
+      notes: incoming.slice(offset, offset + 50).map(({ content, ...item }) => ({ ...item, excerpt: content.slice(0, 180) })),
+      missingIds: [],
+      nextOffset: offset + 50 < incoming.length ? offset + 50 : null,
+    };
   };
 
   const tasks = async () => {
@@ -1204,12 +1290,12 @@ export function useNotebook(session: Session) {
   return {
     note, notes: filtered, tags, folders, folderId, view, query, tag, setView, setQuery, setTag, setFolderId,
     nextOffset, loading, error, setError, conflict, setConflict, status, pending,
-    online, offlineLibrary, offlineCount,
+    online, offlineLibrary, offlineCount, knowledgeRevision: tick,
     explorerFolders, explorerFolderKey, ensureExplorerFolder, invalidateExplorer,
     busy: running.current.size > 0, select, clearSelection, create, edit, append, save: () => note ? save(note.id) : Promise.resolve(true),
     retry, conflictCopy, resolveConflict, discardConflict, purge, purgeTrash,
     refresh: () => refreshRef.current(), loadMore: () => refresh(true),
-    configureOffline, cachedFile, backlinks, tasks, searchAll, addTag, manageTag, setTagColor, tagColors, tagCounts, bulkUpdate, findDuplicates,
+    configureOffline, cachedFile, readNote, resolveNoteLinks, searchFiles, links, tasks, linkTargetCounts, browseLinkNotes, searchAll, addTag, manageTag, setTagColor, tagColors, tagCounts, bulkUpdate, findDuplicates,
     refreshFolders,
     createFolder: async (name: string, parentId: string | null, description = '') => { await api.createFolder(name, parentId, description); await refreshFolders(); },
     updateFolder: async (id: string, patch: { name?: string; parentId?: string | null; description?: string }) => { await api.updateFolder(id, patch); await refreshFolders(); },

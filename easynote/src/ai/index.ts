@@ -1,4 +1,5 @@
 import { withNoteDescription } from '../shared/descriptions.js';
+import { noteLink } from '../shared/noteLinks.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 import {
@@ -28,6 +29,8 @@ const noteMetadataSchema = z.object({
 const noteResultSchema = z.object({
   note: noteMetadataSchema,
   operationId: z.string(),
+  uri: z.string(),
+  link: z.string(),
 });
 
 const noteSearchMatchSchema = z.object({
@@ -79,6 +82,8 @@ function noteResult(note: Note, operationId: string) {
   const result = {
     note: noteMetadata(note),
     operationId,
+    uri: `easynote://notes/${note.id}.md`,
+    link: noteLink(note.id, note.title),
   };
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
@@ -102,9 +107,10 @@ async function save(
   id: string,
   input: NoteInput,
   revision: number,
-    operationId = crypto.randomUUID(),
+  operationId: string = crypto.randomUUID(),
+  linkedNoteIds: string[] = [],
 ) {
-  const result = await client.save(id, input, revision, operationId);
+  const result = await client.save(id, input, revision, operationId, linkedNoteIds);
   return noteResult(result.note, operationId);
 }
 
@@ -158,6 +164,31 @@ function resourceMarkdown(note: Note): string {
 export async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
   const status = await client.status();
   const server = new McpServer({ name: 'easynote-mcp-server', version: EASYNOTE_VERSION });
+
+  server.registerTool('easynote_get_note_links', {
+    title: 'Get EasyNote Links and Backlinks',
+    description: 'List incoming backlinks or outgoing internal links, including archived notes. Returns metadata and excerpts without full bodies. Follow nextOffset until null, even when a candidate page is empty. missingIds are outgoing references unavailable to this account. Code examples are excluded.',
+    inputSchema: z.object({
+      id: z.uuid(),
+      direction: z.enum(['incoming', 'outgoing']).default('incoming'),
+      offset: z.number().int().nonnegative().default(0),
+      limit: z.number().int().min(1).max(200).default(50),
+    }).strict(),
+    outputSchema: z.object({
+      notes: z.array(noteMetadataSchema.extend({ excerpt: z.string(), uri: z.string(), link: z.string() })),
+      missingIds: z.array(z.string()),
+      nextOffset: z.number().nullable(),
+    }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ id, direction, offset, limit }) => {
+    try {
+      const page = await client.links(id, direction, offset, limit);
+      const result = { ...page, notes: page.notes.map((note) => ({ ...note,
+        uri: `easynote://notes/${note.id}.md`, link: noteLink(note.id, note.title),
+      })) };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
 
   server.registerTool('easynote_search_notes', {
     title: 'Search EasyNote Notes',
@@ -420,8 +451,11 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
 
   server.registerTool('easynote_create_note', {
     title: 'Create EasyNote Note',
-    description: 'Create one EasyNote note. This changes cloud data and may create a duplicate if called twice.',
+    description: 'Upload one Markdown note and optionally link up to 20 existing notes in the same write. linked_note_ids automatically create backlinks on the targets without editing their bodies. Reuse both id and operation_id with identical input to safely retry a timed-out creation. Returns a reusable WikiLink and Resource URI.',
     inputSchema: z.object({
+      id: z.uuid().optional().describe('Optional client-generated stable ID. Reuse it with operation_id on retry.'),
+      operation_id: z.uuid().optional().describe('Optional client-generated operation ID. Reuse with id and identical input on retry.'),
+      linked_note_ids: z.array(z.uuid()).max(20).default([]).describe('Existing target note IDs. Their titles are resolved on the server and links are appended only when absent.'),
       title: z.string().max(256).describe('Plain note title without a Markdown heading marker.'),
       content: z.string().describe('Markdown body. Use ## for top-level body sections. A leading blockquote is the note description.'),
       description: z.string().max(2000).optional().describe('Optional description inserted as a leading Markdown blockquote.'),
@@ -432,9 +466,9 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     }).strict(),
     outputSchema: noteResultSchema,
     annotations: writeAnnotations,
-  }, async ({ title, content, description, tags, pinned, archived, folderId }) => {
+  }, async ({ id, operation_id, linked_note_ids, title, content, description, tags, pinned, archived, folderId }) => {
     try {
-      return await save(client, crypto.randomUUID(), {
+      return await save(client, id ?? crypto.randomUUID(), {
         title,
         content: description === undefined ? content : withNoteDescription(content, description),
         tags: [...new Set(tags)],
@@ -443,10 +477,28 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
         archived,
         folderId,
         deletedAt: null,
-      }, 0);
+      }, 0, operation_id ?? crypto.randomUUID(), linked_note_ids);
     } catch (error) {
       return toolError(error);
     }
+  });
+
+  server.registerTool('easynote_link_notes', {
+    title: 'Link Existing EasyNote Notes',
+    description: 'Append links to up to 20 existing target notes without uploading the source Markdown again. Backlinks appear automatically on targets. Existing links are preserved and deduplicated. Only the source revision changes. To remove a link, edit its Markdown with easynote_update_note.',
+    inputSchema: z.object({
+      id: z.uuid().describe('Source note ID.'),
+      expected_revision: z.number().int().positive(),
+      linked_note_ids: z.array(z.uuid()).min(1).max(20),
+    }).strict(),
+    outputSchema: noteResultSchema,
+    annotations: writeAnnotations,
+  }, async ({ id, expected_revision, linked_note_ids }) => {
+    try {
+      const current = (await client.note(id)).note;
+      if (current.deletedAt !== null) throw new Error('Restore the source note from trash before linking.');
+      return await save(client, id, noteInput(current), expected_revision, crypto.randomUUID(), linked_note_ids);
+    } catch (error) { return toolError(error); }
   });
 
   server.registerTool('easynote_update_note', {

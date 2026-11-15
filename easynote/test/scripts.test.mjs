@@ -374,6 +374,28 @@ test('interactive setup hides the password, stores only a verifier and preserves
   assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), content);
 });
 
+test('Docker setup writes a private verifier to the volume and preserves existing accounts', async () => {
+  const f = await fixture();
+  const dataDir = `${f.root}/data`;
+  await mkdir(dataDir);
+  await writeFile(`${f.root}/docker-setup.sh`, `#!/bin/bash\nexec ${shellQuote(process.execPath)} ${shellQuote(`${f.root}/scripts/setup.mjs`)} --docker\n`);
+  const result = await terminal(f, 'docker-setup.sh', [], setupSteps, { DATA_DIR: dataDir });
+  assert.equal(result.status, 0, result.output);
+  assert.ok(!result.output.includes(secret));
+  const file = `${dataDir}/initial-owner.json`;
+  const content = await readFile(file, 'utf8');
+  const owner = JSON.parse(content);
+  assert.equal(owner.username, 'test-owner');
+  assert.match(owner.verifier.proof, /^[a-f0-9]{64}$/);
+  assert.ok(!content.includes(secret));
+  assert.equal((await stat(file)).mode & 0o777, 0o600);
+  const second = await terminal(f, 'docker-setup.sh', [], [], { DATA_DIR: dataDir });
+  assert.equal(second.status, 0, second.output);
+  assert.match(second.output, /already exists; preserved/);
+  assert.equal(await readFile(file, 'utf8'), content);
+  assert.equal(await readFile(`${f.root}/.dev.vars`, 'utf8'), localConfig);
+});
+
 test('interactive setup keeps prompting after invalid username, password and confirmation', async () => {
   const f = await fixture({ configured: false });
   await dependencies(f);
