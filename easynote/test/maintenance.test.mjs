@@ -253,7 +253,7 @@ test('remote maintenance rejects credentials not supplied by an interactive wrap
 
 test('interactive password recovery hides the secret and revokes sessions and tokens', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'easynote-password-reset-'));
-  const password = 'Recovered-Test-Password-741!';
+  const password = 'Reset-1234';
   try {
     await mkdir(join(directory, 'scripts'));
     await mkdir(join(directory, 'node_modules/wrangler/bin'), { recursive: true });
@@ -279,7 +279,7 @@ if (args.includes('--command')) {
       .map(encode).join(' ');
     const script = `set timeout 10
 spawn -noecho ${command}
-expect -exact ${encode('New password (12-128 characters, hidden): ')} { send -- "${encode(password)}\\r" }
+expect -exact ${encode('New password (10-128 characters, hidden): ')} { send -- "${encode(password)}\\r" }
 expect -exact ${encode('Confirm password (hidden): ')} { send -- "${encode(password)}\\r" }
 expect -exact ${encode('Type reset owner to continue: ')} { send -- "${encode('reset owner')}\\r" }
 expect eof

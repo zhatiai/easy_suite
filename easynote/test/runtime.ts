@@ -1,5 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
+execFileSync(process.execPath, ['scripts/fingerprint.mjs']);
 import * as miniflareModule from 'miniflare';
 import { passwordVerifier } from '../src/worker/auth';
 import { digest } from '../src/worker/core';
@@ -30,7 +32,7 @@ function migrationStatements(schema: string): string[] {
   return statements;
 }
 
-export async function createRuntime(port?: number, options: { seedOwner?: boolean } = {}) {
+export async function createRuntime(port?: number, options: { seedOwner?: boolean; initialOwner?: boolean; outboundService?: (request: InstanceType<typeof miniflareModule.Request>) => Promise<InstanceType<typeof miniflareModule.Response>> } = {}) {
   const seedOwner = options.seedOwner ?? true;
   const config = JSON.parse(await readFile(new URL('../wrangler.json', import.meta.url), 'utf8'));
   const bundle = await build({
@@ -40,15 +42,16 @@ export async function createRuntime(port?: number, options: { seedOwner?: boolea
   const verifier = await passwordVerifier(testPassword);
   const runtime = new Miniflare(convertOptions({
     name: 'easynote-test',
+    outboundService: options.outboundService,
     modules: true, script: bundle.outputFiles[0].text,
     compatibilityDate: config.compatibility_date > '2026-08-06' ? '2026-08-06' : config.compatibility_date,
     compatibilityFlags: ['nodejs_compat'],
     bindings: {
       ...config.vars, ALLOW_LOCAL_HTTP: port ? 'true' : 'false',
-      INITIAL_OWNER: JSON.stringify({ username: 'tester', verifier }),
+      INITIAL_OWNER: options.initialOwner === false ? '' : JSON.stringify({ username: 'tester', verifier }),
       VERSIONS_KEPT: '3',
     },
-    durableObjects: { NOTE_EVENTS: 'NoteEvents' },
+    durableObjects: { NOTE_EVENTS: 'NoteEvents', SERVER_TRANSFER: { className: 'ServerTransfer', useSQLite: true } },
     d1Databases: ['DB'], r2Buckets: ['IMAGES'],
     host: '127.0.0.1', ...(port ? { port } : {}),
     assets: {

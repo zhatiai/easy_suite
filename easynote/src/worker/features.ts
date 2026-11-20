@@ -1,3 +1,4 @@
+import { objectKey } from './images';
 import { unfinishedTasks } from '../shared/tasks';
 import { idPattern, type SharedFolder, type SharedNote } from '../shared/types';
 import type { Identity } from './auth';
@@ -396,7 +397,7 @@ export async function publicShareRoutes(
   }
 
   if (!row || route === 'images' && !isImage(row.mime)) throw new ApiError(404, 'Shared file not found.');
-  const object = await env.IMAGES.get(`${row.user_id}/${row.id}`);
+  const object = await env.IMAGES.get(objectKey(row));
   if (!object) throw new ApiError(404, 'Shared file bytes not found.');
   return new Response(object.body, {
     headers: {

@@ -178,7 +178,7 @@ function objectFromInsert(line) {
       typeof row.mime !== 'string' || !Number.isSafeInteger(row.size)) fail('The D1 export contains an invalid storage row.');
   return {
     id: row.id,
-    key: `${row.user_id}/${row.id}`,
+    key: row.storage_key || `${row.user_id}/${row.id}`,
     mime: row.mime,
     size: row.size,
     sha256: row.sha256,
@@ -427,8 +427,8 @@ async function resetPassword(options) {
       user = users.find((entry) => entry.username === username);
       if (!user) fail('Account not found.');
     }
-    const password = await io.ask('New password (12-128 characters, hidden): ', true);
-    if (password.length < 12 || password.length > 128) fail('Password must be 12-128 characters.');
+    const password = await io.ask('New password (10-128 characters, hidden): ', true);
+    if (password.length < 10 || password.length > 128) fail('Password must be 10-128 characters.');
     if (password !== await io.ask('Confirm password (hidden): ', true)) fail('Passwords do not match.');
     const confirmation = await io.ask(`Type reset ${user.username} to continue: `);
     if (confirmation !== `reset ${user.username}`) fail('Password reset cancelled.');

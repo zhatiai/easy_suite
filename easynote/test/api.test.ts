@@ -8,6 +8,7 @@ import { passwordVerifier } from '../src/worker/auth';
 import { noteDescription, withNoteDescription } from '../src/shared/descriptions';
 import { folderRelativePath, noteFingerprint, noteRelativePath } from '../src/shared/types';
 import type { Note, NoteLinkPage } from '../src/shared/types';
+import type { Session } from '../src/shared/types';
 import { appendNoteLinks, fileLinks, noteLink, noteLinkIds } from '../src/shared/noteLinks';
 
 let instance: Awaited<ReturnType<typeof createRuntime>>;
@@ -87,6 +88,70 @@ test('session bootstrap preserves authenticated, anonymous and first-install beh
     const session = await response.json() as any;
     assert.equal(session.configured, true);
     assert.equal(session.user, null);
+    assert.equal((await fresh.db.prepare('SELECT username FROM users').first())?.username, 'tester');
+  } finally { await fresh.runtime.dispose(); }
+});
+
+test('web setup validates requests, elects one administrator and closes permanently', async () => {
+  const fresh = await createRuntime(undefined, { seedOwner: false, initialOwner: false });
+  const setup = (body: unknown, headers: Record<string, string> = {}) => fresh.runtime.dispatchFetch(`${origin}/api/setup`, {
+    method: 'POST', headers: { Origin: origin, 'CF-Connecting-IP': '192.0.2.50', 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  try {
+    const before = await (await fresh.runtime.dispatchFetch(`${origin}/api/session`)).json() as Session;
+    assert.equal(before.configured, false);
+    assert.equal(before.user, null);
+    assert.equal((await setup({ username: 'owner', password: testPassword }, { Origin: '' })).status, 403);
+    assert.equal((await setup({ username: 'owner', password: testPassword }, { Origin: 'https://attacker.test' })).status, 403);
+    assert.equal((await setup({ username: 'owner', password: testPassword }, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
+    assert.equal((await setup({ username: 'owner', password: testPassword }, { 'Content-Type': 'text/plain' })).status, 415);
+    assert.equal((await setup({ username: '!', password: testPassword })).status, 400);
+    assert.equal((await setup({ username: 'owner', password: '123456789' })).status, 400);
+    assert.equal((await setup({ username: 'owner', password: 'x'.repeat(129) })).status, 400);
+    assert.equal((await setup({ username: 'owner', password: testPassword, role: 'user' })).status, 400);
+    // Even an enabled registration switch cannot create an unapproved first account.
+    await fresh.db.prepare('UPDATE app_state SET self_registration_enabled=1 WHERE id=1').run();
+    assert.equal((await fresh.runtime.dispatchFetch(`${origin}/api/register`, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'other', password: testPassword }),
+    })).status, 403);
+    const responses = await Promise.all([
+      setup({ username: 'first-owner', password: testPassword.slice(0, 10) }),
+      setup({ username: 'second-owner', password: testPassword.slice(0, 10) }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+    const winner = responses.find((response) => response.status === 200)!;
+    const session = await winner.json() as Session;
+    assert.equal(session.user?.role, 'admin');
+    assert.equal(session.configured, true);
+    assert.equal((await fresh.runtime.dispatchFetch(`${origin}/api/login`, {
+      method: 'POST', headers: { Origin: origin, 'CF-Connecting-IP': '192.0.2.50', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: session.user?.username, password: testPassword.slice(0, 10) }),
+    })).status, 200);
+    assert.ok(session.csrf);
+    const cookie = winner.headers.get('Set-Cookie')!;
+    assert.match(cookie, /HttpOnly.*SameSite=Strict.*Secure/);
+    assert.equal((await fresh.db.prepare('SELECT COUNT(*) AS count FROM users').first())?.count, 1);
+    assert.equal((await fresh.runtime.dispatchFetch(`${origin}/api/admin/users`, {
+      headers: { Cookie: cookie.split(';')[0] },
+    })).status, 200);
+    assert.equal((await fresh.runtime.dispatchFetch(`${origin}/api/admin/users`)).status, 401);
+    assert.equal((await setup({ username: 'replacement', password: testPassword })).status, 409);
+    await fresh.db.prepare('UPDATE users SET enabled=0').run();
+    assert.equal((await setup({ username: 'replacement', password: testPassword })).status, 409);
+    assert.equal((await fresh.db.prepare('SELECT username FROM users').first())?.username, session.user?.username);
+  } finally { await fresh.runtime.dispose(); }
+});
+
+test('web setup preserves a preconfigured owner verifier', async () => {
+  const fresh = await createRuntime(undefined, { seedOwner: false });
+  try {
+    const response = await fresh.runtime.dispatchFetch(`${origin}/api/setup`, {
+      method: 'POST', headers: { Origin: origin, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'replacement', password: testPassword }),
+    });
+    assert.equal(response.status, 409);
     assert.equal((await fresh.db.prepare('SELECT username FROM users').first())?.username, 'tester');
   } finally { await fresh.runtime.dispose(); }
 });
@@ -606,7 +671,7 @@ test('another account cannot read, edit or reference private notes and images', 
   }, headers);
   assert.deepEqual(await duplicateLookup.json(), { matches: [] });
   const imageId = randomUUID();
-  await instance.db.prepare("INSERT INTO images VALUES(?,?,?,?,?,?,?,?,?,?,?)")
+  await instance.db.prepare("INSERT INTO images(id,user_id,filename,mime,size,width,height,sha256,status,created_at,last_used_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
     .bind(imageId, testUserId, 'owned.png', 'image/png', 1, 1, 1, '0'.repeat(64), 'ready', Date.now(), Date.now()).run();
   const foreign = await request(`/api/notes/${randomUUID()}`, 'POST',
     { ...base, content: `![private](/api/images/${imageId})`, revision: 0, operationId: randomUUID() }, headers);
@@ -1220,7 +1285,7 @@ test('link target counts exclude trashed notes, images, pending files and other 
   }
   for (const [owner, mime, status] of [[userId, 'text/plain', 'ready'], [userId, 'image/png', 'ready'],
     [userId, 'text/plain', 'pending'], [testUserId, 'text/plain', 'ready']] as const) {
-    await instance.db.prepare('INSERT INTO images VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(randomUUID(), owner, 'counts.txt', mime,
+    await instance.db.prepare('INSERT INTO images(id,user_id,filename,mime,size,width,height,sha256,status,created_at,last_used_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').bind(randomUUID(), owner, 'counts.txt', mime,
       1, 1, 1, '0'.repeat(64), status, now, now).run();
   }
   const response = await request('/api/notes/link-target-counts', 'GET', undefined, tenant);

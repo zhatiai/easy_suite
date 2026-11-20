@@ -171,6 +171,7 @@ export interface ClientConfig {
 }
 
 export interface Session {
+  datasetId?: string;
   user: { id: string; username: string; role: 'admin' | 'user'; hasRecoveryCode: boolean } | null;
   csrf: string | null;
   configured: boolean;

@@ -5,6 +5,7 @@ export interface Env {
   IMAGES: R2Bucket;
   ASSETS: Fetcher;
   NOTE_EVENTS: DurableObjectNamespace;
+  SERVER_TRANSFER: DurableObjectNamespace;
   INITIAL_OWNER?: string;
   ALLOW_LOCAL_HTTP: string;
   MAX_NOTE_BYTES: string;

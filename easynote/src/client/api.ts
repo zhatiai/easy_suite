@@ -1,3 +1,4 @@
+import type { BackupSetupInput, BackupSetupStatus, ServerTransferSettings, ServerTransferStatus } from '../shared/serverTransfer';
 import { t } from './i18n';
 import './uuid';
 import type {
@@ -94,7 +95,15 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, s
 }
 
 export const api = {
+  backupSetupStatus: () => request<BackupSetupStatus | null>('/api/setup/backup'),
+  setupBackup: (input: BackupSetupInput) => request<BackupSetupStatus>('/api/setup/backup', 'POST', input),
+  serverTransferStatus: () => request<ServerTransferStatus>('/api/admin/server-transfer'),
+  saveServerTransfer: (settings: ServerTransferSettings, confirm: string) => request<ServerTransferStatus>('/api/admin/server-transfer', 'PUT', { ...settings, confirm }),
+  createServerTransferKey: () => request<{ token: string }>('/api/admin/server-transfer/key', 'POST', {}),
+  runServerTransfer: (direction: 'push' | 'pull', confirm: string) => request<ServerTransferStatus>('/api/admin/server-transfer/run', 'POST', { direction, confirm }),
+  clearServerTransferJobs: () => request<ServerTransferStatus>('/api/admin/server-transfer/jobs', 'DELETE'),
   session: () => request<Session>('/api/session'),
+  setup: (username: string, password: string) => request<Session>('/api/setup', 'POST', { username, password }),
   login: (username: string, password: string) => request<Session>('/api/login', 'POST', { username, password }),
   register: (username: string, password: string) =>
     request<{ ok: true; pendingApproval: true; recoveryCode: string }>('/api/register', 'POST', { username, password }),

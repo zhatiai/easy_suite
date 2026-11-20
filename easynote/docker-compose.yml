@@ -11,6 +11,7 @@ services:
       HEALTH_PORT: "8792"
       DATA_DIR: /data
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env (see .env.docker.example)}
+      PUBLIC_ORIGIN_ALIASES: ${PUBLIC_ORIGIN_ALIASES:-}
       ALLOW_LOCAL_HTTP: ${ALLOW_LOCAL_HTTP:-false}
       TRUST_PROXY: ${TRUST_PROXY:-false}
     ports:

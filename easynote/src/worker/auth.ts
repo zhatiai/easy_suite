@@ -39,8 +39,8 @@ function normalizeUsername(value: unknown): string {
 }
 
 function validatePassword(value: unknown): string {
-  if (typeof value !== 'string' || value.length < 12 || value.length > 128) {
-    throw new ApiError(400, 'Password must be 12-128 characters.');
+  if (typeof value !== 'string' || value.length < 10 || value.length > 128) {
+    throw new ApiError(400, 'Password must be 10-128 characters.');
   }
   return value;
 }
@@ -230,6 +230,7 @@ async function createSession(request: Request, env: Env, user: Pick<UserRow, 'id
   return json({
     user: { id: user.id, username: user.username, role: user.role, hasRecoveryCode: user.recovery_code_hash !== null },
     csrf,
+    datasetId: (await env.DB.prepare('SELECT generation FROM server_dataset WHERE id=1').first<{ generation: string }>())!.generation,
     configured: true,
     registrationEnabled: await registrationEnabled(env),
     config: clientConfig(env),
@@ -237,8 +238,41 @@ async function createSession(request: Request, env: Env, user: Pick<UserRow, 'id
   }, 200, { 'Set-Cookie': cookie(request, env, value, ttl) });
 }
 
+export async function requireInitialSetup(request: Request, env: Env): Promise<void> {
+  requireOrigin(request);
+  if (!request.headers.get('Origin')) throw new ApiError(403, 'Origin is required.');
+  if (await ensureOwner(env)) throw new ApiError(409, 'Setup is already complete. Please sign in.');
+}
+
+export async function limitInitialSetup(request: Request, env: Env): Promise<void> {
+  await limitAccountAction(request, env, 'setup', 'REGISTRATION_IP_LIMIT', 'REGISTRATION_GLOBAL_LIMIT');
+}
+
+async function initializeOwner(request: Request, env: Env): Promise<Response> {
+  await requireInitialSetup(request, env);
+  const data = await readJson(request, 4096);
+  if (Object.keys(data).some((key) => !['username', 'password'].includes(key))) {
+    throw new ApiError(400, 'Invalid setup fields.');
+  }
+  const username = normalizeUsername(data.username);
+  const password = validatePassword(data.password);
+  await limitInitialSetup(request, env);
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const verifier = JSON.stringify(await passwordVerifier(password));
+  // A single conditional insert elects the owner even when setup requests overlap.
+  const inserted = await env.DB.prepare(`INSERT INTO users
+    (id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    SELECT ?,?,?,?,'admin',1,?,? WHERE NOT EXISTS (SELECT 1 FROM users)
+    RETURNING id`)
+    .bind(id, username, verifier, now, now, now).first<{ id: string }>();
+  if (!inserted) throw new ApiError(409, 'Setup is already complete. Please sign in.');
+  return createSession(request, env, { id, username, role: 'admin', recovery_code_hash: null });
+}
+
 async function register(request: Request, env: Env): Promise<Response> {
   requireOrigin(request);
+  if (!await ensureOwner(env)) throw new ApiError(403, 'Complete administrator setup first.');
   if (!await registrationEnabled(env)) throw new ApiError(403, 'Self-registration is closed.');
   const data = await readJson(request, 4096);
   if (Object.keys(data).some((key) => !['username', 'password'].includes(key))) throw new ApiError(400, 'Invalid registration fields.');
@@ -428,6 +462,7 @@ export async function limitLogin(request: Request, env: Env): Promise<void> {
 }
 
 export async function authRoute(request: Request, env: Env, path: string): Promise<Response | null> {
+  if (path === '/api/setup' && request.method === 'POST') return initializeOwner(request, env);
   if (path === '/api/session' && request.method === 'GET') {
     const [user, registration] = await Promise.all([identity(request, env), registrationEnabled(env)]);
     const configured = user ? true : await ensureOwner(env);
@@ -439,6 +474,7 @@ export async function authRoute(request: Request, env: Env, path: string): Promi
         hasRecoveryCode: user.hasRecoveryCode,
       } : null,
       csrf: user?.csrf ?? null,
+      datasetId: (await env.DB.prepare('SELECT generation FROM server_dataset WHERE id=1').first<{ generation: string }>())!.generation,
       configured,
       registrationEnabled: registration,
       config: clientConfig(env),

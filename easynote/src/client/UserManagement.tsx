@@ -1,3 +1,4 @@
+import { PasswordInput } from './PasswordInput';
 import { useEffect, useState } from 'react';
 import { Check, LoaderCircle, Plus, Save, Trash2, UserRoundCog } from 'lucide-react';
 import type { UserAccount } from '../shared/types';
@@ -126,12 +127,12 @@ export function UserManagement({
       <h3>{t('create_user')}</h3>
       <input required aria-label={t('新用户用户名')} placeholder={t('username')} minLength={3} maxLength={32}
         value={username} onChange={(event) => setUsername(event.target.value)} />
-      <input required aria-label={t('新用户密码')} placeholder={t('初始密码（至少 12 位）')} type="password"
-        minLength={12} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} />
+      <PasswordInput required aria-label={t('新用户密码')} placeholder={t('初始密码（至少 10 位）')}
+        minLength={10} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} />
       <select aria-label={t('新用户角色')} value={role} onChange={(event) => setRole(event.target.value as UserAccount['role'])}>
         <option value="user">{t('user')}</option><option value="admin">{t('admin')}</option>
       </select>
-      <button className="primary" disabled={disabled || !!working || password.length < 12}>
+      <button className="primary" disabled={disabled || !!working || password.length < 10}>
         {working === 'create' ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{t('create')}
       </button>
     </form>
@@ -154,12 +155,12 @@ export function UserManagement({
             </select>
             <label className="inline-check"><input type="checkbox" checked={edit.enabled} disabled={current}
               onChange={(event) => patch(user.id, { enabled: event.target.checked })} />{t('enabled')}</label>
-            <input aria-label={`${user.username} ${t('new_password')}`} placeholder={t('留空则不改密码')} type="password" disabled={current}
-              minLength={12} maxLength={128} value={edit.password}
+            <PasswordInput aria-label={`${user.username} ${t('new_password')}`} placeholder={t('留空则不改密码')} disabled={current}
+              minLength={10} maxLength={128} value={edit.password}
               onChange={(event) => patch(user.id, { password: event.target.value })} />
           </div>
           <div className="user-actions">
-            <button disabled={current || disabled || !!working || edit.password.length > 0 && edit.password.length < 12}
+            <button disabled={current || disabled || !!working || edit.password.length > 0 && edit.password.length < 10}
               onClick={() => void save(user.id)}>
               {working === user.id ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t('save')}
             </button>

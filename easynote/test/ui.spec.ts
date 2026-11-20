@@ -3,13 +3,171 @@ import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { testToken, testCsrf, testPassword, testUserId } from './runtime';
+import { createRuntime, testToken, testCsrf, testPassword, testUserId } from './runtime';
+import type { BackupSetupStatus } from '../src/shared/serverTransfer';
 
 const origin = 'http://127.0.0.1:8792';
 const headers = { Origin: origin, 'X-CSRF-Token': testCsrf };
 test.beforeEach(async ({ context }) => {
   await context.addCookies([{ name: 'easynote_dev', value: testToken, domain: '127.0.0.1', path: '/', httpOnly: true, sameSite: 'Strict' }]);
 });
+
+for (const language of ['zh', 'en'] as const) {
+  test(`first-install backup syncs source accounts and opens their notes (${language})`, async ({ page, context }) => {
+    const sourceOrigin = 'https://source.example.test';
+    const source = await createRuntime();
+    const fresh = await createRuntime(8793, { seedOwner: false, initialOwner: false, outboundService: async (request) =>
+      source.runtime.dispatchFetch(request.url, { method: request.method, headers: Object.fromEntries(request.headers),
+        body: request.body ? await request.arrayBuffer() : undefined }) });
+    try {
+      const sourceHeaders = { Origin: sourceOrigin, Cookie: `__Host-easynote=${testToken}`, 'X-CSRF-Token': testCsrf, 'Content-Type': 'application/json' };
+      const key = await source.runtime.dispatchFetch(`${sourceOrigin}/api/admin/server-transfer/key`, { method: 'POST', headers: sourceHeaders, body: '{}' });
+      const { token } = await key.json() as { token: string };
+      const noteId = randomUUID();
+      const saved = await source.runtime.dispatchFetch(`${sourceOrigin}/api/notes/${noteId}`, { method: 'POST', headers: sourceHeaders,
+        body: JSON.stringify({ title: 'Existing account knowledge', content: 'Source account content', tags: [], pinned: false,
+          archived: false, deletedAt: null, revision: 0, operationId: randomUUID() }) });
+      expect(saved.status).toBe(201);
+      await context.clearCookies();
+      await page.setViewportSize(language === 'zh' ? { width: 320, height: 740 } : { width: 1440, height: 960 });
+      await page.addInitScript((value) => localStorage.setItem('easynote-language', value), language);
+      await page.goto('http://127.0.0.1:8793/');
+      await page.getByRole('button', { name: language === 'zh' ? '作为备份节点初始化' : 'Set up as a backup node', exact: true }).click();
+      await expect(page.getByText(language === 'zh' ? /账号会随知识库同步/ : /Accounts are synced with the knowledge base/)).toBeVisible();
+      await page.getByLabel(language === 'zh' ? '服务器地址' : 'Server URL', { exact: true }).fill(sourceOrigin);
+      await page.getByLabel(language === 'zh' ? '服务器传输令牌' : 'Server transfer token', { exact: true }).fill(token);
+      await page.getByRole('combobox').selectOption(language === 'zh' ? 'overwrite' : 'incremental');
+      await page.getByRole('spinbutton').fill('0');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `test-results/backup-setup-${language}.png`, fullPage: true });
+      const started = page.waitForResponse((response) => response.url().endsWith('/api/setup/backup') && response.request().method() === 'POST');
+      await page.getByRole('button', { name: language === 'zh' ? '开始同步并初始化' : 'Sync and initialize', exact: true }).click();
+      expect((await started).status()).toBe(202);
+      await page.reload();
+      const completed = page.waitForResponse(async (response) => {
+        if (!response.url().endsWith('/api/setup/backup') || response.request().method() !== 'GET') return false;
+        const value = await response.json();
+        return value?.job?.state === 'completed' && value.maintenance === false;
+      });
+      await expect(page.getByText(language === 'zh' ? '作为备份节点初始化' : 'Set up as a backup node', { exact: true })).toBeVisible();
+      await expect(page.getByRole('combobox')).toHaveValue(language === 'zh' ? 'overwrite' : 'incremental');
+      await expect(page.getByRole('spinbutton')).toHaveValue('0');
+      await expect(page.getByLabel(language === 'zh' ? '服务器地址' : 'Server URL', { exact: true })).toHaveValue(sourceOrigin);
+      await completed;
+      const login = page.getByRole('button', { name: language === 'zh' ? '登录' : 'Sign In', exact: true });
+      await expect(login).toBeVisible();
+      await expect(page.getByRole('status')).toContainText(language === 'zh' ? '笔记所属的来源账号' : 'source account that owns the notes');
+      await page.getByLabel(language === 'zh' ? '用户名' : 'Username', { exact: true }).fill('tester');
+      await page.getByLabel(language === 'zh' ? '密码' : 'Password', { exact: true }).fill(testPassword);
+      await login.click();
+      await expect(page.locator('.app-shell')).toBeVisible();
+      await expect(page.getByText('Existing account knowledge', { exact: true }).first()).toBeVisible();
+      expect((await fresh.db.prepare('SELECT count(*) AS n FROM users').first<{ n: number }>())?.n).toBe(1);
+    } finally {
+      await page.close().finally(async () => { await fresh.runtime.dispose(); await source.runtime.dispose(); });
+    }
+  });
+  test(`backup setup shows phase progress and recovers from errors (${language})`, async ({ page, context }) => {
+    const fresh = await createRuntime(8793, { seedOwner: false, initialOwner: false });
+    let current: BackupSetupStatus | null = null;
+    const sourceUrl = 'https://source.example.test';
+    try {
+      await context.clearCookies();
+      await page.setViewportSize(language === 'zh' ? { width: 1440, height: 960 } : { width: 320, height: 740 });
+      await page.addInitScript((value) => localStorage.setItem('easynote-language', value), language);
+      await page.route('**/api/setup/backup', async (route) => {
+        if (route.request().method() === 'POST') current = {
+          sourceUrl, intervalMinutes: 120, fingerprint: '0'.repeat(64), maintenance: true,
+          job: { id: 'progress-test', direction: 'pull', mode: 'incremental', state: 'running', startedAt: Date.now(), rows: 0, files: 0,
+            progress: { phase: 'connect', recordsProcessed: 0, recordsTotal: null, filesProcessed: 0, filesTotal: null } },
+        };
+        await route.fulfill({ status: route.request().method() === 'POST' ? 202 : 200, json: current });
+      });
+      await page.goto('http://127.0.0.1:8793/');
+      await page.getByRole('button', { name: language === 'zh' ? '作为备份节点初始化' : 'Set up as a backup node', exact: true }).click();
+      const progress = page.getByRole('progressbar', { name: language === 'zh' ? '同步进度' : 'Sync progress' });
+      await expect(progress).toHaveAttribute('value', '0');
+      await page.getByLabel(language === 'zh' ? '服务器地址' : 'Server URL', { exact: true }).fill(sourceUrl);
+      await page.getByLabel(language === 'zh' ? '服务器传输令牌' : 'Server transfer token', { exact: true }).fill('a'.repeat(64));
+      await page.getByRole('combobox').selectOption('incremental');
+      await page.getByRole('button', { name: language === 'zh' ? '开始同步并初始化' : 'Sync and initialize', exact: true }).click();
+      await expect(progress).not.toHaveAttribute('value', /.+/);
+      current = { ...current!, job: { ...current!.job!, rows: 200,
+        progress: { phase: 'rows', recordsProcessed: 500, recordsTotal: 2000, filesProcessed: 0, filesTotal: 4 } } };
+      await expect(progress).toHaveAttribute('value', '25');
+      await expect(page.locator('.backup-setup-stages [aria-current="step"]')).toHaveText(language === 'zh' ? '同步记录' : 'Sync records');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      const columns = await page.locator('.backup-setup-layout').evaluate((element) => getComputedStyle(element).gridTemplateColumns.split(' ').length);
+      expect(columns).toBe(language === 'zh' ? 2 : 1);
+      if (language === 'en') await expect(progress).toBeInViewport();
+      await page.screenshot({ path: `test-results/backup-progress-${language}.png`, fullPage: true });
+      current = { ...current!, job: { ...current!.job!, files: 1,
+        progress: { phase: 'files', recordsProcessed: 2000, recordsTotal: 2000, filesProcessed: 2, filesTotal: 4 } } };
+      await expect(progress).toHaveAttribute('value', '50');
+      await expect(page.locator('.backup-setup-stages [aria-current="step"]')).toHaveText(language === 'zh' ? '同步附件' : 'Sync files');
+      current = { ...current!, maintenance: false, job: { ...current!.job!, state: 'failed', error: 'Test connection interrupted.' } };
+      await expect(page.getByRole('alert')).toHaveText('Test connection interrupted.');
+      current = { ...current, job: { ...current.job!, error: 'Remote server rejected info (409). Server code fingerprints differ.' } };
+      await expect(page.getByRole('alert')).toContainText(language === 'zh' ? '请在两端部署同一份代码构建的版本' : 'Deploy builds from the same code on both servers');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await expect(page.getByRole('button', { name: language === 'zh' ? '返回创建管理员' : 'Back to administrator setup', exact: true })).toBeEnabled();
+    } finally { await page.close().finally(() => fresh.runtime.dispose()); }
+  });
+  test(`first-install web setup creates an administrator and signs in (${language})`, async ({ page, context }) => {
+    const fresh = await createRuntime(8793, { seedOwner: false, initialOwner: false });
+    try {
+      await context.clearCookies();
+      await page.setViewportSize(language === 'zh' ? { width: 320, height: 740 } : { width: 1440, height: 960 });
+      await page.addInitScript((value) => localStorage.setItem('easynote-language', value), language);
+      await page.goto('http://127.0.0.1:8793/');
+      await expect(page.getByText(language === 'zh' ? '初始化 EasyNote' : 'Set up EasyNote', { exact: true })).toBeVisible();
+      const submit = page.getByRole('button', { name: language === 'zh' ? '创建管理员并开始使用' : 'Create administrator and get started' });
+      await expect(submit).toBeEnabled();
+      const labels = language === 'zh' ? ['用户名', '密码', '确认密码'] : ['Username', 'Password', 'Confirm Password'];
+      const password = testPassword.slice(0, 10);
+      await page.getByLabel(labels[0], { exact: true }).fill('web-owner');
+      for (const label of labels.slice(1)) {
+        const field = page.getByLabel(label, { exact: true });
+        await expect(field).toHaveAttribute('minlength', '10');
+        await field.fill(password);
+        await expect(field).toHaveAttribute('type', 'password');
+        const toggle = field.locator('..').getByRole('button');
+        await toggle.click();
+        await expect(field).toHaveAttribute('type', 'text');
+        await expect(field).toHaveValue(password);
+        await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+        await toggle.press('Space');
+        await expect(field).toHaveAttribute('type', 'password');
+        await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      }
+      await page.getByLabel(labels[2], { exact: true }).fill(password + 'different');
+      await submit.click();
+      await expect(page.getByRole('alert')).toContainText(language === 'zh' ? '两次输入的密码不一致。' : 'Passwords do not match.');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: `test-results/first-install-${language}.png` });
+      await page.getByLabel(labels[2], { exact: true }).fill(password);
+      const initialized = page.waitForResponse((response) => response.url().endsWith('/api/setup') && response.request().method() === 'POST');
+      await submit.click();
+      expect((await initialized).status()).toBe(200);
+      await expect(page.locator('.app-shell')).toBeVisible();
+      await page.reload();
+      await expect(page.locator('.app-shell')).toBeVisible();
+      const state = await page.request.get('http://127.0.0.1:8793/api/session');
+      expect((await state.json()).user).toMatchObject({ username: 'web-owner', role: 'admin' });
+      await context.clearCookies();
+      await page.reload();
+      await page.getByLabel(labels[0], { exact: true }).fill('web-owner');
+      const loginPassword = page.getByLabel(labels[1], { exact: true });
+      await loginPassword.fill(password);
+      await loginPassword.locator('..').getByRole('button').click();
+      await expect(loginPassword).toHaveAttribute('type', 'text');
+      await page.getByRole('button', { name: language === 'zh' ? '登录' : 'Sign In', exact: true }).click();
+      await expect(page.locator('.app-shell')).toBeVisible();
+    } finally {
+      await page.close().finally(() => fresh.runtime.dispose());
+    }
+  });
+}
 async function newNote(page: Page, title: string, content = '') {
   await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
   await page.getByRole('textbox', { name: '笔记标题' }).fill(title);
@@ -905,6 +1063,28 @@ test('PWA metadata, install action, app-shell cache and API exclusion work', asy
   await context.setOffline(false);
 });
 
+test('PWA navigation serves EasyNote routes and passes other applications to the network', async ({ page, context }) => {
+  await page.goto('/');
+  await expect(page.locator('.app-shell')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true);
+  for (const [path, title] of [['/horizon/?day=latest', 'Horizon'], ['/lean/', 'Calendar']]) {
+    await page.route(`**${path.split('?')[0]}**`, (route) => route.fulfill({
+      contentType: 'text/html', body: `<!doctype html><title>${title}</title><h1>${title}</h1>`,
+    }));
+    const response = await page.goto(path);
+    await expect(page).toHaveTitle(title);
+    expect(response?.fromServiceWorker()).toBe(false);
+  }
+  const home = await page.goto('/?source=navigation-test');
+  expect(home?.fromServiceWorker()).toBe(true);
+  await expect(page.locator('.app-shell')).toBeVisible();
+  await context.setOffline(true);
+  const settings = await page.goto('/settings/general?source=navigation-test');
+  expect(settings?.fromServiceWorker()).toBe(true);
+  await expect(page.getByRole('heading', { name: '通用', exact: true })).toBeVisible();
+  await context.setOffline(false);
+});
+
 test('offline library is enabled by default and an explicit opt-out persists', async ({ page }) => {
   await page.goto('/');
   await page.locator('.account').click();
@@ -1113,7 +1293,7 @@ test('administrator user management creates and removes an isolated tenant', asy
   const dialog = page.getByRole('region', { name: '用户与注册', exact: true });
   await expect(dialog.getByText('tester（当前）', { exact: true })).toBeVisible();
   await dialog.getByLabel('新用户用户名').fill(username);
-  await dialog.getByLabel('新用户密码').fill('UI-Managed-Password-482!');
+  await dialog.getByLabel('新用户密码').fill('Test-12345');
   await dialog.getByRole('button', { name: '创建', exact: true }).click();
   await expect(dialog.getByText(username, { exact: true })).toBeVisible();
   await dialog.getByRole('button', { name: `删除用户 ${username}` }).click();
@@ -3716,7 +3896,7 @@ test('navigation search layout stays aligned with categories in short and tall w
 });
 
 test('account security changes the password and logs out every device', async ({ page }) => {
-  const newPassword = 'Changed-EasyNote-Password-842!';
+  const newPassword = 'Test-12345';
   const username = `security-${randomUUID().slice(0, 8)}`;
   // Security actions must not revoke the shared fixture session used by subsequent tests.
   expect((await page.request.post('/api/admin/users', { headers, data: { username, password: testPassword, role: 'user' } })).status()).toBe(201);
@@ -3734,7 +3914,7 @@ test('account security changes the password and logs out every device', async ({
   await dialog.getByRole('button', { name: '登出所有设备' }).click();
   await expect(page.getByRole('button', { name: '登录', exact: true })).toBeVisible();
   await page.getByLabel('用户名').fill(username);
-  await page.getByLabel('密码').fill(newPassword);
+  await page.getByLabel('密码', { exact: true }).fill(newPassword);
   await page.getByRole('button', { name: '登录', exact: true }).click();
   await expect(page.getByRole('heading', { name: '全部笔记' })).toBeVisible();
 });
@@ -6191,4 +6371,90 @@ test('LLM setup is reachable from missing configuration in English on a narrow s
   await expect(page).toHaveURL('/settings/llm');
   await expect(page.getByRole('heading', { name: 'LLM configuration', exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});
+
+test('server transfer settings require overwrite confirmation and fit mobile in both languages', async ({ page, context }) => {
+  await page.goto('/settings/servers');
+  await expect(page.getByRole('heading', { name: '同步/备份服务器', exact: true })).toBeVisible();
+  await expect(page.locator('.server-fingerprint')).toHaveText(/^[a-f0-9]{64}$/);
+  await expect(page.getByRole('button', { name: '立即推送到对端', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '立即拉取到本站', exact: true })).toBeDisabled();
+  await expect(page.getByRole('heading', { name: '同步与备份任务', exact: true })).toBeVisible();
+  await expect(page.getByText('暂无任务记录。', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '一键清理', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '生成/重置传输令牌', exact: true }).click();
+  await expect(page.locator('.token-secret code')).toHaveText(/^[a-f0-9]{64}$/);
+  await expect(page.getByLabel('允许服务器传输')).toBeChecked();
+  await page.getByLabel('输入 OVERWRITE 确认写入目标').fill('OVERWRITE');
+  await expect(page.getByRole('button', { name: '立即推送到对端', exact: true })).toBeEnabled();
+  await page.getByLabel('正向同步方式').selectOption('incremental');
+  await page.getByLabel('反向同步方式').selectOption('incremental');
+  await page.getByLabel('拉取间隔（分钟）').fill('5');
+  await expect(page.getByLabel('反向同步方式')).toHaveValue('incremental');
+  await page.getByLabel('推送间隔（分钟）').fill('1');
+  await page.getByLabel('输入 OVERWRITE 确认写入目标').fill('');
+  await expect(page.getByRole('button', { name: '保存连接与计划', exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 320, height: 740 });
+  await expect(page.getByLabel('输入 OVERWRITE 确认写入目标')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.evaluate(() => localStorage.setItem('easynote-language', 'en'));
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Sync & backup servers', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Sync and backup jobs', exact: true })).toBeVisible();
+  await expect(page.getByLabel('Forward sync mode')).toBeVisible();
+  await expect(page.getByLabel('Reverse sync mode')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.getByText('You are offline.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Generate / reset transfer token', exact: true })).toHaveCount(0);
+  await context.setOffline(false);
+});
+
+test('a replaced dataset clears stale offline drafts before the same account signs in', async ({ page }) => {
+  const id = randomUUID();
+  const created = await page.request.post(`/api/notes/${id}`, { headers, data: {
+    title: 'Dataset replacement', content: 'Current server content', tags: [], pinned: false,
+    archived: false, deletedAt: null, revision: 0, operationId: randomUUID(),
+  } });
+  expect(created.status()).toBe(201);
+  const { note } = await created.json();
+  const session = await (await page.request.get('/api/session')).json();
+  await page.goto('/');
+  await expect(page.locator('.account')).toBeVisible();
+  await page.evaluate(async ({ session, note }) => {
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('easynote', 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const tx = db.transaction(['drafts', 'meta'], 'readwrite');
+    tx.objectStore('meta').put('old-replaced-dataset', 'server-dataset');
+    tx.objectStore('meta').put({ ...session, datasetId: 'old-replaced-dataset', csrf: null, offline: true }, `session:${session.user.id}`);
+    tx.objectStore('meta').put(session.user.id, 'last-user');
+    tx.objectStore('meta').put(true, `offline:${session.user.id}`);
+    tx.objectStore('drafts').put({ note: { ...note, content: 'Stale dataset draft' }, operationId: 'old' }, `${session.user.id}:${note.id}`);
+    await new Promise<void>((resolve) => { tx.oncomplete = () => resolve(); });
+    db.close();
+  }, { session, note });
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('**/api/session', async (route) => { await gate; await route.continue(); });
+  try {
+    await page.reload();
+    await expect(page.locator('.document-scroll').getByText('Stale dataset draft', { exact: true })).toBeVisible();
+  } finally { release(); }
+  await expect(page.getByText('Stale dataset draft', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.account')).toBeVisible();
+  const stale = await page.evaluate(async (key) => {
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open('easynote', 1); request.onsuccess = () => resolve(request.result);
+    });
+    const request = db.transaction('drafts').objectStore('drafts').get(key);
+    const value = await new Promise<unknown>((resolve) => { request.onsuccess = () => resolve(request.result); });
+    db.close(); return value;
+  }, `${session.user.id}:${note.id}`);
+  expect(stale).toBeUndefined();
+  const current = await (await page.request.get(`/api/notes/${id}`)).json();
+  expect(current.note.content).toBe('Current server content');
 });

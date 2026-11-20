@@ -108,9 +108,9 @@ async function main() {
 
     let password;
     while (!password) {
-      const candidate = await ask('Owner password (12-128 characters, hidden): ', true);
-      if (candidate.length < 12 || candidate.length > 128) {
-        console.error('Password must be 12-128 characters. Try again.');
+      const candidate = await ask('Owner password (10-128 characters, hidden): ', true);
+      if (candidate.length < 10 || candidate.length > 128) {
+        console.error('Password must be 10-128 characters. Try again.');
         continue;
       }
       if (candidate !== await ask('Confirm password (hidden): ', true)) {

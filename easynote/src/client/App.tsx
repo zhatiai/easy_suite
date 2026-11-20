@@ -1,10 +1,15 @@
+import { PasswordInput } from './PasswordInput';
+import { BackupSetup } from './BackupSetup';
+import type { BackupSetupStatus } from '../shared/serverTransfer';
+import { ServerTransferPanel } from './ServerTransferPanel';
+import { acceptServerDataset, setLocalDataset } from './drafts';
 import { noteDescription, withNoteDescription } from '../shared/descriptions';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Code2, Command, Copy, Download, Eye, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, GitMerge, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, NotebookPen, Paperclip, Pencil, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, Square, Sun, TableOfContents, Tag, Tags, Trash2, Upload, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
 import type { Folder, ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedFolder, SharedNote, Version } from '../shared/types';
 import { folderRelativePath, noteRelativePath } from '../shared/types';
-import { api, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
+import { api, ApiError, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
 import { SettingsPage, useSettingsNavigation, type SettingsSection } from './SettingsPage';
 import { AiAccess } from './AiAccess';
@@ -342,13 +347,18 @@ function PrivateApp() {
   const [recoveryCode, setRecoveryCode] = useState('');
   const [issuedRecoveryCode, setIssuedRecoveryCode] = useState('');
   const [busy, setBusy] = useState(false);
+  const [setupKind, setSetupKind] = useState<'administrator' | 'backup'>('administrator');
+  const [backupSetupStatus, setBackupSetupStatus] = useState<BackupSetupStatus | null>(null);
+  const [backupReady, setBackupReady] = useState(false);
   const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
   const applySession = (value: Session) => {
+    setLocalDataset(value);
     setSession(value);
     updateSession(value);
     if (value.user && !value.offline) void cacheSession(value);
   };
   const restoreSession = async (value: Session, cached: Session | null) => {
+    await acceptServerDataset(value);
     applySession(value);
     if (!cached?.user || cached.user.id === value.user?.id) return;
     setPassword('');
@@ -356,6 +366,13 @@ function PrivateApp() {
     try { await clearAccountStorage(cached.user.id); }
     catch (error) { setBootError((message) => `${message}\n${String(error)}`.trim()); }
   };
+  useEffect(() => {
+    const replaced = (event: StorageEvent) => {
+      if (event.key === 'easynote-dataset' && event.oldValue && event.newValue !== event.oldValue) location.reload();
+    };
+    window.addEventListener('storage', replaced);
+    return () => window.removeEventListener('storage', replaced);
+  }, []);
   const boot = () => {
     const generation = ++bootGeneration.current;
     setBooting(true);
@@ -366,9 +383,16 @@ function PrivateApp() {
       cached = value;
       if (cached?.user) applySession(cached);
     }).catch(() => { /* A cache failure must not block online login. */ });
-    void api.session().then(async (value) => {
+    void Promise.all([api.session(), api.backupSetupStatus().catch(() => null)]).then(async ([value, backup]) => {
       await local;
-      if (generation === bootGeneration.current) return restoreSession(value, cached);
+      if (generation !== bootGeneration.current) return;
+      if (!value.user && backup) {
+        if (value.configured === false || backup.maintenance || backup.job?.state === 'running') {
+          setBackupSetupStatus(backup);
+          setSetupKind('backup');
+        } else if (backup.job?.state === 'completed') setBackupReady(true);
+      }
+      return restoreSession(value, cached);
     }).catch(async (error: unknown) => {
       await local;
       if (generation === bootGeneration.current && !cached?.user) setBootError(String(error));
@@ -453,11 +477,32 @@ function PrivateApp() {
       applySession({ ...session, user: null, csrf: null, expiresAt: null, offline: false });
     }}
   />;
+  const setupRequired = session?.configured === false;
+  if (setupKind === 'backup' && (setupRequired || backupSetupStatus)) return <main className="login backup-setup-page">
+    <div className="login-form backup-setup-shell">
+      <header className="backup-setup-header"><div className="brand"><BrandIcon size={32} /><h1>EasyNote</h1></div></header>
+      <BackupSetup initialStatus={backupSetupStatus} onBack={() => { setSetupKind('administrator'); setBackupSetupStatus(null); }}
+        onComplete={async () => {
+          const value = await api.session();
+          await acceptServerDataset(value);
+          applySession(value);
+          setBackupSetupStatus(null);
+          setSetupKind('administrator');
+          setBackupReady(true);
+        }} />
+    </div>
+  </main>;
   return <main className="login">
     <form className="login-form" onSubmit={(e) => {
-      e.preventDefault(); setBusy(true); setBootError('');
-      const action = authMode === 'login'
-        ? api.login(username, password).then((value) => { applySession(value); setPassword(''); })
+      e.preventDefault();
+      if (setupRequired && password !== confirmation) {
+        setBootError(t('两次输入的密码不一致。'));
+        return;
+      }
+      setBusy(true); setBootError('');
+      const action = setupRequired || authMode === 'login'
+        ? (setupRequired ? api.setup(username, password) : api.login(username, password))
+          .then(async (value) => { await acceptServerDataset(value); applySession(value); setPassword(''); setConfirmation(''); })
         : authMode === 'register'
           ? password !== confirmation
             ? Promise.reject(new Error(t('两次输入的密码不一致。')))
@@ -475,11 +520,25 @@ function PrivateApp() {
               setRecoveryCode('');
               setBootError(t('密码已重置，请登录。'));
             });
-      void action.catch((error: unknown) => setBootError(String(error))).finally(() => setBusy(false));
+      void action.catch(async (error: unknown) => {
+        if (setupRequired && error instanceof ApiError && error.status === 409) {
+          const value = await api.session();
+          applySession(value);
+          setAuthMode('login');
+          setPassword('');
+          setConfirmation('');
+          setBootError(t('初始化已完成，请登录。'));
+          return;
+        }
+        setBootError(String(error));
+      }).catch((error: unknown) => setBootError(String(error))).finally(() => setBusy(false));
     }}>
       <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
-      <div className="login-heading">{authMode === 'register' ? t('创建账户') : authMode === 'reset' ? t('恢复账户') :
-        session ? session.configured ? t('登录笔记') : t('等待初始化') : t('登录笔记')}</div>
+      <div className="login-heading">{setupRequired ? t('初始化 EasyNote') : authMode === 'register' ? t('创建账户') : authMode === 'reset' ? t('恢复账户') : t('登录笔记')}</div>
+      {setupRequired && <p className="login-description">{t('设置首位管理员账号，完成后自动进入知识库。')}</p>}
+      {backupReady && <p className="login-description" role="status">{t('server_account_hint')}</p>}
+      {setupRequired && <div className="login-actions setup-choice"><button type="button" disabled={busy}
+        onClick={() => { setSetupKind('backup'); setBootError(''); }}>{t('setup_backup')}</button></div>}
       {issuedRecoveryCode && <div className="recovery-result" role="status">
         <strong>{t('保存恢复代码')}</strong>
         <code>{issuedRecoveryCode}</code>
@@ -487,20 +546,20 @@ function PrivateApp() {
         <button type="button" onClick={() => void navigator.clipboard.writeText(issuedRecoveryCode)}>{t('复制恢复代码')}</button>
       </div>}
       <label>{t('username')}<input autoComplete="username" required maxLength={32} value={username} onChange={(e) => setUsername(e.target.value)} /></label>
-      {authMode === 'reset' && <label>{t('恢复代码')}<input autoComplete="off" required value={recoveryCode} onChange={(e) => setRecoveryCode(e.target.value)} /></label>}
-      <label>{authMode === 'reset' ? t('新密码') : t('password')}<input autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-        type="password" required minLength={authMode === 'login' ? undefined : 12} maxLength={128}
+      {!setupRequired && authMode === 'reset' && <label>{t('恢复代码')}<input autoComplete="off" required value={recoveryCode} onChange={(e) => setRecoveryCode(e.target.value)} /></label>}
+      <label>{authMode === 'reset' ? t('新密码') : t('password')}<PasswordInput aria-label={authMode === 'reset' ? t('新密码') : t('password')} autoComplete={!setupRequired && authMode === 'login' ? 'current-password' : 'new-password'}
+        required minLength={!setupRequired && authMode === 'login' ? undefined : 10} maxLength={128}
         value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-      {authMode !== 'login' && <label>{t('确认密码')}<input autoComplete="new-password" type="password" required minLength={12}
+      {(setupRequired || authMode !== 'login') && <label>{t('确认密码')}<PasswordInput aria-label={t('确认密码')} autoComplete="new-password" required minLength={10}
         maxLength={128} value={confirmation} onChange={(e) => setConfirmation(e.target.value)} /></label>}
-      <button className="primary" disabled={busy || !session?.configured || authMode === 'register' && !session.registrationEnabled}>
-        {busy ? t('处理中…') : authMode === 'register' ? t('提交注册') : authMode === 'reset' ? t('重置密码') : t('登录')}
+      <button className="primary" disabled={busy || !session || !setupRequired && authMode === 'register' && !session.registrationEnabled}>
+        {busy ? t('处理中…') : setupRequired ? t('创建管理员并开始使用') : authMode === 'register' ? t('提交注册') : authMode === 'reset' ? t('重置密码') : t('登录')}
       </button>
-      <div className="login-actions">
+      {!setupRequired && <div className="login-actions">
         {authMode !== 'login' ? <button type="button" onClick={() => { setAuthMode('login'); setBootError(''); }}>{t('返回登录')}</button> :
           <>{session?.registrationEnabled && <button type="button" onClick={() => { setAuthMode('register'); setIssuedRecoveryCode(''); }}>{t('注册')}</button>}
             <button type="button" onClick={() => setAuthMode('reset')}>{t('使用恢复代码')}</button></>}
-      </div>
+      </div>}
       {bootError && <div role="alert" className="error-box"><pre>{bootError}</pre><button type="button" onClick={boot}>{t('重新连接')}</button></div>}
     </form>
   </main>;
@@ -568,7 +627,7 @@ function AccountWorkspace({ session, installApp, logout }: { session: Session; i
     }
   };
 
-  if (ownsLock) return <Notebook session={session} installApp={installApp} logout={logout} />;
+  if (ownsLock) return <Notebook key={session.datasetId ?? ''} session={session} installApp={installApp} logout={logout} />;
   return <main className="login"><div className="login-form">
     <div className="brand login-brand"><BrandIcon size={32} /><h1>EasyNote</h1></div>
     <div className="login-heading">{ownsLock === null ? t('正在打开笔记') : navigator.locks ? t('另一个标签页正在编辑') : t('浏览器不支持安全编辑锁')}</div>
@@ -1863,6 +1922,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     buttons[edge === 'first' ? 0 : buttons.length - 1]?.focus();
   };
   const settingsContent: Record<SettingsSection, ReactNode> = {
+    servers: session.user!.role === 'admin' ? <ServerTransferPanel disabled={disabled || book.pending.length > 0} offline={!book.online} /> : null,
     general: <>
       <section className="settings-group" aria-labelledby="settings-appearance-title">
         <h3 id="settings-appearance-title">{t('settings_appearance')}</h3>

@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "easynote",
   "main": "src/worker/index.ts",
+  "build": { "command": "node scripts/fingerprint.mjs" },
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -22,10 +23,14 @@
     }
   ],
   "durable_objects": {
-    "bindings": [{ "name": "NOTE_EVENTS", "class_name": "NoteEvents" }]
+    "bindings": [
+      { "name": "NOTE_EVENTS", "class_name": "NoteEvents" },
+      { "name": "SERVER_TRANSFER", "class_name": "ServerTransfer" }
+    ]
   },
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["NoteEvents"] }
+    { "tag": "v1", "new_sqlite_classes": ["NoteEvents"] },
+    { "tag": "v2", "new_sqlite_classes": ["ServerTransfer"] }
   ],
   "r2_buckets": [{ "binding": "IMAGES", "bucket_name": "easynote-images" }],
   "triggers": { "crons": ["17 * * * *"] },

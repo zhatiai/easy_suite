@@ -9,6 +9,7 @@ const sections = [
   { id: 'security', label: '账户安全', description: 'settings_security_description', icon: ShieldCheck },
   { id: 'llm', label: 'llm_settings', description: 'llm_settings_description', icon: Sparkles },
   { id: 'ai', label: 'ai_access', description: 'settings_ai_description', icon: KeyRound },
+  { id: 'servers', label: 'server_transfer', description: 'server_transfer_description', icon: ArrowDownUp },
   { id: 'users', label: '用户与注册', description: 'settings_users_description', icon: Users },
 ] as const;
 
@@ -83,7 +84,7 @@ interface Props {
 }
 
 export function SettingsPage({ section, isAdmin, username, offline, progress, feedback, content, navigate, close }: Props) {
-  const available = sections.filter((item) => item.id !== 'users' || isAdmin);
+  const available = sections.filter((item) => !['users', 'servers'].includes(item.id) || isAdmin);
   const active = available.find((item) => item.id === section) ?? sections[0];
   const canMountActive = !offline || ['general', 'data', 'security', 'llm'].includes(active.id);
   const [visited, setVisited] = useState<SettingsSection[]>(canMountActive ? [active.id] : []);

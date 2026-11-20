@@ -86,6 +86,12 @@ export default defineConfig({
           },
         }],
         navigateFallback: '/index.html',
+        // Other applications share this origin. Only EasyNote routes use its cached shell.
+        navigateFallbackAllowlist: [
+          /^\/(?:\?.*)?$/,
+          /^\/settings(?:\/[^?]*)?(?:\?.*)?$/,
+          /^\/shared\/[a-f0-9]{64}(?:\?.*)?$/,
+        ],
         navigateFallbackDenylist: [/^\/api\//, /^\/oauth\//, /^\/\.well-known\//, /^\/mcp/],
         cleanupOutdatedCaches: true,
       },

@@ -19,12 +19,19 @@ const database = () => openDB('easynote', 1, {
 
 interface PendingWrite {
   draft: Draft | null;
+  datasetId: string | undefined;
   promise: Promise<void>;
   resolve(): void;
   reject(error: unknown): void;
 }
 const pending = new Map<string, PendingWrite>();
 let draining: Promise<void> | null = null;
+let activeDatasetId: string | undefined;
+export function setLocalDataset(session: Session): void { activeDatasetId = session.datasetId; }
+async function requireCurrentDataset(stored: Promise<unknown>, expected = activeDatasetId): Promise<void> {
+  const generation = await stored;
+  if (expected && generation && generation !== expected) throw new Error('Server data was replaced. Reload this page.');
+}
 
 const accountKey = (userId: string, id: string) => `${userId}:${id}`;
 const offlineKey = (userId: string) => `offline:${userId}`;
@@ -35,7 +42,7 @@ function createWrite(draft: Draft | null): PendingWrite {
   let resolve!: () => void;
   let reject!: (error: unknown) => void;
   const promise = new Promise<void>((done, fail) => { resolve = done; reject = fail; });
-  return { draft, promise, resolve, reject };
+  return { draft, datasetId: activeDatasetId, promise, resolve, reject };
 }
 
 async function drain(): Promise<void> {
@@ -52,8 +59,11 @@ async function drain(): Promise<void> {
       const [key, write] = pending.entries().next().value as [string, PendingWrite];
       pending.delete(key);
       try {
-        if (write.draft) await db.put('drafts', write.draft, key);
-        else await db.delete('drafts', key);
+        const tx = db.transaction(['drafts', 'meta'], 'readwrite');
+        await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'), write.datasetId);
+        if (write.draft) await tx.objectStore('drafts').put(write.draft, key);
+        else await tx.objectStore('drafts').delete(key);
+        await tx.done;
         write.resolve();
       } catch (error) {
         write.reject(error);
@@ -123,6 +133,7 @@ export async function setOfflineEnabled(userId: string, enabled: boolean, sessio
   const db = await database();
   try {
     const tx = db.transaction('meta', 'readwrite');
+    await requireCurrentDataset(tx.store.get('server-dataset'));
     await tx.store.put(enabled, offlineKey(userId));
     if (enabled && session?.user) {
       await tx.store.put({ ...session, csrf: null, offline: true }, sessionKey(userId));
@@ -138,6 +149,7 @@ export async function cacheSession(session: Session): Promise<void> {
   const db = await database();
   try {
     const tx = db.transaction('meta', 'readwrite');
+    await requireCurrentDataset(tx.store.get('server-dataset'), session.datasetId);
     await tx.store.put({ ...session, csrf: null, offline: true }, sessionKey(session.user.id));
     await tx.store.put(session.user.id, 'last-user');
     await tx.done;
@@ -163,6 +175,7 @@ export async function forgetCachedSession(userId: string): Promise<void> {
   const db = await database();
   try {
     const tx = db.transaction('meta', 'readwrite');
+    await requireCurrentDataset(tx.store.get('server-dataset'));
     await tx.store.delete(sessionKey(userId));
     if (await tx.store.get('last-user') === userId) await tx.store.delete('last-user');
     await tx.done;
@@ -181,7 +194,12 @@ export async function loadMirroredNote(userId: string, id: string): Promise<Note
 
 export async function cacheMirroredNote(userId: string, note: Note): Promise<void> {
   const db = await database();
-  try { await db.put('notes', note, accountKey(userId, note.id)); }
+  try {
+    const tx = db.transaction(['notes', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
+    await tx.objectStore('notes').put(note, accountKey(userId, note.id));
+    await tx.done;
+  }
   finally { db.close(); }
 }
 
@@ -197,6 +215,7 @@ export async function applyMirrorChanges(userId: string, changes: SyncChange[], 
   const db = await database();
   try {
     const tx = db.transaction(['notes', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
     for (const change of changes) {
       const key = accountKey(userId, change.noteId);
       if (change.note) await tx.objectStore('notes').put(change.note, key);
@@ -211,7 +230,10 @@ export async function cacheFile(userId: string, id: string, file: CachedFile, si
   const db = await database();
   try {
     signal?.throwIfAborted();
-    await db.put('files', file, accountKey(userId, id));
+    const tx = db.transaction(['files', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
+    await tx.objectStore('files').put(file, accountKey(userId, id));
+    await tx.done;
   }
   finally { db.close(); }
 }
@@ -225,8 +247,9 @@ export async function loadCachedFile(userId: string, id: string): Promise<Cached
 export async function pruneCachedFiles(userId: string, keep: Set<string>): Promise<void> {
   const db = await database();
   try {
-    const tx = db.transaction('files', 'readwrite');
-    let cursor = await tx.store.openCursor();
+    const tx = db.transaction(['files', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
+    let cursor = await tx.objectStore('files').openCursor();
     while (cursor) {
       const key = String(cursor.key);
       if (key.startsWith(`${userId}:`) && !keep.has(key.slice(userId.length + 1))) await cursor.delete();
@@ -248,6 +271,7 @@ export async function clearOfflineMirror(userId: string): Promise<void> {
   const db = await database();
   try {
     const tx = db.transaction(['notes', 'files', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
     await deletePrefixed(tx.objectStore('notes'), `${userId}:`);
     await deletePrefixed(tx.objectStore('files'), `${userId}:`);
     await tx.objectStore('meta').delete(cursorKey(userId));
@@ -262,6 +286,7 @@ export async function clearAccountStorage(userId: string): Promise<void> {
   const db = await database();
   try {
     const tx = db.transaction(['drafts', 'notes', 'files', 'meta'], 'readwrite');
+    await requireCurrentDataset(tx.objectStore('meta').get('server-dataset'));
     await deletePrefixed(tx.objectStore('drafts'), `${userId}:`);
     await deletePrefixed(tx.objectStore('notes'), `${userId}:`);
     await deletePrefixed(tx.objectStore('files'), `${userId}:`);
@@ -289,4 +314,24 @@ export function loadLlmConfig(userId: string): LlmConfig {
 export function saveLlmConfig(userId: string, config: LlmConfig | null): void {
   if (config) localStorage.setItem(llmConfigKey(userId), JSON.stringify(config));
   else localStorage.removeItem(llmConfigKey(userId));
+}
+
+// Replacements can retain account IDs and revisions. Never replay a previous dataset's drafts.
+export async function acceptServerDataset(session: Session): Promise<void> {
+  if (!session.datasetId || session.offline) return;
+  while (draining) await draining;
+  const db = await database();
+  try {
+    const tx = db.transaction(['drafts', 'notes', 'files', 'meta'], 'readwrite');
+    const previous = await tx.objectStore('meta').get('server-dataset');
+    if (previous && previous !== session.datasetId) {
+      await tx.objectStore('drafts').clear();
+      await tx.objectStore('notes').clear();
+      await tx.objectStore('files').clear();
+      await tx.objectStore('meta').clear();
+    }
+    await tx.objectStore('meta').put(session.datasetId, 'server-dataset');
+    await tx.done;
+    localStorage.setItem('easynote-dataset', session.datasetId);
+  } finally { db.close(); }
 }

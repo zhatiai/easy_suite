@@ -42,7 +42,7 @@ flowchart LR
   Domain --> DO
 ```
 
-请求统一进入 `src/worker/index.ts`：
+请求统一进入 `src/worker/index.ts`，动态请求通过整站 `ServerTransfer` Durable Object 协调并交给 `src/worker/routes.ts` 分发：
 
 1. 非 `/api/*`、非 `/mcp` 请求交给静态资源绑定 `ASSETS`，SPA 未命中时回退到 `index.html`。
 2. `/api/public/shares/*` 是只读公开分享入口。
@@ -92,6 +92,8 @@ easynote/
 - `i18n.ts`：中英文词典和运行时语言切换；键一致性由脚本检查。
 - `LlmSettings.tsx` 管理按账号保存在当前浏览器的供应商基础地址、模型与 API Key；凭据不参与备份或服务端同步。`api.ts` 动态加载 OpenAI SDK，直连 OpenAI 兼容 Chat Completions 接口，省略 Cookie、禁用重定向与自动重试。供应商必须支持 CORS。`public/_headers` 的 connect-src 允许 HTTPS 供应商和本机 HTTP，脚本策略保持同源。
 - `NoteAiChat.tsx` 提供右侧全文问答与正文选区问答；所有入口仅打开面板，用户提交问题后全文问答附上当前笔记与对话，选区问答发送选中文字与对话，勾选上下文后附上所在完整段落与下一个段落。通过 OpenAI SDK 流式读取文本，要求模型输出 Markdown，并复用安全预览实时渲染（Mermaid 待生成结束后渲染）；支持停止保留部分回答、按原问题及上下文重试、Ctrl/⌘+Enter 发送与 Enter 换行，用户上翻阅读时暂停自动滚动。`SelectionAi.tsx` 从当前阅读 DOM 的 Range 定位段落，在选区上方显示轻量提问入口，点击后将选区滚到阅读区上方，在选区下方打开原生模态对话，锁定底层正文滚动并约束焦点，关闭后恢复原阅读位置。初始桌面宽度为正文的 80% 并水平居中，窄屏适配可用宽度，四边和四角支持拖动与方向键缩放，窗口始终限定在选区下方和阅读区内。输入区可折叠并保留草稿。AI 消息居左、用户消息居右，会话独立滚动。切换笔记、关闭问答或重绘正文会结束该对话。
+- `ServerTransferPanel.tsx` 提供管理员正向推送、反向拉取、覆盖式与增量同步、双向独立定时间隔、传输令牌与任务状态。协议和覆盖行为参见灾备文档。
+- PWA 导航回退限定在首页、`/settings` 和 `/shared/:token`，同源部署的其他应用由网络路由处理。
 - `SettingsPage.tsx` 提供独立的 `/settings/:section` 设置页，支持浏览器历史、直接访问、分组按需挂载和组间表单保留。打开设置时工作台保持挂载，返回后保留文档与编辑状态。
 - `AccountSecurity.tsx`、`UserManagement.tsx`、`AiAccess.tsx`、`StoragePanel.tsx` 作为设置页中的功能面板。`NoteSharing.tsx`、`ShareManagement.tsx` 负责笔记分享和分享管理。
 - `styles.css`：全局视觉系统和桌面/移动响应式样式。
@@ -114,9 +116,9 @@ easynote/
 
 ### 3.2 Worker `src/worker`
 
-- `index.ts`：唯一请求入口、模块编排、统一错误响应和 Cron 入口。
+- `index.ts`：唯一请求入口和 Cron 入口。`serverTransfer.ts` 协调整站维护、指纹校验、暂存覆盖和持久化定时任务，`routes.ts` 保留业务路由编排与统一错误响应。
 - `core.ts`：`Env` 绑定、运行参数验证、JSON/字节读取限制、摘要和通用 `ApiError`。
-- `auth.ts`：初始化管理员、会话 Cookie、CSRF/Origin、登录限流、注册审批、恢复代码、账号安全和管理员用户管理。
+- `auth.ts`：首次访问网页初始化管理员（条件插入保证单次初始化，并保留预配置验证器）、会话 Cookie、CSRF/Origin、登录限流、注册审批、恢复代码、账号安全和管理员用户管理。
 - `notes.ts`：笔记 CRUD、分页/搜索、标签、版本、回收站、墓碑、附件引用、幂等操作、乐观并发和增量同步。
 - `noteLinks.ts` 按租户分页查询出链与反向链接，复用 trigram 全文索引筛选候选，再以共享 Markdown 解析规则排除代码与注释。旧笔记自动参与查询。
 - `folders.ts`：按租户隔离的嵌套文件夹 CRUD、同级重名和循环校验，以及删除文件夹树时的笔记保留策略。
@@ -128,7 +130,7 @@ easynote/
 
 服务端的关键不变量：
 
-- 所有私有查询必须包含 `user_id`；R2 Key 以用户 ID 分区。
+- 所有私有查询必须包含 `user_id`；R2 Key 包含用户 ID，恢复对象同时带独立传输前缀。
 - 浏览器写请求必须同时通过会话、Origin 和 CSRF 检查。
 - AI 访问只接受哈希存储、可撤销、可过期且区分只读/读写的 Bearer Token。
 - `revision` 防止静默覆盖，`operationId + mutation_hash` 保证重试幂等。
@@ -169,6 +171,7 @@ MCP 通过 `easynote_get_note_links` 查询入链和出链。创建笔记时可�
 | `notes` | 当前笔记/小记状态、类型标记和并发/幂等字段 |
 | `note_versions` | 有上限的手动/AI 内容快照及操作者信息 |
 | `images` | R2 对象元数据；同时表示图片与普通附件 |
+| `server_dataset` | 整站覆盖的数据代次，使浏览器清理旧离线状态 |
 | `image_refs` | 当前或历史 revision 对文件的引用 |
 | `purged_notes` | 永久删除墓碑 |
 | `note_changes` | 按用户递增的离线增量同步日志 |
@@ -210,14 +213,14 @@ npm run dev:client
 
 重要配置来源：
 
-- `wrangler.json`：生产默认使用 HTTPS，绑定 `ASSETS`、`DB`、`IMAGES`、`NOTE_EVENTS`，并定义大小、配额、版本保留、自动保存、轮询和限流参数。
+- `wrangler.json`：生产默认使用 HTTPS，绑定 `ASSETS`、`DB`、`IMAGES`、`NOTE_EVENTS`、`SERVER_TRANSFER`，并定义大小、配额、版本保留、自动保存、轮询和限流参数。
 - `.dev.vars`：忽略提交的本地管理员验证器和本地 HTTP 开关。
 - `wrangler.deploy.json`：忽略提交的生产资源 ID，权限应保持 `0600`。
 - `vite.config.ts`：读取上层仓库 `versions.json` 中的 `easynote` 版本；不要单独手改显示版本。
 
 ### 6.1 独立服务器 / Docker
 
-详见 [`docs/DOCKER.md`](docs/DOCKER.md)（英文版 [`docs/DOCKER.en.md`](docs/DOCKER.en.md)）。`Dockerfile` 构建同一份前端和 Worker；`scripts/server.mjs` 负责本地绑定、事务 migration、安全入口、WebSocket 转发、Cron、健康检查及停机释放。`scripts/setup.mjs --docker` 交互生成管理员验证器。`scripts/server-import.mjs` 校验并导入当前版本的完整灾备，拒绝覆盖已有状态。`scripts/backup.sh` 提供服务器停机一致性冷备份；根目录同名入口仍面向 Cloudflare/Wrangler。每个目录仅支持单实例，不能多个副本共享文件。
+详见 [`docs/DOCKER.md`](docs/DOCKER.md)（英文版 [`docs/DOCKER.en.md`](docs/DOCKER.en.md)）。`Dockerfile` 构建同一份前端和 Worker；`scripts/server.mjs` 负责本地绑定、事务 migration、安全入口、WebSocket 转发、Cron、健康检查及停机释放。空站启动后可通过网页创建首位管理员并自动登录，也可选择作为备份节点，配置来源与拉取计划，导入整站数据后使用来源账号登录。备份初始化仅允许空站发起，进度通过独立 HttpOnly Cookie 授权，首次拉取失败时暂停计划以便重试；初始化完成后关闭入口；也可用 `scripts/setup.mjs --docker` 预配置管理员验证器。`scripts/server-import.mjs` 校验并导入当前版本的完整灾备，拒绝覆盖已有状态。`scripts/backup.sh` 提供服务器停机一致性冷备份；根目录同名入口仍面向 Cloudflare/Wrangler。每个目录仅支持单实例，不能多个副本共享文件。
 
 Docker 不依赖 Cloudflare 云服务；Miniflare/workerd 仍是锁定的本地兼容运行时依赖。`.env` 指定 `PUBLIC_ORIGIN`，入口仅经可信 HTTPS 代理发布，不允许将 Miniflare 内部控制端点暴露公网。前端及领域逻辑不分叉。
 

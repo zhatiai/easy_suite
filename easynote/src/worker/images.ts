@@ -5,9 +5,9 @@ import { ApiError, clientConfig, digest, json, numberSetting, readBytes, type En
 
 export interface StoredFileRow {
   id: string; user_id: string; filename: string; mime: string; size: number;
-  width: number; height: number; sha256: string; status: string;
+  width: number; height: number; sha256: string; status: string; storage_key?: string | null;
 }
-const objectKey = (row: Pick<StoredFileRow, 'user_id' | 'id'>) => `${row.user_id}/${row.id}`;
+export const objectKey = (row: Pick<StoredFileRow, 'user_id' | 'id' | 'storage_key'>) => row.storage_key || `${row.user_id}/${row.id}`;
 const isImage = (mime: string) => ['image/jpeg', 'image/png', 'image/webp'].includes(mime);
 const record = (row: StoredFileRow): StoredFile => ({
   id: row.id, filename: row.filename, mime: row.mime, size: row.size,
@@ -117,8 +117,8 @@ export async function cleanup(env: Env): Promise<void> {
     SELECT id FROM images WHERE status!='deleting' AND last_used_at<?
       AND NOT EXISTS(SELECT 1 FROM image_refs WHERE image_id=images.id) LIMIT 50
   )`).bind(cutoff).run();
-  const rows = await env.DB.prepare("SELECT id,user_id FROM images WHERE status='deleting' LIMIT 50")
-    .all<Pick<StoredFileRow, 'id' | 'user_id'>>();
+  const rows = await env.DB.prepare("SELECT id,user_id,storage_key FROM images WHERE status='deleting' LIMIT 50")
+    .all<Pick<StoredFileRow, 'id' | 'user_id' | 'storage_key'>>();
   for (const row of rows.results) {
     await env.IMAGES.delete(objectKey(row));
     await env.DB.prepare("DELETE FROM images WHERE id=? AND status='deleting'").bind(row.id).run();

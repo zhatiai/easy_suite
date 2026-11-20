@@ -17,7 +17,7 @@ const localConfig = `INITIAL_OWNER='${JSON.stringify(owner)}'\nALLOW_LOCAL_HTTP=
 const databaseId = '12345678-1234-4234-8234-123456789abc';
 const accountId = 'a'.repeat(32);
 const apiToken = 'test-only-cloudflare-api-token';
-const secret = 'Only-for-script-tests-39!';
+const secret = 'Test-12345';
 
 after(async () => {
   for (const directory of fixtures) await rm(directory, { recursive: true, force: true });
@@ -247,7 +247,7 @@ exit [lindex $result 3]
 }
 const setupSteps = [
   ['Owner username (3-32 lowercase letters, digits, . _ -): ', 'test-owner'],
-  ['Owner password (12-128 characters, hidden): ', secret],
+  ['Owner password (10-128 characters, hidden): ', secret],
   ['Confirm password (hidden): ', secret],
 ];
 
@@ -402,15 +402,15 @@ test('interactive setup keeps prompting after invalid username, password and con
   const result = await terminal(f, 'setup.sh', [], [
     ['Owner username (3-32 lowercase letters, digits, . _ -): ', 'bad!'],
     ['Owner username (3-32 lowercase letters, digits, . _ -): ', 'test-owner'],
-    ['Owner password (12-128 characters, hidden): ', 'short'],
-    ['Owner password (12-128 characters, hidden): ', secret],
+    ['Owner password (10-128 characters, hidden): ', 'short'],
+    ['Owner password (10-128 characters, hidden): ', secret],
     ['Confirm password (hidden): ', 'different-password'],
-    ['Owner password (12-128 characters, hidden): ', secret],
+    ['Owner password (10-128 characters, hidden): ', secret],
     ['Confirm password (hidden): ', secret],
   ]);
   assert.equal(result.status, 0, result.output);
   assert.match(result.output, /Invalid username/);
-  assert.match(result.output, /Password must be 12-128 characters/);
+  assert.match(result.output, /Password must be 10-128 characters/);
   assert.match(result.output, /Passwords do not match/);
   assert.ok(!result.output.includes(secret));
 });
@@ -623,6 +623,9 @@ test('the generated local account works through a real Wrangler server and local
   assert.equal(initialized.status, 0, initialized.output);
   await cp(`${project}/src`, `${f.root}/src`, { recursive: true });
   await cp(`${project}/migrations`, `${f.root}/migrations`, { recursive: true });
+  await cp(`${project}/public`, `${f.root}/public`, { recursive: true });
+  await cp(`${project}/vite.config.ts`, `${f.root}/vite.config.ts`);
+  await cp(`${project}/scripts/fingerprint.mjs`, `${f.root}/scripts/fingerprint.mjs`);
   await mkdir(`${f.root}/dist/client`, { recursive: true });
   await cp(`${project}/index.html`, `${f.root}/dist/client/index.html`);
   await symlink(`${project}/node_modules/image-dimensions`, `${f.root}/node_modules/image-dimensions`);

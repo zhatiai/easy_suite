@@ -25,22 +25,23 @@ EasyNote 支持两种部署方式：原有 Cloudflare，以及独立 Linux 服�
 
 服务器需要 Docker Engine 和 Docker Compose v2。推荐 Linux amd64/arm64、持久化本地磁盘、有效域名及现有 HTTPS 反向代理。以下命令在 `easynote` 目录执行。
 
+生产环境先设置实际 HTTPS origin，再运行统一入口：
+
 ```bash
-cp .env.docker.example .env
-# 编辑 .env，设置 PUBLIC_ORIGIN=https://你的域名（末尾不带 /）
-# 按需调整 EASYNOTE_DATA_DIR，以下示例使用默认目录。
-sudo install -d -m 700 -o 10001 -g 10001 /var/lib/easynote/data
-docker compose build
-docker compose run --rm easynote node scripts/setup.mjs --docker
-docker compose up -d --wait
-docker compose logs --tail=100 easynote
+PUBLIC_ORIGIN=https://你的域名 TRUST_PROXY=true bash deploy_bydocker.sh
 ```
 
-初始化必须在终端交互输入账号和密码。仅保存加盐验证器 `/data/initial-owner.json`，不保存明文密码。重复执行初始化不会覆盖已有验证器，也不会重置数据库账号。容器固定以 UID/GID `10001:10001` 运行，数据目录必须允许此用户读写；不要通过运行 root 容器解决权限问题。
+脚本按“环境变量 → 系统配置 → 内置默认值”解析配置。系统配置默认保存在 `/etc/easynote/docker.env`，权限为 `0600`；可用 `EASYNOTE_DOCKER_CONFIG` 指定其他绝对路径。首次没有配置时，脚本保存本次最终配置，创建持久化目录，构建镜像并启动容器。后续环境变量只覆盖当前运行，不会静默改写已有系统配置。
 
-Compose 默认仅在宿主 `127.0.0.1:8791` 发布入口；健康端口只在容器环回地址监听，通过 Docker healthcheck 使用。首次启动完成 migration、账号引导和 Worker 探测后才开放入口。缺少管理员配置或 migration 失败时，启动失败。
+未提供环境变量且没有系统配置时，使用 `/var/lib/easynote/data`、端口 `8791` 和 `http://127.0.0.1:8791`，以仅限服务器本机访问的模式启动。部署公网服务前必须改为 HTTPS origin。可先执行 `bash deploy_bydocker.sh --check`，此模式不写配置、不创建目录、不构建或启动容器。
 
-构建可通过 `docker compose build --build-arg NODE_OPTIONS=--max-old-space-size=1536` 调整 Node 堆上限。构建期间还需要为 Node 原生内存和其他进程保留空间。Dockerfile 在生产依赖安装阶段复用构建阶段的 npm 缓存，缓存不进入运行镜像。
+启动后访问 `PUBLIC_ORIGIN`，在页面设置首位管理员的用户名、密码及确认密码，完成后自动登录。用户名为 3–32 位小写字母、数字或 `. _ -`，密码为 10–128 位。服务端仅保存加盐密码验证器。首次初始化在数据库中原子创建一名管理员，完成后关闭初始化入口。空站通过首次成功提交确定管理员，部署后应及时完成页面初始化。
+
+也可在启动前执行 `docker compose run --rm easynote node scripts/setup.mjs --docker`，交互生成 `/data/initial-owner.json`。已有数据库账号、环境变量 `INITIAL_OWNER` 和验证器文件继续生效。容器固定以 UID/GID `10001:10001` 运行，数据目录必须允许此用户读写。
+
+Compose 默认仅在宿主 `127.0.0.1:8791` 发布入口；健康端口只在容器环回地址监听，通过 Docker healthcheck 使用。首次启动完成 migration 和 Worker 探测后开放入口。空站以健康状态提供网页初始化向导，migration 失败仍会阻止启动。
+
+构建可通过 `docker compose build --build-arg NODE_OPTIONS=--max-old-space-size=1536` 调整 Node 堆上限。构建期间还需要为 Node 原生内存和其他进程保留空间。构建与生产依赖安装共享 BuildKit 的 npm 缓存，缓存不进入运行镜像。
 
 ### 在构建机生成前端产物
 
@@ -48,11 +49,26 @@ Compose 默认仅在宿主 `127.0.0.1:8791` 发布入口；健康端口只在容
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml build
-docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml run --rm easynote node scripts/setup.mjs --docker
 docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d --wait
 ```
 
 默认从服务器项目目录只读挂载 `./dist`，也可在 `.env` 设置绝对路径 `EASYNOTE_DIST_DIR`。该配置使用 Dockerfile 的 `runtime` target。依赖安装和服务器运行在容器中，前端编译在构建机完成。升级时应停止服务，替换与服务端源码配套的完整 `dist/`，再重建并启动。
+
+### 小内存节点组装完整镜像
+
+`package.json` 仅将 Miniflare 声明为运行依赖，前端库及已打包到 Worker 的库归入构建依赖。生产安装继续使用同一份 lockfile。
+
+在构建机执行 `npm run build` 后，将完整产物放入 `artifacts/app/dist`，并把 `artifacts` 目录传到节点。BuildKit 可用同名构建上下文提供 `builder` 阶段的产物：
+
+```bash
+docker buildx create --name easynote-small --driver docker-container \
+  --driver-opt memory=768m,memory-swap=768m,cpu-period=100000,cpu-quota=100000
+docker buildx build --builder easynote-small \
+  --build-context builder=/absolute/path/to/artifacts \
+  --provenance=false --load -t easynote:local .
+```
+
+这种方式会将完整的前端和 Worker 放入镜像。节点只安装锁定的运行依赖。验证完成后可执行 `docker buildx rm easynote-small` 清理该专用构建器及缓存。数据目录、备份及已有服务使用各自的生命周期维护。
 
 ### HTTPS 反向代理
 
@@ -94,12 +110,14 @@ server {
 
 | 配置 | 默认 / 说明 |
 | --- | --- |
-| `PUBLIC_ORIGIN` | 必填，浏览器访问的 HTTPS origin |
+| `PUBLIC_ORIGIN` | 默认本机 `http://127.0.0.1:<端口>`；公网部署必须指定浏览器访问的 HTTPS origin |
+| `PUBLIC_ORIGIN_ALIASES` | 可选，逗号分隔的其他访问 origin，协议须与主 origin 一致；逐项校验 Host 并保留同源校验 |
 | `EASYNOTE_DATA_DIR` | Compose 宿主路径，默认 `/var/lib/easynote/data` |
 | `EASYNOTE_PORT` | 宿主环回端口，默认 `8791` |
 | `TRUST_PROXY` | 默认 `false`，是否信任代理覆盖的 `X-Real-IP` |
-| `ALLOW_LOCAL_HTTP` | 默认 `false`，仅配合 HTTP 环回 origin 使用 |
+| `ALLOW_LOCAL_HTTP` | 未指定时根据环回 HTTP origin 自动设为 `true`，其他情况为 `false` |
 | `INITIAL_OWNER_FILE` | 容器内默认 `/data/initial-owner.json`，可指向只读 secret 文件 |
+| `EASYNOTE_DOCKER_CONFIG` | 系统配置文件，默认 `/etc/easynote/docker.env` |
 
 容量、版本保留、自动保存及限流默认值继续来自 `wrangler.json.vars`。需要修改时，在 Compose 的 `environment` 中显式添加相同名称的配置，例如 `MAX_NOTES: "10000"`；宿主环境不会自动传入容器。`.env`、数据目录和备份不能提交到 Git，也不会进入构建上下文。
 
@@ -144,6 +162,19 @@ docker compose up -d --wait
 
 升级自动应用未执行的 migration；每次 migration 与其记录在同一事务提交。失败时不接受请求。镜像回滚必须同时考虑 Schema：遇到未知或已修改的 migration 会拒绝启动，应恢复与旧镜像配套的整份冷备份，不能只回滚镜像。
 
+### 资源实测
+
+2026-11-15 在 Linux amd64、Docker 29.4.1、Node.js 22.23.5 上测试。镜像大小采用同一节点 `docker image ls` 的总磁盘大小口径。
+
+| 项目 | 结果 |
+| --- | --- |
+| 现有镜像 / 精简镜像 | 2.58 GB / 661 MB，减少约 74% |
+| 专用构建器限制 | 768 MiB 内存、1 个 CPU，无交换空间 |
+| 测试应用内存采样 | 约 190–256 MiB，容器上限 384 MiB |
+| 清理的专用构建缓存 | 约 727 MiB |
+
+交互初始化、HTTPS/WSS、MCP 工具调用、修订冲突、租户隔离、附件、重启持久化和冷备份恢复已验证。恢复出的实例在 `--network none` 下通过相同的数据读取与 MCP 检查。以上为隔离测试的采样结果，容量和并发规模会影响运行内存。
+
 ## 验证
 
 ```bash
@@ -153,7 +184,7 @@ npm test
 npm run test:scripts
 npm run test:ui
 bash deploy.sh --check
-docker compose config --quiet
+bash deploy_bydocker.sh --check
 ```
 
 `test/server.test.mjs` 使用真实服务器进程和持久化目录，覆盖 HTTPS origin、安全头、CSRF、租户隔离、幂等、修订冲突、文件、FTS、分享、MCP、WebSocket、停机重启、migration 回滚及 scheduled 清理。`test/server-import.test.mjs` 检查完整备份导入、对象损坏和拒绝覆盖。它们不能代替目标 Linux 上的镜像构建与部署验收。

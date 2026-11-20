@@ -251,12 +251,14 @@ export function publicOrigin(env = process.env) {
 }
 
 /** Keep Miniflare control routes and headers off the public socket, including upgrades. */
-export function createIngress(target, origin, trustProxy = false) {
+export function createIngress(target, origin, trustProxy = false, aliases = []) {
+  const origins = [origin, ...aliases];
   function headersFor(req) {
     const pathname = new URL(req.url, origin).pathname;
     if (!req.url.startsWith('/') || req.url.startsWith('//') ||
         decodeURIComponent(pathname).startsWith('/cdn-cgi/')) return null;
-    if (req.headers.host !== origin.host) return null;
+    const selectedOrigin = origins.find((allowed) => req.headers.host === allowed.host);
+    if (!selectedOrigin) return null;
     const headers = { ...req.headers };
     for (const key of Object.keys(headers)) {
       if (/^(mf-|cf-|x-forwarded-|x-real-ip$|forwarded$)/i.test(key)) delete headers[key];
@@ -264,8 +266,8 @@ export function createIngress(target, origin, trustProxy = false) {
     const ip = trustProxy && typeof req.headers['x-real-ip'] === 'string' && isIP(req.headers['x-real-ip'])
       ? req.headers['x-real-ip'] : req.socket.remoteAddress;
     headers['cf-connecting-ip'] = ip;
-    headers['x-forwarded-proto'] = origin.protocol.slice(0, -1);
-    headers['x-forwarded-host'] = origin.host;
+    headers['x-forwarded-proto'] = selectedOrigin.protocol.slice(0, -1);
+    headers['x-forwarded-host'] = selectedOrigin.host;
     return headers;
   }
   const server = http.createServer((req, res) => {
@@ -320,6 +322,9 @@ export function createIngress(target, origin, trustProxy = false) {
 async function main() {
   const dataDir = process.env.DATA_DIR || '/data';
   const origin = publicOrigin();
+  const aliases = (process.env.PUBLIC_ORIGIN_ALIASES || '').split(',').filter(Boolean)
+    .map((value) => publicOrigin({ ...process.env, PUBLIC_ORIGIN: value.trim() }));
+  if (aliases.some((alias) => alias.protocol !== origin.protocol)) throw new Error('Public origins must use the same protocol.');
   const port = Number(process.env.PORT || 8791);
   const healthPort = Number(process.env.HEALTH_PORT || 8792);
   for (const value of [port, healthPort]) {
@@ -357,7 +362,7 @@ async function main() {
       compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
       bindings, cf: false,
       d1Databases: { DB: 'easynote-db' }, r2Buckets: { IMAGES: 'easynote-images' },
-      durableObjects: { NOTE_EVENTS: { className: 'NoteEvents', useSQLite: true } },
+      durableObjects: { NOTE_EVENTS: { className: 'NoteEvents', useSQLite: true }, SERVER_TRANSFER: { className: 'ServerTransfer', useSQLite: true } },
       d1Persist: path.join(dataDir, 'state/d1'), r2Persist: path.join(dataDir, 'state/r2'),
       durableObjectsPersist: path.join(dataDir, 'state/do'),
       assets: {
@@ -377,9 +382,8 @@ async function main() {
       if (!response.ok) throw new Error('Worker readiness probe failed.');
       return response.json();
     };
-    const session = await probe();
-    if (!session.configured) throw new Error('Owner not configured. Run docker compose run --rm easynote node scripts/setup.mjs --docker.');
-    ingress = createIngress(target, origin, process.env.TRUST_PROXY === 'true');
+    await probe();
+    ingress = createIngress(target, origin, process.env.TRUST_PROXY === 'true', aliases);
     ingress.on('connection', (socket) => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
     await new Promise((resolve, reject) => {
       ingress.once('error', reject);
@@ -389,7 +393,7 @@ async function main() {
     cronScheduler.start();
     healthServer = createHealthServer(async () => {
       let workerReady = false;
-      try { workerReady = (await probe()).configured === true; } catch { /* unhealthy runtime */ }
+      try { await probe(); workerReady = true; } catch { /* unhealthy runtime */ }
       return { ...status, isReady: status.isReady && workerReady, cron: cronScheduler.getStatus() };
     }, healthPort);
     await new Promise((resolve, reject) => { healthServer.once('error', reject); healthServer.once('listening', resolve); });

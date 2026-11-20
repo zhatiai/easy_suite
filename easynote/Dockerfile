@@ -7,7 +7,8 @@ ARG NODE_OPTIONS
 
 # 利用缓存层安装锁定依赖
 COPY package.json package-lock.json ./
-RUN npm ci --include=dev --no-audit --no-fund
+RUN --mount=type=cache,id=easynote-npm,target=/root/.npm,sharing=locked \
+    npm ci --include=dev --no-audit --no-fund
 
 # 复制源码并构建前端与 Worker Bundle
 FROM dependencies AS builder
@@ -20,6 +21,11 @@ RUN npm run build
 FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 
+# workerd uses the Linux trust store for outbound HTTPS.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV PORT=8791
 ENV HEALTH_PORT=8792
@@ -31,7 +37,7 @@ RUN groupadd -g 10001 easynote && \
 
 # 安装仅包含生产必需的锁定依赖
 COPY package.json package-lock.json ./
-RUN --mount=type=bind,from=dependencies,source=/root/.npm,target=/root/.npm,rw \
+RUN --mount=type=cache,id=easynote-npm,target=/root/.npm,sharing=locked \
     npm ci --omit=dev --no-audit --no-fund
 
 # 提取构建产物与配置

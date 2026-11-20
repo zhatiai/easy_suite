@@ -8,7 +8,7 @@
 
 ## 部署方式
 
-- **独立服务器 / Docker**：无需 Cloudflare 账号或云资源，参见 [Docker 部署、兼容方案与数据迁移](docs/DOCKER.md)。
+- **独立服务器 / Docker**：无需 Cloudflare 账号或云资源，运行 `bash deploy_bydocker.sh`，参见 [Docker 部署、兼容方案与数据迁移](docs/DOCKER.md)。
 - **Cloudflare**：继续使用下文的 `bash deploy.sh`，现有部署方式保持可用。
 
 ## 0.10.2 更新说明（2026-10-15）
@@ -127,6 +127,8 @@ bash dev.sh
 | `bash dev.sh --port 8793` | 显式指定其他本地端口 |
 | `bash deploy.sh` | 交互式生产部署 |
 | `bash deploy.sh --check` | 本地构建与 Wrangler 部署预检 |
+| `bash deploy_bydocker.sh` | 解析并保存服务器配置，构建并启动 Docker 部署 |
+| `bash deploy_bydocker.sh --check` | 只校验 Docker 配置，不写文件或启动容器 |
 | `bash reset-password.sh --local` | 交互式选择并重置本地账号，撤销该账号会话和 AI 令牌 |
 | `bash reset-password.sh --remote` | 交互式选择并重置生产账号；重置初始管理员时同步初始化验证器 |
 | `bash ../reset.sh easynote --local` | 确认后清空本地 D1/R2 状态，保留本地账号配置 |

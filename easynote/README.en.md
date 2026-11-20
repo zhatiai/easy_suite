@@ -8,7 +8,7 @@ A self-hosted Markdown note-taking application for individuals or small teams. R
 
 ## Deployment options
 
-- **Independent server / Docker**: No Cloudflare account or cloud resources required. See [Docker deployment, compatibility, and data migration](docs/DOCKER.en.md).
+- **Independent server / Docker**: No Cloudflare account or cloud resources required. Run `bash deploy_bydocker.sh`; see [Docker deployment, compatibility, and data migration](docs/DOCKER.en.md).
 - **Cloudflare**: Continue using `bash deploy.sh` as documented below. Existing deployments remain supported.
 
 ## 0.10.2 Release Notes (2026-10-15)
@@ -120,6 +120,8 @@ First launch automatically installs dependencies and interactively prompts for i
 | `bash dev.sh --port 8793` | Start on custom port |
 | `bash deploy.sh` | Interactive production deployment |
 | `bash deploy.sh --check` | Local build and Wrangler preflight checks |
+| `bash deploy_bydocker.sh` | Resolve and save server configuration, then build and start Docker deployment |
+| `bash deploy_bydocker.sh --check` | Validate Docker configuration without writing files or starting containers |
 | `bash reset-password.sh --local` | Reset local account password |
 | `bash reset-password.sh --remote` | Reset remote account password |
 | `bash ../reset.sh easynote --local` | Clear local D1/R2 state while preserving admin config |

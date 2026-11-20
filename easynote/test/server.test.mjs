@@ -117,6 +117,13 @@ test('server loads every known binding override and fails for missing explicit o
   assert.equal(bindings.MAX_NOTES, '200');
   assert.equal(bindings.UNRELATED_SECRET, undefined);
   await assert.rejects(loadRuntimeBindings('/nonexistent', { INITIAL_OWNER_FILE: '/nonexistent/owner' }), /ENOENT/);
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'easynote-owner-file-'));
+  try {
+    const verifier = JSON.stringify({ username: 'tester', verifier: { salt: 'a'.repeat(64), proof: 'b'.repeat(64) } });
+    await writeFile(path.join(dataDir, 'initial-owner.json'), verifier, { mode: 0o600 });
+    assert.equal((await loadRuntimeBindings(dataDir, {})).INITIAL_OWNER, verifier);
+    assert.equal((await loadRuntimeBindings(dataDir, { INITIAL_OWNER: 'environment-owner' })).INITIAL_OWNER, 'environment-owner');
+  } finally { await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('ingress strips runtime headers and trusts only explicitly enabled proxy IPs', async () => {
@@ -125,7 +132,8 @@ test('ingress strips runtime headers and trusts only explicitly enabled proxy IP
   await once(target, 'listening');
   try {
     for (const trust of [false, true]) {
-      const ingress = createIngress(new URL(`http://127.0.0.1:${target.address().port}`), new URL('https://notes.example.test'), trust);
+      const ingress = createIngress(new URL(`http://127.0.0.1:${target.address().port}`), new URL('https://notes.example.test'), trust,
+        [new URL('https://alias.example.test')]);
       ingress.listen(0, '127.0.0.1');
       await once(ingress, 'listening');
       try {
@@ -145,6 +153,18 @@ test('ingress strips runtime headers and trusts only explicitly enabled proxy IP
         assert.equal(headers['x-forwarded-host'], 'notes.example.test');
         assert.equal(headers['mf-original-url'], undefined);
         assert.equal(headers['x-real-ip'], undefined);
+        for (const host of ['alias.example.test', 'attacker.test']) {
+          const response = await new Promise((resolve, reject) => {
+            const req = http.get({ host: '127.0.0.1', port: ingress.address().port, headers: { Host: host } }, (res) => {
+              let body = '';
+              res.on('data', (chunk) => { body += chunk; });
+              res.on('end', () => resolve({ status: res.statusCode, headers: JSON.parse(body || '{}') }));
+            });
+            req.on('error', reject);
+          });
+          assert.equal(response.status, host === 'alias.example.test' ? 200 : 400);
+          if (response.status === 200) assert.equal(response.headers['x-forwarded-host'], host);
+        }
       } finally { await new Promise((resolve) => ingress.close(resolve)); }
     }
   } finally { await new Promise((resolve) => target.close(resolve)); }
@@ -168,21 +188,17 @@ test('cron serializes overlapping runs and reports failure', async () => {
 });
 
 
-test('server preserves HTTPS, tenancy, files, revisions, WebSockets, MCP and data across restart', { timeout: 30_000 }, async () => {
+test('unconfigured server starts healthy, accepts web setup and preserves HTTPS, tenancy and data across restart', { timeout: 30_000 }, async () => {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'easynote-persistence-'));
   const port = 8797;
   const origin = 'https://notes.example.test';
   const password = 'Test-only-EasyNote-938!';
-  const salt = 'c'.repeat(64);
-  const owner = { username: 'tester', verifier: { salt, proof: createHmac('sha256',
-    pbkdf2Sync(password, Buffer.from(salt, 'hex'), 100000, 32, 'sha256')).update('easynote/password/v1').digest('hex') } };
-  await writeFile(path.join(dataDir, 'initial-owner.json'), JSON.stringify(owner), { mode: 0o600 });
   let child;
   let output = '';
   async function start() {
     child = spawn(process.execPath, ['scripts/server.mjs'], {
       env: { ...process.env, DATA_DIR: dataDir, PORT: String(port), HEALTH_PORT: '8798',
-        PUBLIC_ORIGIN: origin, INITIAL_OWNER: '', ALLOW_LOCAL_HTTP: 'false', TRUST_PROXY: 'false' },
+        PUBLIC_ORIGIN: origin, PUBLIC_ORIGIN_ALIASES: 'https://alias.example.test', INITIAL_OWNER: '', ALLOW_LOCAL_HTTP: 'false', TRUST_PROXY: 'false' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.on('data', (data) => { output += data; });
@@ -228,6 +244,10 @@ test('server preserves HTTPS, tenancy, files, revisions, WebSockets, MCP and dat
   let socket;
   try {
     await start();
+    assert.equal((await request('/api/session')).json().configured, false);
+    assert.equal((await request('/api/setup', 'POST', { username: 'tester', password }, {},
+      { Host: 'alias.example.test', Origin: 'https://alias.example.test' })).status, 200);
+    assert.equal((await request('/api/session')).json().configured, true);
     const root = await request('/');
     assert.equal(root.status, 200);
     assert.match(root.headers['content-security-policy'], /frame-ancestors/);
@@ -289,9 +309,29 @@ test('server preserves HTTPS, tenancy, files, revisions, WebSockets, MCP and dat
     const pong = once(socket, 'message');
     socket.send('ping');
     assert.equal(String((await pong)[0]), 'pong');
+    const transferKey = await request('/api/admin/server-transfer/key', 'POST', {}, auth);
+    assert.equal(transferKey.status, 200, transferKey.text);
+    const schedule = await request('/api/admin/server-transfer', 'PUT', {
+      backup: { url: 'https://backup.example.test', token: transferKey.json().token },
+      sync: { url: 'https://sync.example.test', token: transferKey.json().token }, intervalMinutes: 1440,
+      syncIntervalMinutes: 2880, backupMode: 'incremental', syncMode: 'incremental', receivingEnabled: true, confirm: 'OVERWRITE',
+    }, auth);
+    assert.equal(schedule.status, 200, schedule.text);
+    const scheduledTransfer = schedule.json();
     // An open WebSocket must not prevent graceful shutdown.
     await stop();
     await start();
+    assert.equal((await request('/api/setup', 'POST', { username: 'replacement', password })).status, 409);
+    await login('tester');
+    const restoredTransfer = (await request('/api/admin/server-transfer', 'GET', undefined, auth)).json();
+    assert.equal(restoredTransfer.instanceId, scheduledTransfer.instanceId);
+    assert.equal(restoredTransfer.nextBackupAt, scheduledTransfer.nextBackupAt);
+    assert.equal(restoredTransfer.nextSyncAt, scheduledTransfer.nextSyncAt);
+    assert.equal(restoredTransfer.settings.syncMode, 'incremental');
+    assert.equal(restoredTransfer.settings.syncIntervalMinutes, 2880);
+    assert.equal(restoredTransfer.hasBackupToken, true);
+    assert.equal(restoredTransfer.hasReceivingToken, true);
+    assert.equal(restoredTransfer.settings.backup.token, '');
     assert.equal((await request(`/api/notes/${id}`, 'GET', undefined, auth)).json().note.revision, 2);
     assert.equal((await request(`/api/files/${fileId}`, 'GET', undefined, auth)).text, 'persistent attachment');
     assert.equal((await request(`/api/notes/${id}/versions`, 'GET', undefined, auth)).status, 200);
@@ -333,7 +373,7 @@ test('scheduled cleanup invokes the actual Worker handler', async () => {
   const runtime = new Miniflare({ modules: true, scriptPath: path.resolve('dist/worker/index.js'),
     compatibilityDate: '2026-08-06', compatibilityFlags: ['nodejs_compat'], cf: false,
     host: '127.0.0.1', port: 0,
-    d1Databases: ['DB'], r2Buckets: ['IMAGES'], durableObjects: { NOTE_EVENTS: 'NoteEvents' },
+    d1Databases: ['DB'], r2Buckets: ['IMAGES'], durableObjects: { NOTE_EVENTS: 'NoteEvents', SERVER_TRANSFER: { className: 'ServerTransfer', useSQLite: true } },
     bindings: await loadRuntimeBindings('/nonexistent', {}) });
   try {
     const db = await runtime.getD1Database('DB');
