@@ -195,6 +195,7 @@ export interface StoredFile {
 export type ImageRecord = StoredFile;
 
 export interface StorageStats {
+  storageBackend: 'cloudflare' | 'local';
   usedBytes: number;
   quotaBytes: number;
   remainingBytes: number;

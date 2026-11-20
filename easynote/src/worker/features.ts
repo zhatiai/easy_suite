@@ -74,8 +74,8 @@ export async function featureRoutes(
 
     const usedBytes = notesBytes + trashBytes + versionsBytes + filesBytes;
     const quotaBytes = numberSetting(env, 'IMAGE_QUOTA_BYTES', 1024, 10 * 1024 ** 3);
-    const remainingBytes = Math.max(0, quotaBytes - usedBytes);
-    const usedPercent = quotaBytes > 0 ? Math.min(100, Math.round((usedBytes / quotaBytes) * 1000) / 10) : 0;
+    const remainingBytes = Math.max(0, quotaBytes - filesBytes);
+    const usedPercent = quotaBytes > 0 ? Math.min(100, Math.round((filesBytes / quotaBytes) * 1000) / 10) : 0;
 
     let d1DatabaseBytes: number | null = null;
     if (user.role === 'admin') {
@@ -89,6 +89,7 @@ export async function featureRoutes(
     }
 
     return json({
+      storageBackend: env.STORAGE_BACKEND === 'local' ? 'local' : 'cloudflare',
       usedBytes,
       quotaBytes,
       remainingBytes,

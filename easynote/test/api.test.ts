@@ -844,6 +844,7 @@ test('storage endpoint returns used and remaining storage stats', async () => {
   const response = await request('/api/storage');
   assert.equal(response.status, 200);
   const data = await response.json() as any;
+  assert.equal(data.storageBackend, 'cloudflare');
   assert.equal(typeof data.usedBytes, 'number');
   assert.equal(typeof data.quotaBytes, 'number');
   assert.equal(typeof data.remainingBytes, 'number');
@@ -857,7 +858,7 @@ test('storage endpoint returns used and remaining storage stats', async () => {
   assert.equal(typeof data.filesBytes, 'number');
   assert.equal(typeof data.fileCount, 'number');
   assert.equal(data.usedBytes, data.notesBytes + data.trashBytes + data.versionsBytes + data.filesBytes);
-  assert.equal(data.remainingBytes, data.quotaBytes - data.usedBytes);
+  assert.equal(data.remainingBytes, data.quotaBytes - data.filesBytes);
   assert.ok(data.quotaBytes > 0);
   assert.ok(data.noteCount > 0);
   assert.ok(data.notesBytes > 0);

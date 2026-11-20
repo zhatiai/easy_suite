@@ -2106,8 +2106,6 @@ dialog.pdf-export-dialog[open] { display: flex; flex-direction: column; }
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-height: 72dvh;
-  overflow-y: auto;
   padding-bottom: 8px;
 }
 .storage-overview {
@@ -4942,7 +4940,7 @@ a.doc-link-txt::before {
 .settings-sidebar a:hover { color: var(--ink); background: var(--hover); }
 .settings-sidebar a[aria-current="page"] { color: var(--accent-text); background: var(--accent-soft); font-weight: 600; }
 .settings-scroll { min-width: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.settings-content { width: 100%; max-width: 872px; padding: 40px 56px max(56px, env(safe-area-inset-bottom)); }
+.settings-content { width: 100%; max-width: 1120px; margin-inline: auto; padding: 40px 56px max(56px, env(safe-area-inset-bottom)); }
 .settings-heading { margin-bottom: 32px; }
 .settings-heading h2 { margin: 0 0 8px; font-size: 25px; font-weight: 650; letter-spacing: -.5px; outline: none; }
 .settings-heading p, .settings-hint { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }

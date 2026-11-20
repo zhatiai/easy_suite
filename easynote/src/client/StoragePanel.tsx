@@ -86,13 +86,14 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
         ? '< 0.1%'
         : '0%'
     : '0%';
+  const isLocalStorage = stats?.storageBackend === 'local';
 
   return <div className="storage-panel">
     <section className="storage-overview">
       <header className="storage-panel-header">
         <div className="storage-panel-title">
           <HardDrive size={18} />
-          <strong>{t('Cloudflare 存储空间')}</strong>
+          <strong>{t(stats ? (isLocalStorage ? '本地服务器存储' : 'Cloudflare 存储空间') : '存储空间与告警')}</strong>
         </div>
         <button className="storage-refresh-btn" disabled={disabled || loading} onClick={() => void fetchStats()} aria-label={t('刷新')}>
           {loading ? <LoaderCircle size={15} className="spin" /> : <RotateCw size={15} />}
@@ -106,7 +107,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
         <>
           <div className="storage-progress-container">
             <div className="storage-progress-header">
-              <span>{t('已用比例')}</span>
+              <span>{t('附件配额已用')}</span>
               <strong className={`storage-percent ${barStatusClass}`}>{percentText}</strong>
             </div>
             <div className="storage-progress-track" role="progressbar" aria-valuenow={stats.usedPercent} aria-valuemin={0} aria-valuemax={100}>
@@ -123,11 +124,11 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
               <strong className="storage-metric-value">{formatStorageBytes(stats.usedBytes)}</strong>
             </div>
             <div className="storage-metric-item">
-              <span className="storage-metric-label">{t('剩余空间')}</span>
+              <span className="storage-metric-label">{t('附件剩余配额')}</span>
               <strong className="storage-metric-value">{formatStorageBytes(stats.remainingBytes)}</strong>
             </div>
             <div className="storage-metric-item">
-              <span className="storage-metric-label">{t('用户配额')}</span>
+              <span className="storage-metric-label">{t('附件配额')}</span>
               <strong className="storage-metric-value">{formatStorageBytes(stats.quotaBytes)}</strong>
             </div>
             <div className="storage-metric-item">
@@ -144,7 +145,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
               <div className="storage-breakdown-row">
                 <div className="storage-breakdown-info">
                   <FileText size={15} />
-                  <span>{t('笔记正文 (D1)')}</span>
+                  <span>{t(isLocalStorage ? '笔记正文 (SQLite)' : '笔记正文 (D1)')}</span>
                 </div>
                 <div className="storage-breakdown-meta">
                   <span>{t('{0} 篇活跃笔记', stats.noteCount)}</span>
@@ -155,7 +156,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
               <div className="storage-breakdown-row">
                 <div className="storage-breakdown-info">
                   <History size={15} />
-                  <span>{t('历史版本 (D1)')}</span>
+                  <span>{t(isLocalStorage ? '历史版本 (SQLite)' : '历史版本 (D1)')}</span>
                 </div>
                 <div className="storage-breakdown-meta">
                   <span>{t('{0} 个修订版本', stats.versionCount)}</span>
@@ -167,7 +168,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
                 <div className="storage-breakdown-row">
                   <div className="storage-breakdown-info">
                     <Trash2 size={15} />
-                    <span>{t('回收站 (D1)')}</span>
+                    <span>{t(isLocalStorage ? '回收站 (SQLite)' : '回收站 (D1)')}</span>
                   </div>
                   <div className="storage-breakdown-meta">
                     <span>{t('{0} 篇废弃笔记', stats.trashCount)}</span>
@@ -179,7 +180,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
               <div className="storage-breakdown-row">
                 <div className="storage-breakdown-info">
                   <Paperclip size={15} />
-                  <span>{t('图片与附件 (R2)')}</span>
+                  <span>{t(isLocalStorage ? '图片与附件 (本地对象存储)' : '图片与附件 (R2)')}</span>
                 </div>
                 <div className="storage-breakdown-meta">
                   <span>{t('{0} 个媒体文件', stats.fileCount)}</span>
@@ -191,7 +192,7 @@ export function StoragePanel({ userId, disabled, isAdmin, notify, reportError }:
                 <div className="storage-breakdown-row admin-row">
                   <div className="storage-breakdown-info">
                     <Database size={15} />
-                    <span>{t('D1 数据库占用')}</span>
+                    <span>{t(isLocalStorage ? 'SQLite 数据库占用' : 'D1 数据库占用')}</span>
                   </div>
                   <div className="storage-breakdown-meta">
                     <strong>{formatStorageBytes(stats.d1DatabaseBytes)}</strong>

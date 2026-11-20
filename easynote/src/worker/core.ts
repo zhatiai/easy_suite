@@ -6,6 +6,7 @@ export interface Env {
   ASSETS: Fetcher;
   NOTE_EVENTS: DurableObjectNamespace;
   SERVER_TRANSFER: DurableObjectNamespace;
+  STORAGE_BACKEND?: string;
   INITIAL_OWNER?: string;
   ALLOW_LOCAL_HTTP: string;
   MAX_NOTE_BYTES: string;

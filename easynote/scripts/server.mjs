@@ -227,7 +227,7 @@ export async function ensureDataDirectories(dataDir) {
 /** Load the same defaults as Cloudflare, with explicit server overrides. */
 export async function loadRuntimeBindings(dataDir = process.env.DATA_DIR || '/data', env = process.env) {
   const config = JSON.parse(await readFile(path.resolve('wrangler.json'), 'utf8'));
-  const bindings = { ...config.vars };
+  const bindings = { ...config.vars, STORAGE_BACKEND: 'local' };
   for (const key of Object.keys(bindings)) {
     if (env[key] !== undefined) bindings[key] = env[key];
   }

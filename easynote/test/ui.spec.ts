@@ -792,6 +792,40 @@ test('settings sections fit narrow screens in both languages and respect reduced
   }
 });
 
+test('settings sections stay centered and use one scroller on wide screens', async ({ page }) => {
+  await page.setViewportSize({ width: 2560, height: 1200 });
+  await page.goto('/settings/general');
+  const links = page.locator('.settings-sidebar a');
+  for (let index = 0; index < await links.count(); index++) {
+    await links.nth(index).click();
+    await expect(links.nth(index)).toHaveAttribute('aria-current', 'page');
+    const layout = await page.locator('.settings-scroll').evaluate((scroller) => {
+      const content = scroller.querySelector<HTMLElement>('.settings-content');
+      const panel = scroller.querySelector<HTMLElement>('.settings-panel:not([hidden])');
+      if (!content || !panel) throw new Error('Active settings content is missing.');
+      const scrollRect = scroller.getBoundingClientRect();
+      const contentRect = content.getBoundingClientRect();
+      const nestedVerticalScroller = [...panel.querySelectorAll<HTMLElement>('*')].some((element) => {
+        const overflow = getComputedStyle(element).overflowY;
+        return ['auto', 'scroll'].includes(overflow) && element.scrollHeight > element.clientHeight;
+      });
+      return {
+        centerDifference: Math.abs((scrollRect.left + scrollRect.width / 2) - (contentRect.left + contentRect.width / 2)),
+        contentWidth: contentRect.width,
+        horizontalOverflow: scroller.scrollWidth > scroller.clientWidth,
+        nestedVerticalScroller,
+      };
+    });
+    expect(layout.centerDifference).toBeLessThanOrEqual(1);
+    expect(layout.contentWidth).toBeGreaterThan(872);
+    expect(layout.contentWidth).toBeLessThanOrEqual(1120);
+    expect(layout.horizontalOverflow).toBe(false);
+    expect(layout.nestedVerticalScroller).toBe(false);
+  }
+  await page.getByRole('link', { name: '存储空间与告警', exact: true }).click();
+  await page.screenshot({ path: 'test-results/settings-storage-wide.png', animations: 'disabled' });
+});
+
 test('settings displays request errors and offline restrictions inside the page', async ({ page, context }) => {
   await page.route('**/api/integrations/tokens', (route) => route.fulfill({
     status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Settings test unavailable' }),

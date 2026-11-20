@@ -115,6 +115,7 @@ test('public origin rejects insecure production and ambiguous origins', () => {
 test('server loads every known binding override and fails for missing explicit owner file', async () => {
   const bindings = await loadRuntimeBindings('/nonexistent', { MAX_NOTES: '200', UNRELATED_SECRET: 'ignore' });
   assert.equal(bindings.MAX_NOTES, '200');
+  assert.equal(bindings.STORAGE_BACKEND, 'local');
   assert.equal(bindings.UNRELATED_SECRET, undefined);
   await assert.rejects(loadRuntimeBindings('/nonexistent', { INITIAL_OWNER_FILE: '/nonexistent/owner' }), /ENOENT/);
   const dataDir = await mkdtemp(path.join(tmpdir(), 'easynote-owner-file-'));
