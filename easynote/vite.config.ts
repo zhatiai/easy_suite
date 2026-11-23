@@ -1,7 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 let easynoteVersion = '0.7.8';
 try {
@@ -42,6 +43,17 @@ export default defineConfig({
   plugins: [
     mathjaxCleanPlugin(),
     react(),
+    {
+      name: 'excalidraw-fonts',
+      apply: 'build',
+      generateBundle() {
+        const root = 'node_modules/@excalidraw/excalidraw/dist/prod';
+        for (const file of readdirSync(join(root, 'fonts'), { recursive: true, encoding: 'utf8' })) {
+          if (!file.endsWith('.woff2')) continue;
+          this.emitFile({ type: 'asset', fileName: `whiteboard-assets/fonts/${file}`, source: readFileSync(join(root, 'fonts', file)) });
+        }
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       injectRegister: 'script-defer',
@@ -69,14 +81,17 @@ export default defineConfig({
         skipWaiting: true,
         clientsClaim: true,
         globPatterns: [
-          '**/*.{html,css,svg,woff2,woff}',
+          '**/*.{html,svg,woff2,woff}',
+          'assets/{index,katex}-*.css',
           'registerSW.js',
           'manifest.webmanifest',
           'assets/index-*.js',
+          'assets/commonjs-runtime-*.js',
           'assets/editor-*.js',
           'assets/markdown-*.js',
           'assets/katex-*.js',
         ],
+        globIgnores: ['whiteboard-assets/**', 'assets/Assistant-*.woff2'],
         runtimeCaching: [{
           urlPattern: /\/(?:assets\/(?:pdfmake|pdfjs|mathjax|pdf\.worker)[^/]*\.(?:js|mjs)|fonts\/NotoSansSC-(?:Regular|Bold)\.otf)$/,
           handler: 'CacheFirst',
@@ -125,7 +140,14 @@ export default defineConfig({
     chunkSizeWarningLimit: 2000,
     rollupOptions: {
       output: {
+        chunkFileNames(chunk) {
+          if (chunk.moduleIds.some((id) => id.endsWith('/src/client/WhiteboardEditor.tsx'))) return 'assets/WhiteboardEditor-[hash].js';
+          // The PWA shell precaches the index entry, while generic dependency index chunks load on demand.
+          return chunk.name === 'index' ? 'assets/lazy-index-[hash].js' : 'assets/[name]-[hash].js';
+        },
         manualChunks(id) {
+          // Keep Rollup's shared interop helper out of the lazy MathJax chunk.
+          if (id === '\0commonjsHelpers.js') return 'commonjs-runtime';
           if (id.includes('/@codemirror/') || id.includes('/@lezer/')) return 'editor';
           if (id.includes('/markdown-it/') || id.includes('/dompurify/')) return 'markdown';
           if (id.includes('/katex/')) return 'katex';

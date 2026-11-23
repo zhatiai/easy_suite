@@ -378,7 +378,7 @@ export async function publicShareRoutes(
     JOIN images i ON i.id=r.image_id AND i.user_id=n.user_id
     WHERE s.token_hash=? AND (s.expires_at IS NULL OR s.expires_at>?) AND n.deleted_at IS NULL
       AND u.enabled=1 AND u.deletion_requested_at IS NULL
-      AND i.id=? AND i.status='ready'`)
+      AND i.id=? AND i.status='ready' AND i.board_revision IS NULL`)
     .bind(hashedToken, Date.now(), id).first<StoredFileRow>();
 
   if (!row) {
@@ -393,7 +393,7 @@ export async function publicShareRoutes(
     JOIN users u ON u.id=n.user_id AND u.enabled=1 AND u.deletion_requested_at IS NULL
     JOIN image_refs r ON r.note_id=n.id AND r.revision=n.revision
     JOIN images i ON i.id=r.image_id AND i.user_id=n.user_id
-    WHERE i.id=? AND i.status='ready' LIMIT 1`)
+    WHERE i.id=? AND i.status='ready' AND i.board_revision IS NULL LIMIT 1`)
       .bind(hashedToken, Date.now(), id).first<StoredFileRow>();
   }
 

@@ -38,6 +38,7 @@
     "@codemirror/lang-markdown": "^6.3.4",
     "@codemirror/state": "^6.5.2",
     "@codemirror/view": "^6.38.1",
+    "@excalidraw/excalidraw": "0.18.1",
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "@playwright/test": "^1.55.0",

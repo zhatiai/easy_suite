@@ -56,11 +56,15 @@ bearer_token_env_var = "EASYNOTE_TOKEN"
 | `easynote_connection_status` | 只读 | 验证账号、令牌名称和权限 |
 | `easynote_note_stats` | 只读 | 精确统计正常、归档、回收站及全部笔记数量 |
 | `easynote_list_folders` | 只读 | 列出完整文件夹树和每个文件夹的直接笔记数 |
+| `easynote_list_whiteboards` | 只读 | 列出标准 Excalidraw 白板文件、目录和 revision |
+| `easynote_read_whiteboard` | 只读 | 读取完整 `.excalidraw` JSON 文件 |
 | `easynote_create_note` | 读写 | 创建笔记并通过 `linked_note_ids` 一次关联最多 20 篇已有笔记 |
 | `easynote_link_notes` | 读写 | 为已有笔记追加关联，自动去重，保留 revision 校验 |
 | `easynote_update_note` | 读写 | 更新笔记，或通过 `folderId` 移动笔记 |
 | `easynote_create_folder` | 读写 | 创建根文件夹或子文件夹 |
 | `easynote_update_folder` | 读写 | 改名或移动文件夹 |
+| `easynote_create_whiteboard` | 读写 | 创建标准 `.excalidraw` 白板文件 |
+| `easynote_update_whiteboard` | 读写 | 更新画布、改名或移动白板，保留 revision 校验 |
 | `easynote_delete_folder` | 读写 | 删除文件夹树，笔记移到根目录，完全空白笔记移入回收站 |
 | `easynote_archive_note` | 读写 | 归档或取消归档 |
 | `easynote_trash_note` | 读写 | 移入回收站 |
@@ -69,7 +73,7 @@ bearer_token_env_var = "EASYNOTE_TOKEN"
 
 ## MCP Resources
 
-每篇笔记可通过 `easynote://notes/{id}.md` 读取为 `text/markdown`。Resource 列表仅用于浏览最近更新的正常和归档笔记，最多 100 篇；搜索仍覆盖整个知识库。
+每篇笔记可通过 `easynote://notes/{id}.md` 读取为 `text/markdown`。每个白板可通过 `easynote://whiteboards/{id}.excalidraw` 读取为 `application/vnd.excalidraw+json`。笔记 Resource 列表仅用于浏览最近更新的正常和归档笔记，最多 100 篇；搜索仍覆盖整个知识库。
 
 ## 使用建议
 

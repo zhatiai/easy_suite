@@ -534,6 +534,9 @@ export class ServerTransfer {
       LEFT JOIN __transfer_files f ON f.id=i.id WHERE i.status='ready' AND f.id IS NULL`).first<{ n: number }>();
     if (missing?.n) throw new ApiError(409, 'Missing transferred files.');
     if (lock.transferMode === 'incremental') await this.mergeTarget(lock);
+    const crossTenantBoard = await this.env.DB.prepare(`SELECT 1 FROM ${stage('images')} i
+      JOIN ${stage('folders')} f ON i.board_folder_id=f.id WHERE i.user_id<>f.user_id LIMIT 1`).first();
+    if (crossTenantBoard) throw new ApiError(409, 'Whiteboard folder belongs to a different account.');
     const admins = await this.env.DB.prepare(`SELECT COUNT(*) AS n FROM ${stage('users')}
       WHERE role='admin' AND enabled=1 AND deletion_requested_at IS NULL`).first<{ n: number }>();
     if (!admins?.n) throw new ApiError(409, 'Missing enabled administrator.');

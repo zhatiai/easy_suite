@@ -56,11 +56,15 @@ bearer_token_env_var = "EASYNOTE_TOKEN"
 | `easynote_connection_status` | Read-only | Verifies account, token name, and permissions |
 | `easynote_note_stats` | Read-only | Provides exact counts for active, archived, trash, and total notes |
 | `easynote_list_folders` | Read-only | Lists the complete folder tree and direct note counts |
+| `easynote_list_whiteboards` | Read-only | Lists standard Excalidraw files, folders, and revisions |
+| `easynote_read_whiteboard` | Read-only | Reads a complete `.excalidraw` JSON file |
 | `easynote_create_note` | Read-write | Creates a note and links up to 20 existing notes using `linked_note_ids` |
 | `easynote_link_notes` | Read-write | Appends deduplicated links to an existing note with revision checks |
 | `easynote_update_note` | Read-write | Updates a note or moves it with `folderId` |
 | `easynote_create_folder` | Read-write | Creates a root folder or nested folder |
 | `easynote_update_folder` | Read-write | Renames or moves a folder |
+| `easynote_create_whiteboard` | Read-write | Creates a standard `.excalidraw` whiteboard file |
+| `easynote_update_whiteboard` | Read-write | Updates, renames, or moves a whiteboard with revision checks |
 | `easynote_delete_folder` | Read-write | Deletes a folder tree; notes move to the root and completely blank notes move to trash |
 | `easynote_archive_note` | Read-write | Archives or unarchives a note |
 | `easynote_trash_note` | Read-write | Moves a note to trash |
@@ -69,7 +73,7 @@ Read-only tokens do not expose mutating tools. Permanent deletion, account manag
 
 ## MCP Resources
 
-Each note can be read as `text/markdown` via `easynote://notes/{id}.md`. The Resource list is intended for browsing the most recently updated active and archived notes (up to 100); searches still span the entire knowledge base.
+Each note can be read as `text/markdown` via `easynote://notes/{id}.md`. Each whiteboard can be read as `application/vnd.excalidraw+json` via `easynote://whiteboards/{id}.excalidraw`. The note Resource list is intended for browsing the most recently updated active and archived notes (up to 100); searches still span the entire knowledge base.
 
 ## Best Practices
 

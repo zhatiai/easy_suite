@@ -201,7 +201,7 @@ Service Worker 只预缓存应用外壳，不缓存 `/api`、登录会话、笔�
 
 ## AI 接入
 
-EasyNote 的 AI 接入采用独立权限：MCP 读取工具直接搜索和读取 EasyNote API；创建、修改、归档和移入回收站使用可写令牌。AI 无法永久删除笔记，也不持有浏览器 Cookie 或账号密码，不在本地复制笔记正文。
+EasyNote 的 AI 接入采用独立权限：MCP 可搜索和读取 Markdown 笔记，也可列出、读取标准 Excalidraw 白板；可写令牌还能创建或修改笔记与白板，并管理文件夹、归档和回收站。AI 无法永久删除数据，也不持有浏览器 Cookie 或账号密码。
 
 在 PWA“设置 → AI 接入”中创建令牌后，直接连接 `https://你的域名/mcp`。无需下载源码、安装 Node.js 或运行本地桥接器。Codex 配置、工具清单、安全约束和故障排查见 [`docs/AI_INTEGRATION.md`](docs/AI_INTEGRATION.md)。
 
@@ -409,7 +409,7 @@ cd easynote
 bash deploy.sh
 ```
 
-部署脚本会构建并检查项目，然后更新 Worker。数据库结构统一定义在 `0001_initial.sql`，分享数据只使用 `note_shares` 表。按终端提示输入 Cloudflare API Token，并使用 `deploy <Worker 名称>` 确认即可。
+确认部署后，脚本会先应用 `migrations/` 中尚未执行的 D1 迁移，再更新 Worker。Wrangler 根据数据库内的迁移记录跳过已应用的文件。迁移失败会中止部署。`--check` 只做本地预检。
 
 官方参考：[Wrangler API Token 环境变量](https://developers.cloudflare.com/workers/wrangler/system-environment-variables/)、[Workers 权限](https://developers.cloudflare.com/workers/authorization/)、[创建 API Token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/)、[创建 D1 API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/create/)、[创建 R2 bucket API](https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/create/)、[workers.dev](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/)、[Worker Custom Domains](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/)、[List Routes API](https://developers.cloudflare.com/api/resources/workers/subresources/routes/methods/list/)。
 

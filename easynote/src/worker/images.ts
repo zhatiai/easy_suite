@@ -23,7 +23,7 @@ export async function imageRoutes(request: Request, env: Env, user: Identity, pa
     if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError(400, 'Invalid file offset.');
     const escaped = query.replace(/[\\%_]/g, '\\$&');
     const rows = await env.DB.prepare(`SELECT id,filename FROM images WHERE user_id=? AND status='ready'
-      AND mime NOT LIKE 'image/%' AND filename LIKE ? ESCAPE '\\' ORDER BY created_at DESC,id ASC LIMIT 51 OFFSET ?`)
+      AND board_revision IS NULL AND mime NOT LIKE 'image/%' AND filename LIKE ? ESCAPE '\\' ORDER BY created_at DESC,id ASC LIMIT 51 OFFSET ?`)
       .bind(user.id, `%${escaped}%`, offset).all<{ id: string; filename: string }>();
     return json({ files: rows.results.slice(0, 50).map((row) => ({ ...row, url: filePath(row.id) })),
       nextOffset: rows.results.length > 50 ? offset + 50 : null });
@@ -32,7 +32,7 @@ export async function imageRoutes(request: Request, env: Env, user: Identity, pa
   if (!match) return null;
   const [, route, id] = match;
   if (!idPattern.test(id)) throw new ApiError(404, 'File not found.');
-  const row = await env.DB.prepare('SELECT * FROM images WHERE id=? AND user_id=?').bind(id, user.id).first<StoredFileRow>();
+  const row = await env.DB.prepare('SELECT * FROM images WHERE id=? AND user_id=? AND board_revision IS NULL').bind(id, user.id).first<StoredFileRow>();
   if (request.method === 'GET') {
     if (!row || row.status !== 'ready' || route === 'images' && !isImage(row.mime)) throw new ApiError(404, 'File not found.');
     const object = await env.IMAGES.get(objectKey(row));
@@ -114,7 +114,7 @@ export async function cleanup(env: Env): Promise<void> {
   const cutoff = Date.now() - numberSetting(env, 'IMAGE_GRACE_HOURS', 24, 2160) * 3600_000;
   // A note save inserts references only while the image is ready, inside the same D1 transaction.
   await env.DB.prepare(`UPDATE images SET status='deleting' WHERE id IN (
-    SELECT id FROM images WHERE status!='deleting' AND last_used_at<?
+    SELECT id FROM images WHERE status!='deleting' AND board_revision IS NULL AND last_used_at<?
       AND NOT EXISTS(SELECT 1 FROM image_refs WHERE image_id=images.id) LIMIT 50
   )`).bind(cutoff).run();
   const rows = await env.DB.prepare("SELECT id,user_id,storage_key FROM images WHERE status='deleting' LIMIT 50")

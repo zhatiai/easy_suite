@@ -7,8 +7,9 @@ import { noteDescription, withNoteDescription } from '../shared/descriptions';
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, Archive, ArchiveRestore, ArrowLeft, BookOpen, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ClipboardList, Code2, Command, Copy, Download, Eye, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, GitMerge, History, ImagePlus, Keyboard, Link2, ListTree, LoaderCircle, LogOut, Maximize2, Menu, Minimize2, Moon, MoreHorizontal, NotebookPen, Paperclip, Pencil, Pin, Plus, Printer, RefreshCw, Save, Search, Settings, Share2, Square, Sun, TableOfContents, Tag, Tags, Trash2, Upload, WifiOff, X, RotateCcw, PenLine } from 'lucide-react';
-import type { Folder, ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedFolder, SharedNote, Version } from '../shared/types';
-import { folderRelativePath, noteRelativePath } from '../shared/types';
+import type { Folder, ManagedNoteShare, Note, NoteInput, NoteSummary, NoteTask, Session, SharedFolder, SharedNote, Version, WhiteboardFile } from '../shared/types';
+import type WhiteboardEditor from './WhiteboardEditor';
+import { folderRelativePath, noteRelativePath, whiteboardRelativePath } from '../shared/types';
 import { api, ApiError, setSession, setUnauthorizedHandler, uploadAttachment, uploadImage } from './api';
 import { AccountSecurity } from './AccountSecurity';
 import { SettingsPage, useSettingsNavigation, type SettingsSection } from './SettingsPage';
@@ -63,6 +64,19 @@ function IconButton({ label, children, className, ...props }: React.ButtonHTMLAt
   const tooltip = label ? t(label) : '';
   const resolvedClass = className ? (className.includes('icon-button') ? className : `icon-button ${className}`) : 'icon-button';
   return <button className={resolvedClass} data-tooltip={tooltip || undefined} aria-label={props['aria-label'] || tooltip || undefined} {...props}>{children}</button>;
+}
+
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function whiteboardCanvasColor() {
+  return getComputedStyle(document.documentElement).getPropertyValue('--paper').trim() || '#ffffff';
 }
 
 function BrandIcon({ size }: { size: number }) {
@@ -749,6 +763,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [mergingFolder, setMergingFolder] = useState<{ folder: Folder; targetId: string } | null>(null);
   const [movingFolder, setMovingFolder] = useState<{ folder: Folder; targetParentId: string | null } | null>(null);
   const [movingNote, setMovingNote] = useState<{ ids: string[]; title: string; currentFolderId: string | null; targetFolderId: string | null } | null>(null);
+  const [movingBoard, setMovingBoard] = useState<{ board: WhiteboardFile; targetFolderId: string | null } | null>(null);
   const [importFolderId, setImportFolderId] = useState<string | null>(book.folderId ?? null);
   const [newTagInput, setNewTagInput] = useState('');
   const [editingTag, setEditingTag] = useState<string | null>(null);
@@ -785,6 +800,62 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   const [copyFeedback, setCopyFeedback] = useState(false);
   const copyFeedbackTimer = useRef<number | null>(null);
   const [dark, setDark] = useState(() => localStorage.getItem('easynote-theme') === 'dark');
+  const [boards, setBoards] = useState<WhiteboardFile[]>([]);
+  const [boardTarget, setBoardTarget] = useState<WhiteboardFile | null>(null);
+  const [boardFullscreen, setBoardFullscreen] = useState(false);
+  const boardLeaveGuard = useRef<(() => boolean) | null>(null);
+  const [BoardEditor, setBoardEditor] = useState<typeof WhiteboardEditor | null>(null);
+  const [boardChunkError, setBoardChunkError] = useState(false);
+  const [newTypeOpen, setNewTypeOpen] = useState(false);
+  const savedBoardsGeneration = useRef(0);
+
+  useEffect(() => {
+    if (!book.online || session.offline) return;
+    const controller = new AbortController();
+    let latest = 0;
+    const refresh = () => {
+      const generation = savedBoardsGeneration.current;
+      const requestId = ++latest;
+      void api.whiteboards(controller.signal).then(({ boards: items }) => {
+        if (!controller.signal.aborted && requestId === latest && generation === savedBoardsGeneration.current) setBoards(items);
+      }).catch(() => {
+        // Keep the last known file list during network or maintenance interruptions.
+      });
+    };
+    refresh();
+    window.addEventListener('focus', refresh);
+    return () => { controller.abort(); window.removeEventListener('focus', refresh); };
+  }, [book.online, book.folders, session.offline]);
+
+  const closeBoard = () => {
+    boardLeaveGuard.current = null;
+    setBoardTarget(null);
+    setBoardFullscreen(false);
+  };
+  const leaveBoard = () => {
+    if (boardLeaveGuard.current?.() === false) return false;
+    if (boardTarget) closeBoard();
+    return true;
+  };
+  const openBoard = (target: WhiteboardFile) => {
+    if (target.id !== boardTarget?.id) {
+      if (!leaveBoard()) return false;
+      setBoardTarget(target);
+    }
+    setReferenceTarget(null);
+    setQuickNotes(false);
+    setMobileNavigation(false);
+    setMobileNote(true);
+    setBoardChunkError(false);
+    if (!BoardEditor) void import('./WhiteboardEditor').then(({ default: Editor }) => {
+      setBoardEditor(() => Editor);
+    }).catch(() => setBoardChunkError(true));
+    return true;
+  };
+  const createBoard = (folderId: string | null) => {
+    setNewTypeOpen(false);
+    openBoard({ id: crypto.randomUUID(), name: `${t('board_untitled')}.excalidraw`, folderId, revision: 0 });
+  };
   const [lightBackground, setLightBackground] = useState<LightBackground>(() => {
     const stored = localStorage.getItem('easynote-light-background');
     return stored === 'white' || stored === 'warm' || stored === 'knowledge' ? stored : 'knowledge';
@@ -1047,6 +1118,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     try { await action(); } catch (e) { book.setError(String(e)); }
   };
   const createNote = (input?: Partial<NoteInput>) => run(async () => {
+    if (!leaveBoard()) return;
     setFolderOverviewId(null);
     await book.create(input);
     setMobileNavigation(false);
@@ -1055,6 +1127,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setLayout('edit');
   });
   const createNoteInFolder = (folderId: string) => run(async () => {
+    if (!leaveBoard()) return;
     setFolderOverviewId(null);
     await book.create({ folderId });
     setMobileNavigation(false);
@@ -1229,6 +1302,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }
   };
   const chooseView = (view: string, tag = '') => {
+    if (!leaveBoard()) return;
     setFolderOverviewId(null);
     setQuickNotes(false);
     setShareManagement(false);
@@ -1241,6 +1315,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setSelected(new Set());
   };
   const chooseFolder = (id: string) => {
+    if (!leaveBoard()) return;
     setFolderOverviewId(null);
     setQuickNotes(false);
     setShareManagement(false);
@@ -1276,6 +1351,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     }
   };
   const openNote = async (id: string, nextLayout: 'edit' | 'preview' = 'preview') => {
+    if (!leaveBoard()) return false;
     setReferenceTarget(null);
     referenceOrigin.current = null;
     setMainReturn(null);
@@ -1289,6 +1365,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     setVersionList(null);
     setCommandPalette(false);
     setLinkPicker(false);
+    return true;
   };
   const openTaskCenter = async () => {
     setTaskCenter(true);
@@ -1298,7 +1375,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     finally { setTasksLoading(false); }
   };
   const openTask = async (task: NoteTask) => {
-    if (note?.id === task.noteId && layout === 'edit') {
+    if (!boardTarget && note?.id === task.noteId && layout === 'edit') {
       setTaskCenter(false);
       setMobileNote(true);
       requestAnimationFrame(() => requestAnimationFrame(() => editor.current?.goTo(task.offset)));
@@ -1309,6 +1386,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     await openNote(task.noteId, 'edit');
   };
   const openManagedShare = async (share: ManagedNoteShare) => {
+    if (!leaveBoard()) return;
     setShareManagement(false);
     chooseView(share.archived ? 'archive' : 'all');
     await openNote(share.noteId);
@@ -1427,6 +1505,63 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       showNotice(t('已复制 ID'));
     }).catch((error) => {
       book.setError(String(error));
+    });
+  };
+  const copyBoardPath = (board: WhiteboardFile) => {
+    void navigator.clipboard.writeText(whiteboardRelativePath(board, book.folders)).then(() => {
+      showNotice(t('已复制路径'));
+    }).catch((error) => book.setError(String(error)));
+  };
+  const copyBoardId = (board: WhiteboardFile) => {
+    void navigator.clipboard.writeText(board.id).then(() => {
+      showNotice(t('已复制 ID'));
+    }).catch((error) => book.setError(String(error)));
+  };
+  const copyBoardMcpUri = (board: WhiteboardFile) => {
+    void navigator.clipboard.writeText(`easynote://whiteboards/${board.id}.excalidraw`).then(() => {
+      showNotice(t('board_mcp_uri_copied'));
+    }).catch((error) => book.setError(String(error)));
+  };
+  const downloadBoard = (board: WhiteboardFile) => void run(async () => {
+    const { file } = await api.whiteboard(board.id);
+    downloadBlob(file, board.name);
+    showNotice(t('下载已开始'));
+  });
+  const copyBoardContent = (board: WhiteboardFile) => void run(async () => {
+    const { file } = await api.whiteboard(board.id);
+    await navigator.clipboard.writeText(await file.text());
+    showNotice(t('board_source_copied'));
+  });
+  const duplicateBoard = (board: WhiteboardFile) => void run(async () => {
+    const { file } = await api.whiteboard(board.id);
+    const base = board.name.slice(0, -'.excalidraw'.length).slice(0, 160).trim();
+    const copy = await api.saveWhiteboard({
+      id: crypto.randomUUID(),
+      name: `${base} ${t('board_copy_suffix')}.excalidraw`,
+      folderId: board.folderId,
+      revision: 0,
+    }, JSON.parse(await file.text()));
+    savedBoardsGeneration.current++;
+    setBoards((items) => [...items, copy].sort((left, right) => left.name.localeCompare(right.name)));
+    showNotice(t('board_duplicated'));
+  });
+  const exportBoardFile = (board: WhiteboardFile, format: 'png' | 'svg') => void run(async () => {
+    const [{ file }, { exportWhiteboardFile }] = await Promise.all([
+      api.whiteboard(board.id),
+      import('./WhiteboardEditor'),
+    ]);
+    const blob = await exportWhiteboardFile(file, format);
+    downloadBlob(blob, board.name.replace(/\.excalidraw$/, `.${format}`));
+    showNotice(t('下载已开始'));
+  });
+  const deleteBoard = (board: WhiteboardFile) => {
+    if (!window.confirm(t('board_delete_confirm', board.name))) return;
+    if (boardTarget?.id === board.id && !leaveBoard()) return;
+    void run(async () => {
+      await api.deleteWhiteboard(board);
+      savedBoardsGeneration.current++;
+      setBoards((items) => items.filter((item) => item.id !== board.id));
+      showNotice(t('board_deleted'));
     });
   };
   const beginLinkInsertion = () => {
@@ -1589,6 +1724,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         event.preventDefault();
         setCommandPalette(true);
         setCommandQuery('');
+      } else if (boardTarget) {
+        return;
       } else if (key === 's' && (note || book.pending.length)) {
         event.preventDefault();
         void syncNow();
@@ -1655,6 +1792,18 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       }
       setMovingNote(null);
       if (selectionMode) exitSelectionMode();
+    });
+  };
+  const submitMoveBoard = (targetFolderId: string | null) => {
+    if (!movingBoard) return;
+    void run(async () => {
+      const { board, file } = await api.whiteboard(movingBoard.board.id);
+      const saved = await api.saveWhiteboard({ ...board, folderId: targetFolderId }, JSON.parse(await file.text()));
+      savedBoardsGeneration.current++;
+      setBoards((items) => [...items.filter((item) => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+      const targetName = targetFolderId ? book.folders.find((folder) => folder.id === targetFolderId)?.name ?? '' : t('根目录');
+      showNotice(t('board_moved', targetName));
+      setMovingBoard(null);
     });
   };
   const submitMoveFolder = (targetParentId: string | null) => {
@@ -1788,6 +1937,11 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
   };
   const commandActions = [
     {
+      id: 'new-board', label: t('board_new'), aliases: ['白板', 'whiteboard'], icon: <Square size={16} />, shortcut: '',
+      disabled: disabled || !book.online || !!session.offline,
+      action: () => { setCommandPalette(false); createBoard(activeFolderScopeId); },
+    },
+    {
       id: 'new', label: t('新建笔记'), aliases: ['新建', 'new', 'create'], icon: <Plus size={16} />, shortcut: '',
       disabled: !!transfer || book.loading,
       action: () => { setCommandPalette(false); void createNote(); },
@@ -1916,7 +2070,9 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       id: 'shortcuts', label: t('查看快捷键'), aliases: ['快捷键', '帮助', 'shortcuts', 'help'], icon: <Keyboard size={16} />,
       shortcut: 'Cmd/Ctrl+/', disabled: false, action: showShortcutHelp,
     },
-  ].filter((command) => commandMatch(command.label, ...command.aliases));
+  ].filter((command) => (!boardTarget ||
+    ['new-board', 'new', 'new-folder', 'new-subfolder', 'search', 'tasks', 'share-management', 'settings', 'shortcuts'].includes(command.id)) &&
+    commandMatch(command.label, ...command.aliases));
   const focusCommand = (edge: 'first' | 'last' = 'first') => {
     const buttons = [...(commandList.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])];
     buttons[edge === 'first' ? 0 : buttons.length - 1]?.focus();
@@ -2054,7 +2210,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
     <div
       hidden={!!settings.section}
       inert={!!settings.section}
-      className={`app-shell ${noteListVisible ? '' : 'note-list-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${inspector || aiNoteId === note?.id ? 'inspector-open' : ''} ${documentFullscreen ? 'document-focus-mode' : ''}`}
+      className={`app-shell ${noteListVisible ? '' : 'note-list-hidden'} ${mobileNote ? 'mobile-note' : ''} ${resizingList ? 'resizing-list' : ''} ${!boardTarget && (inspector || aiNoteId === note?.id) ? 'inspector-open' : ''} ${(boardTarget ? boardFullscreen : documentFullscreen) ? 'document-focus-mode' : ''}`}
       style={{ '--note-list-width': `${noteListWidth}px` } as CSSProperties}
     >
     <NavigationRail
@@ -2078,6 +2234,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       chooseFolder={chooseFolder}
       openTasks={() => void openTaskCenter()}
       openQuickNotes={() => {
+        if (!leaveBoard()) return;
         setQuickNotes(true);
         setShareManagement(false);
         book.setView('quick');
@@ -2164,7 +2321,24 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       activeFolderId={book.folderId}
       folders={book.folders}
       notes={visibleNotes}
-      currentNote={note}
+      boards={boards}
+      activeBoardId={boardTarget?.id}
+      openBoard={openBoard}
+      openBoardFullscreen={(board) => { if (openBoard(board)) setBoardFullscreen(true); }}
+      createBoardIn={createBoard}
+      moveBoard={(board) => {
+        if (boardTarget?.id === board.id && !leaveBoard()) return;
+        setMovingBoard({ board, targetFolderId: board.folderId });
+      }}
+      duplicateBoard={duplicateBoard}
+      copyBoardPath={copyBoardPath}
+      copyBoardId={copyBoardId}
+      copyBoardMcpUri={copyBoardMcpUri}
+      downloadBoard={downloadBoard}
+      exportBoard={exportBoardFile}
+      copyBoardContent={copyBoardContent}
+      deleteBoard={deleteBoard}
+      currentNote={boardTarget ? null : note}
       pendingIds={pendingIds}
       selectionMode={selectionMode}
       selectedIds={selected}
@@ -2186,6 +2360,8 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         {book.view === 'trash' && (book.notes.length > 0 || !!book.query || !!book.tag) && <IconButton label="全部永久删除" className="icon-button danger-icon list-purge-action" onClick={() => setConfirmAction('purge-all')} disabled={disabled || book.pending.length > 0}><Trash2 size={17} /></IconButton>}
         {book.view === 'all' && !book.tag && <IconButton label={activeFolderScopeId ? '新建子文件夹' : '新建文件夹'} className="icon-button list-create-folder-action" onClick={() => setFolderEditor({ name: '', parentId: activeFolderScopeId })} disabled={disabled || !book.online}><FolderPlus size={18} /></IconButton>}
         <IconButton label="新建笔记" className="icon-button list-create-action" onClick={() => void createNote()} disabled={!!transfer || book.loading}><Plus size={18} /></IconButton>
+        <IconButton label={t('board_create_menu')} className="icon-button list-create-action" onClick={() => setNewTypeOpen(true)}
+          disabled={!!transfer || book.loading} aria-haspopup="dialog"><ChevronDown size={16} /></IconButton>
       </>}
       bulkToolbar={selectionMode ? <div className="bulk-toolbar">
         <div className="bulk-toolbar-header">
@@ -2203,6 +2379,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       setQuery={(value) => { book.setQuery(value); setMobileSearch(!!value); }}
       clearSearch={() => { book.setQuery(''); setMobileSearch(false); requestAnimationFrame(() => searchInput.current?.focus()); }}
       inspectFolder={(id) => {
+        if (!leaveBoard()) return;
         setFolderOverviewId((current) => current === id ? current : id);
         setMobileNote(true);
       }}
@@ -2220,13 +2397,14 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       openNote={(id) => void openNote(id)}
       toggleSelected={toggleSelected}
       openNoteMenu={(id, trigger) => {
-        void openNote(id).then(() => {
+        void openNote(id).then((opened) => {
+          if (!opened) return;
           if (window.matchMedia('(max-width: 640px)').matches) { setMobileNoteActions(true); return; }
           setNoteActionMenu(trigger);
         });
       }}
       loadMore={() => { setVisibleNoteLimit((value) => value + 50); if (!hasHiddenNotes && book.nextOffset !== null) void run(book.loadMore); }}
-      createNote={() => void createNote()}
+      openCreateMenu={() => setNewTypeOpen(true)}
     />
     <div
       className="note-list-resizer pane-divider explorer-divider"
@@ -2254,6 +2432,25 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         onClick={() => setExplorerVisible(!noteListVisible)}>{noteListVisible ? <ChevronLeft size={15} /> : <ChevronRight size={15} />}</button>
     </div>
     <main id="document-workspace" className="workspace">
+      {boardTarget ? (BoardEditor ? <BoardEditor key={boardTarget.id} target={boardTarget} dark={dark}
+        canvasColor={whiteboardCanvasColor()}
+        fullscreen={boardFullscreen} toggleFullscreen={() => setBoardFullscreen((value) => !value)}
+        leaveGuard={boardLeaveGuard} maxBytes={Math.min(session.config.maxAttachmentBytes, 5 * 1024 * 1024)}
+        online={book.online && !session.offline && !transfer}
+        close={() => { closeBoard(); setMobileNote(false); }}
+        onSaved={(saved) => {
+          savedBoardsGeneration.current++;
+          setBoards((items) => [...items.filter((item) => item.id !== saved.id), saved].sort((a, b) => a.name.localeCompare(b.name)));
+        }} onDeleted={(id) => {
+          savedBoardsGeneration.current++;
+          setBoards((items) => items.filter((item) => item.id !== id));
+        }} /> : <>
+        <header className="workspace-toolbar"><IconButton label={t('close')} onClick={() => { closeBoard(); setMobileNote(false); }}><X size={18} /></IconButton>
+          <span>{t('board_label')}</span></header>
+        <div className="workspace-empty">{boardChunkError ? <>
+          <p role="alert">{t('board_load_failed')}</p><button className="secondary" onClick={() => openBoard(boardTarget)}>{t('retry')}</button>
+        </> : <p role="status">{t('loading')}</p>}</div>
+      </>) : <>
       <header className="workspace-toolbar">
         <IconButton label="返回笔记列表" className="icon-button mobile-back" onClick={() => setMobileNote(false)}><ArrowLeft size={18} /></IconButton>
         {mainReturn && <button className="return-original-note" onClick={() => void returnToOriginal()} aria-label={t('return_to_note', mainReturn.title || t('untitled_note'))}><ArrowLeft size={15} /><span>{mainReturn.title || t('untitled_note')}</span></button>}
@@ -2404,6 +2601,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <input hidden ref={imageInput} type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(e) => void insertFiles(Array.from(e.target.files ?? []))} />
         </footer>
       </> : <div className="workspace-empty"><PenLine size={36} /><h2>{t('你的笔记')}</h2><button className="primary" disabled={book.loading || !!transfer} onClick={() => void createNote()}><Plus size={16} />{t('新建笔记')}</button></div>}
+      </>}
     </main></>}
     {!dialogFeedbackTarget && !settings.section && noticeFeedback}
     {dialogFeedbackTarget && createPortal(<>{errorFeedback}{noticeFeedback}</>, dialogFeedbackTarget)}
@@ -2431,6 +2629,7 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
       <nav className="mobile-navigation-list" aria-label={t('移动端笔记分类')}>
         <button className={!quickNotes && !shareManagement && book.view === 'all' && !book.tag && book.folderId === undefined ? 'active' : ''} onClick={() => chooseView('all')}><FileText size={18} />{t('all_notes')}</button>
         <button className={quickNotes ? 'active' : ''} onClick={() => {
+          if (!leaveBoard()) return;
           setQuickNotes(true); setShareManagement(false); book.setView('quick'); book.setTag(''); book.setFolderId(undefined); book.setQuery(''); setMobileNavigation(false);
         }}><NotebookPen size={18} />{t('小记')}</button>
         <button onClick={() => { setMobileNavigation(false); void openTaskCenter(); }}><ClipboardList size={18} />{t('task_center')}</button>
@@ -2532,6 +2731,13 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
           <button className="primary" type="submit" disabled={!note || note.id !== descriptionEditor.id || !!note.deletedAt || !!transfer}>{t('save')}</button></div>
       </form>
     </Modal>}
+    {newTypeOpen && <Modal title={t('board_create_menu')} close={() => setNewTypeOpen(false)}>
+      <div className="dialog-actions">
+        <button className="secondary" onClick={() => { setNewTypeOpen(false); void createNote(); }}><FileText size={16} />{t('新建笔记')}</button>
+        <button className="primary" disabled={disabled || !book.online || !!session.offline}
+          onClick={() => createBoard(activeFolderScopeId)}><Square size={16} />{t('board_new')}</button>
+      </div>
+    </Modal>}
     {folderEditor && <Modal title={folderEditor.id ? t('编辑文件夹') : folderEditor.parentId ? t('新建子文件夹') : t('新建文件夹')} close={() => setFolderEditor(null)}>
       <form className="folder-form" onSubmit={(event) => {
         event.preventDefault();
@@ -2632,6 +2838,27 @@ function Notebook({ session, installApp, logout }: { session: Session; installAp
         </div>
         <div className="dialog-actions"><button type="button" onClick={() => setMovingNote(null)}>{t('cancel')}</button>
           <button className="primary" type="submit" disabled={disabled || (movingNote.ids.length === 1 && movingNote.targetFolderId === movingNote.currentFolderId)}>{t('移动')}</button></div>
+      </form>
+    </Modal>}
+    {movingBoard && <Modal title={t('移动到文件夹')} close={() => setMovingBoard(null)}>
+      <form className="folder-form" onSubmit={(event) => {
+        event.preventDefault();
+        submitMoveBoard(movingBoard.targetFolderId);
+      }}>
+        <p>{t('board_move_prompt', movingBoard.board.name)}</p>
+        <div className="folder-picker-field">
+          <span className="folder-picker-field-label">{t('目标文件夹')}</span>
+          <FolderTreePicker
+            folders={book.folders}
+            value={movingBoard.targetFolderId}
+            onChange={(targetFolderId) => setMovingBoard({ ...movingBoard, targetFolderId })}
+            onConfirm={() => {
+              if (!disabled && movingBoard.targetFolderId !== movingBoard.board.folderId) submitMoveBoard(movingBoard.targetFolderId);
+            }}
+          />
+        </div>
+        <div className="dialog-actions"><button type="button" onClick={() => setMovingBoard(null)}>{t('cancel')}</button>
+          <button className="primary" type="submit" disabled={disabled || movingBoard.targetFolderId === movingBoard.board.folderId}>{t('移动')}</button></div>
       </form>
     </Modal>}
     {taskCenter && <Modal title="任务中心" close={() => setTaskCenter(false)}>

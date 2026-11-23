@@ -1,4 +1,4 @@
-import type { Folder, IntegrationNoteSummary, Note, NoteInput, NoteLinkDirection, NoteLinkPage } from '../shared/types.js';
+import type { Folder, IntegrationNoteSummary, Note, NoteInput, NoteLinkDirection, NoteLinkPage, WhiteboardFile } from '../shared/types.js';
 
 export interface BridgeConfig {
   url: string;
@@ -154,6 +154,26 @@ export class EasyNoteClient {
 
   deleteFolder(id: string): Promise<{ ok: true; movedNotes: number }> {
     return this.json(`/api/integrations/folders/${encodeURIComponent(id)}`, 'DELETE', {});
+  }
+
+  whiteboards(): Promise<{ boards: WhiteboardFile[] }> {
+    return this.json('/api/integrations/whiteboards');
+  }
+
+  async whiteboard(id: string): Promise<{ board: WhiteboardFile; scene: unknown }> {
+    const response = await this.fetch(`/api/integrations/whiteboards/${encodeURIComponent(id)}`);
+    const name = decodeURIComponent(response.headers.get('X-Whiteboard-Name') ?? '');
+    const revision = Number(response.headers.get('X-Whiteboard-Revision'));
+    if (!name || !Number.isSafeInteger(revision) || revision < 1) throw new Error('Invalid whiteboard response.');
+    return {
+      board: { id, name, revision, folderId: response.headers.get('X-Whiteboard-Folder') || null },
+      scene: await response.json(),
+    };
+  }
+
+  saveWhiteboard(board: WhiteboardFile, scene: unknown): Promise<WhiteboardFile> {
+    const { id, ...metadata } = board;
+    return this.json(`/api/integrations/whiteboards/${encodeURIComponent(id)}`, 'PUT', { ...metadata, scene });
   }
 
 }

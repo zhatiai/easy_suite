@@ -178,6 +178,8 @@ bash deploy.sh
 
 Follow the prompts to enter your API Token, select or confirm resources, and finalize deployment.
 
+After deployment confirmation, the script applies pending D1 migrations before uploading the Worker. Wrangler skips migrations already recorded in the database. A migration failure stops deployment. The `--check` mode only validates locally.
+
 ## Key Behaviors
 
 ### Autosave & Conflicts
@@ -298,7 +300,7 @@ EasyNote supports Model Context Protocol (MCP) natively:
 
 1. Generate a token under "Settings → AI Integration" in the web app.
 2. Connect your AI client (e.g. Codex) to `https://your-domain/mcp` using Bearer authentication.
-3. AI agents gain permission-scoped access to search, read, create, or modify notes through standard MCP tools and resources. See [`docs/AI_INTEGRATION.en.md`](docs/AI_INTEGRATION.en.md) for full details.
+3. AI agents gain permission-scoped access to search, read, create, or modify notes and standard Excalidraw whiteboards through MCP tools and Resources. Permanent deletion remains web-only. See [`docs/AI_INTEGRATION.en.md`](docs/AI_INTEGRATION.en.md) for full details.
 
 ## Configuration
 

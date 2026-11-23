@@ -9,6 +9,7 @@ import type { Identity } from './auth';
 import { ApiError, digest, json, readJson, token, type Env } from './core';
 import { noteRoutes, toNote, type NoteRow } from './notes';
 import { folderRoutes, listFolders } from './folders';
+import { whiteboardRoutes } from './whiteboards';
 
 interface TokenRow {
   id: string;
@@ -281,6 +282,16 @@ export async function integrationRoutes(
   }
   if (path === '/api/integrations/folders' && request.method === 'GET') {
     return json({ folders: await listFolders(env, user.id) });
+  }
+  if (path === '/api/integrations/whiteboards' && request.method === 'GET') {
+    return whiteboardRoutes(request, env, user, '/api/whiteboards');
+  }
+  const whiteboardMatch = /^\/api\/integrations\/whiteboards\/([^/]+)$/.exec(path);
+  if (whiteboardMatch && ['GET', 'PUT'].includes(request.method)) {
+    if (request.method !== 'GET' && user.access !== 'read-write') {
+      throw new ApiError(403, 'This integration token is read-only.');
+    }
+    return whiteboardRoutes(request, env, user, `/api/whiteboards/${whiteboardMatch[1]}`);
   }
   const folderMatch = /^\/api\/integrations\/folders(?:\/([^/]+))?$/.exec(path);
   if (folderMatch && ['POST', 'PATCH', 'DELETE'].includes(request.method)) {

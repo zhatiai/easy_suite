@@ -3,7 +3,7 @@ set -euo pipefail
 source "$(dirname "$0")/scripts/common.sh"
 
 if [[ "${1:-}" == "--help" && $# == 1 ]]; then
-  printf 'Usage: bash deploy.sh [--check]\n\nDeploy using independent D1 / R2 resources. CLOUDFLARE_API_TOKEN, EASYNOTE_DEPLOY_DOMAIN, and EASYNOTE_DEPLOY_CONFIRMATION are used when set; missing values are requested interactively.\n--check builds and validates locally without requesting credentials or changing cloud resources.\n'
+  printf 'Usage: bash deploy.sh [--check]\n\nAfter deployment confirmation, apply pending D1 migrations before uploading the Worker.\nDeploy using independent D1 / R2 resources. CLOUDFLARE_API_TOKEN, EASYNOTE_DEPLOY_DOMAIN, and EASYNOTE_DEPLOY_CONFIRMATION are used when set; missing values are requested interactively.\n--check builds and validates locally without requesting credentials or changing cloud resources.\n'
   exit 0
 fi
 if [[ $# -gt 1 || ( $# == 1 && "$1" != "--check" ) ]]; then

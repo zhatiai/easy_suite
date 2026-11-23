@@ -56,6 +56,52 @@ test('anonymous requests, cross-origin writes and missing CSRF are rejected', as
   assert.equal((await instance.runtime.dispatchFetch('http://easynote.example.test/api/session')).status, 403);
 });
 
+test('standalone whiteboard files keep standard JSON, enforce revision and isolate tenants', async () => {
+  const id = randomUUID();
+  const path = `/api/whiteboards/${id}`;
+  const name = '流程.excalidraw';
+  const scene = { type: 'excalidraw', version: 2, source: 'https://excalidraw.com', elements: [], appState: {}, files: {} };
+  const payload = { name, scene, folderId: null, revision: 0 };
+  const otherId = randomUUID();
+  const otherFolder = randomUUID();
+  const secret = randomUUID().replaceAll('-', '').repeat(2);
+  const now = Date.now();
+  await instance.db.prepare(`INSERT INTO users(id,username,password_verifier,created_at,role,enabled,approved_at,updated_at)
+    VALUES(?,?,?,?,'user',1,?,?)`).bind(otherId, `board-${otherId}`, '{}', now, now, now).run();
+  await instance.db.prepare('INSERT INTO sessions VALUES(?,?,?,?)').bind(await digest(secret), otherId, testCsrf, now + 60_000).run();
+  await instance.db.prepare('INSERT INTO folders(id,user_id,name,created_at,updated_at) VALUES(?,?,?,?,?)')
+    .bind(otherFolder, otherId, 'Private', now, now).run();
+  const otherHeaders = { Cookie: `__Host-easynote=${secret}` };
+  assert.equal((await request(path, 'PUT', payload, { 'X-CSRF-Token': '' })).status, 403);
+  assert.equal((await request(path, 'PUT', { ...payload, scene: {} })).status, 400);
+  assert.equal((await request(path, 'PUT', { ...payload, folderId: otherFolder })).status, 404);
+  const saved = await request(path, 'PUT', payload);
+  assert.equal(saved.status, 201, await saved.clone().text());
+  assert.deepEqual(await saved.json(), { id, name, revision: 1, folderId: null });
+  assert.equal((await request(path, 'PUT', payload)).status, 200);
+  assert.equal((await request(path, 'GET', undefined, otherHeaders)).status, 404);
+  assert.equal((await request(path, 'PUT', { ...payload, revision: 1 }, otherHeaders)).status, 404);
+  assert.equal((await request(path, 'DELETE', { revision: 1 }, otherHeaders)).status, 404);
+  assert.deepEqual(await (await request('/api/whiteboards', 'GET', undefined, otherHeaders)).json(), { boards: [] });
+  assert.equal((await request(`/api/files/${id}`)).status, 404);
+  const updatedScene = { ...scene, appState: { viewBackgroundColor: '#ffebeb' } };
+  const versions = await Promise.all([
+    request(path, 'PUT', { ...payload, revision: 1, scene: updatedScene }),
+    request(path, 'PUT', { ...payload, revision: 1, scene: { ...scene, appState: { viewBackgroundColor: '#fff4cc' } } }),
+  ]);
+  assert.deepEqual(versions.map((res) => res.status).sort(), [200, 409]);
+  const file = await request(path);
+  assert.equal(file.headers.get('X-Whiteboard-Revision'), '2');
+  assert.match(file.headers.get('Content-Disposition') ?? '', /^attachment;/);
+  assert.deepEqual(await file.json(), versions[0].ok ? updatedScene : { ...scene, appState: { viewBackgroundColor: '#fff4cc' } });
+  await instance.db.prepare('UPDATE images SET last_used_at=0 WHERE id=?').bind(id).run();
+  await cleanup({ DB: instance.db, IMAGES: instance.bucket, IMAGE_GRACE_HOURS: '24' } as unknown as Parameters<typeof cleanup>[0]);
+  assert.equal((await request(path)).status, 200);
+  assert.equal((await request(path, 'DELETE', { revision: 1 })).status, 409);
+  assert.equal((await request(path, 'DELETE', { revision: 2 })).status, 200);
+  assert.equal((await request(path)).status, 404);
+});
+
 test('login uses HttpOnly secure cookie; logout revokes the session', async () => {
   const wrong = await request('/api/login', 'POST', { username: 'tester', password: 'wrong' });
   assert.equal(wrong.status, 401);

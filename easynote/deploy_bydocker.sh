@@ -15,6 +15,7 @@ Usage: bash deploy_bydocker.sh [--check]
 
 Build and start EasyNote with Docker Compose. Configuration priority:
 environment variables, the system configuration file, then built-in defaults.
+Startup applies pending migrations and deployment waits for container health.
 
 Environment variables:
   EASYNOTE_DOCKER_CONFIG   System configuration file (default: /etc/easynote/docker.env)

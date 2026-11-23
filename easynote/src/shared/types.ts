@@ -243,6 +243,21 @@ export function sameNoteInput(left: NoteInput, right: NoteInput): boolean {
 
 export const imagePath = (id: string) => `/api/images/${id}`;
 export const filePath = (id: string) => `/api/files/${id}`;
+
+export interface WhiteboardFile {
+  id: string;
+  name: string;
+  folderId: string | null;
+  revision: number;
+}
+
+export function whiteboardRelativePath(
+  board: Pick<WhiteboardFile, 'name' | 'folderId'>,
+  folders: Array<{ id: string; name: string; parentId: string | null }>,
+): string {
+  const folderPath = folderRelativePath(board.folderId, folders);
+  return folderPath ? `${folderPath}/${board.name}` : board.name;
+}
 export const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 export const fingerprintPattern = /^[a-f0-9]{64}$/;
 

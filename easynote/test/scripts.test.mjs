@@ -141,6 +141,7 @@ const tool = isEntry ? 'wrangler' : process.argv[2];
 const args = process.argv.slice(isEntry ? 2 : 3);
 appendFileSync(root + '/calls.jsonl', JSON.stringify({ tool, args, cwd: process.cwd(),
   logPath: process.env.WRANGLER_LOG_PATH, registryPath: process.env.WRANGLER_REGISTRY_PATH,
+  interactiveInput: !!process.stdin.isTTY,
   hasApiToken: !!process.env.CLOUDFLARE_API_TOKEN, accountId: process.env.CLOUDFLARE_ACCOUNT_ID }) + '\\n');
 if (process.env.FAKE_FAIL === tool + ':' + args[0]) process.exit(19);
 const triggerFailure = process.env.FAKE_TRIGGER_FAILURE;
@@ -467,9 +468,23 @@ test('deployment reuses resource IDs, refreshes template settings and preserves 
   assert.deepEqual(wranglerCalls.map((c) => c.args.slice(0, 2)), [
     ['d1', 'migrations'], ['deploy', '--config'], ['secret', 'list'],
   ]);
+  assert.deepEqual(wranglerCalls[0].args, ['d1', 'migrations', 'apply', 'DB', '--remote', '--config', 'wrangler.deploy.json']);
+  assert.equal(wranglerCalls[0].interactiveInput, false);
   assert.ok(wranglerCalls.every((call) => call.hasApiToken && call.accountId === accountId));
   assert.ok((await cloudflareCalls(f)).every((call) => call.method === 'GET'));
   assert.ok(!result.output.includes(apiToken));
+});
+
+test('failed D1 migrations stop deployment before Worker upload', async () => {
+  const f = await fixture();
+  await dependencies(f);
+  const result = await terminal(f, 'deploy.sh', [], [['Worker name [easynote]: ', 'easynote']], {
+    CLOUDFLARE_API_TOKEN: apiToken, EASYNOTE_DEPLOY_DOMAIN: 'workers.dev',
+    EASYNOTE_DEPLOY_CONFIRMATION: 'deploy easynote', FAKE_FAIL: 'wrangler:d1',
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.output, /wrangler d1 migrations apply DB .* failed/);
+  assert.deepEqual((await calls(f)).filter((call) => call.tool === 'wrangler').map((call) => call.args[0]), ['d1']);
 });
 
 test('deployment recovers a Cron-only network failure by retrying triggers', async () => {

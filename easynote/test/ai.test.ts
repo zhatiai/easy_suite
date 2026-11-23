@@ -111,6 +111,10 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_connection_status'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_note_stats'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_list_folders'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_list_whiteboards'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_read_whiteboard'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_create_whiteboard'));
+    assert.ok(tools.tools.some((tool) => tool.name === 'easynote_update_whiteboard'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_create_folder'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_update_folder'));
     assert.ok(tools.tools.some((tool) => tool.name === 'easynote_delete_folder'));
@@ -279,6 +283,57 @@ test('MCP searches, reads and writes through the EasyNote API', async () => {
   }
 });
 
+test('MCP manages standard Excalidraw whiteboard files with revision protection', async () => {
+  const client = await connectMcp(writeSecret);
+  const scene = { type: 'excalidraw', version: 2, source: 'https://excalidraw.com', elements: [], appState: {}, files: {} };
+  try {
+    const created = await client.callTool({
+      name: 'easynote_create_whiteboard',
+      arguments: { name: 'MCP 白板', folderId: null, scene },
+    });
+    assert.notEqual(created.isError, true);
+    const first = created.structuredContent as { board: { id: string; name: string; revision: number }; uri: string };
+    assert.equal(first.board.name, 'MCP 白板.excalidraw');
+    assert.equal(first.board.revision, 1);
+    assert.equal(first.uri, `easynote://whiteboards/${first.board.id}.excalidraw`);
+
+    const listed = await client.callTool({ name: 'easynote_list_whiteboards', arguments: {} });
+    assert.ok((listed.structuredContent as { boards: Array<{ id: string }> }).boards.some((board) => board.id === first.board.id));
+    const read = await client.callTool({ name: 'easynote_read_whiteboard', arguments: { id: first.board.id } });
+    assert.deepEqual((read.structuredContent as { scene: unknown }).scene, scene);
+    const readOnlyWrite = await integrationRequest(readSecret, `/api/integrations/whiteboards/${first.board.id}`, 'PUT', {
+      name: first.board.name, folderId: null, revision: 1, scene,
+    });
+    assert.equal(readOnlyWrite.status, 403);
+
+    const templates = await client.listResourceTemplates();
+    assert.ok(templates.resourceTemplates.some((template) => template.uriTemplate === 'easynote://whiteboards/{id}.excalidraw'));
+    const resources = await client.listResources();
+    assert.ok(resources.resources.some((resource) => resource.uri === first.uri));
+    const resource = await client.readResource({ uri: first.uri });
+    assert.equal(resource.contents[0].mimeType, 'application/vnd.excalidraw+json');
+    assert.deepEqual(JSON.parse((resource.contents[0] as { text: string }).text), scene);
+
+    const updated = await client.callTool({
+      name: 'easynote_update_whiteboard',
+      arguments: { id: first.board.id, expected_revision: 1, name: 'MCP 白板 2' },
+    });
+    assert.notEqual(updated.isError, true);
+    assert.equal((updated.structuredContent as { board: { name: string; revision: number } }).board.name, 'MCP 白板 2.excalidraw');
+    assert.equal((updated.structuredContent as { board: { revision: number } }).board.revision, 2);
+    const conflict = await client.callTool({
+      name: 'easynote_update_whiteboard',
+      arguments: { id: first.board.id, expected_revision: 1, name: '陈旧更新' },
+    });
+    assert.equal(conflict.isError, true);
+
+    const denied = await integrationRequest(writeSecret, `/api/integrations/whiteboards/${first.board.id}`, 'DELETE', { revision: 2 });
+    assert.equal(denied.status, 404);
+  } finally {
+    await client.close();
+  }
+});
+
 test('read-only MCP credentials do not expose write tools', async () => {
   const client = await connectMcp(readSecret);
   try {
@@ -291,6 +346,8 @@ test('read-only MCP credentials do not expose write tools', async () => {
       'easynote_read_notes',
       'easynote_connection_status',
       'easynote_note_stats',
+      'easynote_list_whiteboards',
+      'easynote_read_whiteboard',
       'easynote_list_folders',
     ]);
   } finally {

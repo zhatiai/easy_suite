@@ -12,6 +12,194 @@ test.beforeEach(async ({ context }) => {
   await context.addCookies([{ name: 'easynote_dev', value: testToken, domain: '127.0.0.1', path: '/', httpOnly: true, sameSite: 'Strict' }]);
 });
 
+test('whiteboard edits in the workspace, toggles fullscreen and imports and exports files', async ({ page, context }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('easynote-language', 'zh'));
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+  const name = `测试白板-${randomUUID().slice(0, 8)}`;
+  const folderId = randomUUID();
+  const folderName = `白板目录-${randomUUID().slice(0, 6)}`;
+  expect((await page.request.post('/api/folders', { headers, data: { id: folderId, name: folderName, parentId: null } })).status()).toBe(201);
+  const sdkRequests: string[] = [];
+  page.on('request', (request) => { if (/\/assets\/WhiteboardEditor-.*\.js$/.test(request.url())) sdkRequests.push(request.url()); });
+  await page.goto('/');
+  await expect(page.locator('.app-shell')).toBeVisible();
+  expect(sdkRequests).toEqual([]);
+  await page.getByRole('button', { name: '新建类型' }).click();
+  await page.getByRole('button', { name: '新建白板', exact: true }).click();
+  const board = page.getByRole('region', { name: '白板', exact: true });
+  const canvas = board.locator('canvas.interactive');
+  const saveButton = board.getByRole('button', { name: '保存', exact: true });
+  const explorer = page.locator('#notebook-explorer');
+  await expect(saveButton).toBeEnabled();
+  await expect(explorer).toBeVisible();
+  const filename = board.getByRole('textbox', { name: '白板文件名' });
+  await filename.fill(name);
+  await expect(filename).not.toHaveCSS('box-shadow', 'none');
+  await board.locator('[data-testid="main-menu-trigger"]').click();
+  await expect(page.locator('[data-testid="canvas-background-label"]')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await canvas.click({ position: { x: 350, y: 220 } });
+  await page.keyboard.press('r');
+  const bounds = (await canvas.boundingBox())!;
+  await page.mouse.move(bounds.x + 380, bounds.y + 280);
+  await page.mouse.down();
+  await page.mouse.move(bounds.x + 530, bounds.y + 405, { steps: 6 });
+  await page.mouse.up();
+  const zoomIn = board.locator('.zoom-in-button');
+  const zoomLevel = board.locator('.reset-zoom-button');
+  await zoomIn.click({ clickCount: 3 });
+  await expect(zoomLevel).not.toHaveText('100%');
+  const editZoom = await zoomLevel.textContent();
+  await board.getByRole('button', { name: '预览模式' }).click();
+  await expect.poll(() => zoomLevel.textContent()).not.toBe(editZoom);
+  await board.getByRole('button', { name: '编辑模式' }).click();
+  await zoomLevel.click();
+  await expect(zoomLevel).toHaveText('100%');
+  const workspaceZoom = await zoomLevel.textContent();
+  await board.getByRole('button', { name: '进入全屏' }).click();
+  await expect(explorer).toBeHidden();
+  await expect(canvas).toBeVisible();
+  await expect.poll(() => board.evaluate((node) => Math.round(node.getBoundingClientRect().width))).toBe(page.viewportSize()!.width);
+  await expect.poll(() => zoomLevel.textContent()).not.toBe(workspaceZoom);
+  await page.screenshot({ path: testInfo.outputPath('whiteboard-fullscreen.png') });
+  await board.getByRole('button', { name: '退出全屏' }).click();
+  await expect(explorer).toBeVisible();
+  const saved = page.waitForResponse((response) => response.url().includes('/api/whiteboards/') && response.request().method() === 'PUT');
+  await saveButton.click();
+  const response = await saved;
+  expect(response.status()).toBe(201);
+  const { id } = await response.json() as { id: string };
+  const source = await (await context.request.get(`/api/whiteboards/${id}`)).json();
+  expect(source).toMatchObject({
+    type: 'excalidraw', version: 2, elements: [{ type: 'rectangle' }], appState: { viewBackgroundColor: '#fbfaf7' },
+  });
+  expect(sdkRequests.length).toBeGreaterThan(0);
+  const worker = await (await context.request.get('/sw.js')).text();
+  expect(worker).not.toMatch(/WhiteboardEditor-|whiteboard-assets\/fonts\//);
+  await page.screenshot({ path: testInfo.outputPath('whiteboard-desktop.png'), scale: 'css' });
+  await board.getByRole('button', { name: '关闭', exact: true }).click();
+  await expect(board).toBeHidden();
+  await page.reload();
+  const row = page.getByRole('button', { name: `${name}.excalidraw`, exact: true });
+  const boardRow = row.locator('..');
+  await boardRow.hover();
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  let boardActions = page.getByRole('menu', { name: '白板操作' });
+  await expect(boardActions.getByRole('menuitem')).toHaveText([
+    '编辑白板', '全屏打开', '移动到文件夹', '创建副本', '复制路径', '复制 ID', '复制 MCP URI',
+    '下载 .excalidraw 源文件', '导出 PNG', '导出 SVG', '复制 .excalidraw 内容', '删除白板',
+  ]);
+  await boardActions.screenshot({ path: testInfo.outputPath('whiteboard-actions.png') });
+  await boardActions.getByRole('menuitem', { name: '全屏打开' }).click();
+  await expect(board).toBeVisible();
+  await expect(explorer).toBeHidden();
+  await board.getByRole('button', { name: '退出全屏' }).click();
+  await board.getByRole('button', { name: '关闭', exact: true }).click();
+  await boardRow.hover();
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  const sourceDownload = page.waitForEvent('download');
+  await boardActions.getByRole('menuitem', { name: '下载 .excalidraw 源文件' }).click();
+  expect((await sourceDownload).suggestedFilename()).toBe(`${name}.excalidraw`);
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  await boardActions.getByRole('menuitem', { name: '复制路径' }).click();
+  await expect(page.getByRole('status')).toHaveText('已复制路径');
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  await boardActions.getByRole('menuitem', { name: '复制 MCP URI' }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(`easynote://whiteboards/${id}.excalidraw`);
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  const menuPng = page.waitForEvent('download');
+  await boardActions.getByRole('menuitem', { name: '导出 PNG' }).click();
+  const menuPngFile = await menuPng;
+  expect(menuPngFile.suggestedFilename()).toBe(`${name}.png`);
+  expect([...(await readFile(await menuPngFile.path())).slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  const duplicated = page.waitForResponse((result) => result.url().includes('/api/whiteboards/') &&
+    !result.url().endsWith(id) && result.request().method() === 'PUT');
+  await boardActions.getByRole('menuitem', { name: '创建副本' }).click();
+  expect((await duplicated).status()).toBe(201);
+  await expect(page.getByRole('button', { name: `${name} 副本.excalidraw`, exact: true })).toBeVisible();
+  await boardRow.getByRole('button', { name: '白板操作', exact: true }).click();
+  boardActions = page.getByRole('menu', { name: '白板操作' });
+  await boardActions.getByRole('menuitem', { name: '移动到文件夹' }).click();
+  const moveBoardDialog = page.getByRole('dialog');
+  await moveBoardDialog.locator('.folder-picker-row').filter({ hasText: folderName }).click();
+  const moved = page.waitForResponse((result) => result.url().includes(`/api/whiteboards/${id}`) && result.request().method() === 'PUT');
+  await moveBoardDialog.getByRole('button', { name: '移动', exact: true }).click();
+  expect((await moved).status()).toBe(200);
+  await expect(page.getByRole('status')).toHaveText(`白板已移动到文件夹“${folderName}”`);
+  const folderRow = page.locator('.folder-tree-row').filter({ hasText: folderName }).first();
+  await folderRow.getByRole('button', { name: '展开文件夹' }).click();
+  await expect(row).toBeVisible();
+  await row.click();
+  await expect(canvas).toBeVisible();
+  await expect(board.getByRole('button', { name: '预览模式' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(saveButton).toHaveCount(0);
+  const drop = await page.evaluateHandle((scene) => {
+    const transfer = new DataTransfer();
+    transfer.items.add(new File([JSON.stringify({ ...scene, elements: [] })], 'empty.excalidraw', { type: 'application/vnd.excalidraw+json' }));
+    return transfer;
+  }, source);
+  await canvas.dispatchEvent('drop', { dataTransfer: drop });
+  await drop.dispose();
+  const exportMenu = board.getByRole('button', { name: '导出白板', exact: true });
+  for (const [label, extension] of [['下载 .excalidraw 源文件', 'excalidraw'], ['导出 PNG', 'png'], ['导出 SVG', 'svg']]) {
+    await exportMenu.click();
+    const download = page.waitForEvent('download');
+    await board.getByRole('button', { name: label, exact: true }).click();
+    const file = await download;
+    expect(file.suggestedFilename()).toBe(`${name}.${extension}`);
+    const bytes = await readFile(await file.path());
+    if (extension === 'excalidraw') expect(JSON.parse(bytes.toString())).toMatchObject({ elements: [{ type: 'rectangle' }] });
+    else if (extension === 'png') expect([...bytes.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    else expect(bytes.toString()).toMatch(/^<svg[ >]/);
+  }
+  await page.setViewportSize({ width: 1366, height: 860 });
+  const headerBox = await board.locator('.whiteboard-header').boundingBox();
+  const canvasBox = await board.locator('.whiteboard-canvas').boundingBox();
+  expect(headerBox!.y + headerBox!.height).toBeLessThanOrEqual(canvasBox!.y);
+  await board.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.setViewportSize({ width: 375, height: 740 });
+  await row.click();
+  await expect(canvas).toBeVisible();
+  await expect(exportMenu).toBeInViewport({ ratio: 1 });
+  await expect(board.getByRole('button', { name: '进入全屏' })).toBeInViewport({ ratio: 1 });
+  expect(await board.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath('whiteboard-mobile.png') });
+  await board.getByRole('button', { name: '进入全屏' }).click();
+  await expect(board.getByRole('button', { name: '退出全屏' })).toHaveAttribute('aria-pressed', 'true');
+  await board.getByRole('button', { name: '退出全屏' }).click();
+  await board.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '新建类型', exact: true }).click();
+  await page.getByRole('button', { name: '新建白板', exact: true }).click();
+  await expect(board.getByRole('button', { name: '导入白板' })).toBeEnabled();
+  const input = board.locator('input[type=file]');
+  await input.setInputFiles({ name: 'invalid.excalidraw', mimeType: 'application/json', buffer: Buffer.from('{}') });
+  await expect(board.getByRole('alert')).toContainText('无法导入');
+  const fileChooser = page.waitForEvent('filechooser');
+  await board.getByRole('button', { name: '导入白板' }).click();
+  await (await fileChooser).setFiles({ name: `${name}.excalidraw`, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(source)) });
+  await expect(board.getByRole('status')).toContainText('白板已导入');
+  const replacement = page.waitForEvent('dialog');
+  const chooseReplacement = input.setInputFiles({
+    name: 'empty.excalidraw', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...source, elements: [] })),
+  });
+  const confirmation = await replacement;
+  expect(confirmation.message()).toContain('替换当前画布');
+  await confirmation.dismiss();
+  await chooseReplacement;
+  const importedSave = page.waitForResponse((result) => result.url().includes('/api/whiteboards/') && result.request().method() === 'PUT');
+  await saveButton.click();
+  const imported = await importedSave;
+  expect(imported.status()).toBe(201);
+  const importedFile = await context.request.get(`/api/whiteboards/${(await imported.json()).id}`);
+  expect(await importedFile.json()).toMatchObject({ elements: [{ type: 'rectangle' }] });
+});
+
 for (const language of ['zh', 'en'] as const) {
   test(`first-install backup syncs source accounts and opens their notes (${language})`, async ({ page, context }) => {
     const sourceOrigin = 'https://source.example.test';
@@ -169,6 +357,9 @@ for (const language of ['zh', 'en'] as const) {
   });
 }
 async function newNote(page: Page, title: string, content = '') {
+  if ((page.viewportSize()?.width ?? Infinity) <= 640) {
+    await page.getByRole('button', { name: '新建类型', exact: true }).click();
+  }
   await page.getByRole('button', { name: '新建笔记', exact: true }).first().click();
   await page.getByRole('textbox', { name: '笔记标题' }).fill(title);
   await page.getByRole('textbox', { name: '笔记正文' }).fill(content);
@@ -374,7 +565,7 @@ test('folder actions merge notes and subfolders into another collapsed tree bran
   await expect(folderMenu).toBeHidden();
   await expect(sourceRow.getByLabel('文件夹操作')).toBeFocused();
   await sourceRow.getByLabel('文件夹操作').click();
-  await expect(folderMenu.getByRole('menuitem')).toHaveText(['编辑名称与描述', '新建文件夹', '新建文件', '上传文件', '移动文件夹', '分享文件夹', '下载 ZIP', '复制路径', '复制 ID', '删除文件夹', '合并文件到...']);
+  await expect(folderMenu.getByRole('menuitem')).toHaveText(['编辑名称与描述', '新建文件夹', '新建文件', '新建白板', '上传文件', '移动文件夹', '分享文件夹', '下载 ZIP', '复制路径', '复制 ID', '删除文件夹', '合并文件到...']);
   await expect(folderMenu.getByRole('menuitem', { name: '重命名文件夹' })).toHaveCount(0);
   const [menuBox, menuTriggerBox] = await Promise.all([folderMenu.boundingBox(), sourceRow.getByLabel('文件夹操作').boundingBox()]);
   expect(menuBox).not.toBeNull();
@@ -2346,7 +2537,7 @@ test('mobile navigation, pin, archive, trash and restore remain usable without o
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: '返回笔记列表' }).click();
   await expect(page.getByRole('button', { name: '打开导航菜单', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '新建笔记', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新建类型', exact: true })).toBeVisible();
   await page.getByRole('button', { name: '搜索笔记', exact: true }).click();
   await expect(page.getByRole('textbox', { name: '搜索笔记' })).toBeVisible();
   await page.screenshot({ path: 'test-results/mobile-list.png', fullPage: true });

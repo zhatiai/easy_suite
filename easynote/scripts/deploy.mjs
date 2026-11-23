@@ -76,19 +76,18 @@ async function saveConfig(config) {
   await chmod(path, 0o600);
 }
 
-function runWrangler(args, token, accountId, extraEnv = {}) {
+function runWrangler(args, token, accountId, { stdin = 'inherit' } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [wranglerEntry, ...args], {
       cwd: root,
       env: {
         ...process.env,
-        ...extraEnv,
         CLOUDFLARE_API_TOKEN: token,
         CLOUDFLARE_ACCOUNT_ID: accountId,
         WRANGLER_SEND_METRICS: 'false',
         WRANGLER_LOG_PATH: `${root}/.wrangler/logs/`,
       },
-      stdio: ['inherit', 'inherit', 'pipe'],
+      stdio: [stdin, 'inherit', 'pipe'],
     });
     let output = '';
     child.stderr.on('data', (chunk) => {
@@ -276,7 +275,8 @@ async function main() {
   await saveConfig(config);
   await withProgress(
     'Applying remote D1 migrations',
-    () => runWrangler(['d1', 'migrations', 'apply', 'DB', '--remote', '--config', 'wrangler.deploy.json'], token, accountId),
+    // The deployment confirmation already covers migrations. Wrangler can exit successfully when its own prompt is declined.
+    () => runWrangler(['d1', 'migrations', 'apply', 'DB', '--remote', '--config', 'wrangler.deploy.json'], token, accountId, { stdin: 'ignore' }),
   );
   await withProgress(
     'Uploading the Worker and configuring triggers',

@@ -41,6 +41,8 @@ PUBLIC_ORIGIN=https://你的域名 TRUST_PROXY=true bash deploy_bydocker.sh
 
 Compose 默认仅在宿主 `127.0.0.1:8791` 发布入口；健康端口只在容器环回地址监听，通过 Docker healthcheck 使用。首次启动完成 migration 和 Worker 探测后开放入口。空站以健康状态提供网页初始化向导，migration 失败仍会阻止启动。
 
+首次部署和升级时，`deploy_bydocker.sh` 都会等待容器健康。容器在接受请求前自动应用尚未执行的迁移。重复部署同一版本时，数据库中的迁移记录会让容器跳过已应用的文件。
+
 构建可通过 `docker compose build --build-arg NODE_OPTIONS=--max-old-space-size=1536` 调整 Node 堆上限。构建期间还需要为 Node 原生内存和其他进程保留空间。构建与生产依赖安装共享 BuildKit 的 npm 缓存，缓存不进入运行镜像。
 
 ### 在构建机生成前端产物

@@ -164,7 +164,7 @@ export async function saveNote(request: Request, env: Env, user: Identity, id: s
   if (ids.length > 80) throw new ApiError(400, 'A note can reference at most 80 stored files.');
   const idsJson = JSON.stringify(ids);
   const readyCondition = ids.length
-    ? `(SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready'
+    ? `(SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND board_revision IS NULL
         AND id IN (SELECT value FROM json_each(?)))=?`
     : '1=1';
   const readyBinds = ids.length ? [user.id, idsJson, ids.length] : [];
@@ -248,7 +248,7 @@ export async function noteRoutes(request: Request, env: Env, user: Identity, pat
   if (path === '/api/notes/link-target-counts' && request.method === 'GET') {
     const counts = await env.DB.prepare(`SELECT
       (SELECT COUNT(*) FROM notes WHERE user_id=? AND deleted_at IS NULL AND folder_id IS NULL) AS rootNotes,
-      (SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND mime NOT LIKE 'image/%') AS files`)
+      (SELECT COUNT(*) FROM images WHERE user_id=? AND status='ready' AND board_revision IS NULL AND mime NOT LIKE 'image/%') AS files`)
       .bind(user.id, user.id).first<{ rootNotes: number; files: number }>();
     return json(counts ?? { rootNotes: 0, files: 0 });
   }

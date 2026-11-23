@@ -5,20 +5,49 @@ import { once } from 'node:events';
 import { Miniflare } from 'miniflare';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHmac, pbkdf2Sync, randomUUID } from 'node:crypto';
 import { createIngress, publicOrigin, loadRuntimeBindings, ResilientCronScheduler, runMigrationGatekeeper } from '../scripts/server.mjs';
 
-test('Migration gatekeeper initializes schema and is idempotent', { timeout: 30_000 }, async () => {
+test('Migration gatekeeper upgrades an existing database and skips migrations on restart', { timeout: 30_000 }, async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), 'easynote-gatekeeper-test-'));
+  const previousMigrations = path.join(tempDir, 'previous-migrations');
+  const migration = '0007_whiteboards.sql';
+  const inspect = async (seed = false) => {
+    const runtime = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response(); } }',
+      host: '127.0.0.1', port: 0, cf: false, d1Databases: { DB: 'easynote-db' }, d1Persist: path.join(tempDir, 'state/d1') });
+    try {
+      const db = await runtime.getD1Database('DB');
+      if (seed) {
+        await db.prepare("INSERT INTO users(id, username, password_verifier, created_at, updated_at) VALUES ('existing', 'existing', '{}', 1, 1)").run();
+      }
+      return {
+        columns: (await db.prepare('PRAGMA table_info(images)').all()).results.map((column) => column.name),
+        applied: (await db.prepare('SELECT * FROM _easynote_migrations ORDER BY name').all()).results,
+        account: await db.prepare("SELECT username FROM users WHERE id='existing'").first(),
+      };
+    } finally {
+      await runtime.dispose();
+    }
+  };
   try {
-    // 1. First run creates tables and records migrations
+    await mkdir(previousMigrations);
+    for (const file of (await readdir('migrations')).filter((name) => name.endsWith('.sql') && name < migration)) {
+      await copyFile(path.join('migrations', file), path.join(previousMigrations, file));
+    }
+    await runMigrationGatekeeper(tempDir, previousMigrations);
+    const before = await inspect(true);
+    assert.ok(!before.columns.includes('board_revision'));
     await runMigrationGatekeeper(tempDir);
-
-    // 2. Second run is a no-op / skips existing
+    const upgraded = await inspect();
+    assert.ok(upgraded.columns.includes('board_revision') && upgraded.columns.includes('board_folder_id'));
+    assert.deepEqual(upgraded.account, before.account);
+    assert.deepEqual(upgraded.applied.filter((row) => row.name < migration), before.applied);
+    assert.equal(upgraded.applied.filter((row) => row.name === migration).length, 1);
     await runMigrationGatekeeper(tempDir);
+    assert.deepEqual(await inspect(), upgraded);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

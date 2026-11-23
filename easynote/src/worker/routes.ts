@@ -1,6 +1,7 @@
 import { authRoute, requireIdentity } from './auth';
 import { ApiError, json, localHttp, type Env } from './core';
 import { imageRoutes } from './images';
+import { whiteboardRoutes } from './whiteboards';
 import { integrationIdentity, integrationRoutes, integrationTokenRoutes } from './integrations';
 import { noteRoutes } from './notes';
 import { featureRoutes, publicShareRoutes } from './features';
@@ -53,6 +54,7 @@ export const routes = {
       const response = await featureRoutes(request, env, user, path) ??
         await folderRoutes(request, env, user, path) ??
         await noteRoutes(request, env, user, path) ??
+        await whiteboardRoutes(request, env, user, path) ??
         await imageRoutes(request, env, user, path);
       if (response) return response;
       throw new ApiError(404, 'Endpoint not found.');

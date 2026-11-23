@@ -41,6 +41,8 @@ You can also run `docker compose run --rm easynote node scripts/setup.mjs --dock
 
 Compose publishes the application only on host `127.0.0.1:8791`. The health port listens on container loopback and is checked by Docker. Startup opens the ingress after migrations and a Worker probe succeed. An empty installation starts healthy and serves the web setup form. Failed migrations prevent startup.
 
+`deploy_bydocker.sh` waits for container health on first deployment and upgrades. The container applies pending migrations before accepting requests. On repeated deployments, the database migration ledger lets it skip files already applied.
+
 Use `docker compose build --build-arg NODE_OPTIONS=--max-old-space-size=1536` to set the Node heap limit during builds. Leave additional memory for native allocations and other processes. Build and production dependency installation share a BuildKit npm cache that stays outside the runtime image.
 
 ### Build frontend artifacts on a build machine

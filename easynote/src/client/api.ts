@@ -24,6 +24,7 @@ import type {
   SyncChange,
   UserAccount,
   Version,
+  WhiteboardFile,
 } from '../shared/types';
 
 const API_TIMEOUT_MS = 30_000;
@@ -95,6 +96,23 @@ export async function request<T>(path: string, method = 'GET', body?: unknown, s
 }
 
 export const api = {
+  whiteboards: (signal?: AbortSignal) => request<{ boards: WhiteboardFile[] }>('/api/whiteboards', 'GET', undefined, signal),
+  async whiteboard(id: string, signal?: AbortSignal) {
+    const path = `/api/whiteboards/${id}`;
+    const requestCsrf = csrf;
+    const { response, raw } = await timedFetch(path, { credentials: 'same-origin', signal }, API_TIMEOUT_MS);
+    handleUnauthorized(response.status, requestCsrf);
+    if (!response.ok) throw new ApiError(response.status, {}, 'GET', path);
+    const name = decodeURIComponent(response.headers.get('X-Whiteboard-Name') ?? '');
+    const revision = Number(response.headers.get('X-Whiteboard-Revision'));
+    if (!name || !Number.isSafeInteger(revision) || revision < 1) throw new Error('Invalid whiteboard response.');
+    return { board: { id, name, revision, folderId: response.headers.get('X-Whiteboard-Folder') || null },
+      file: new Blob([raw], { type: 'application/json' }) };
+  },
+  saveWhiteboard: ({ id, ...board }: WhiteboardFile, scene: unknown) =>
+    request<WhiteboardFile>(`/api/whiteboards/${id}`, 'PUT', { ...board, scene }),
+  deleteWhiteboard: ({ id, revision }: WhiteboardFile) =>
+    request<{ ok: true }>(`/api/whiteboards/${id}`, 'DELETE', { revision }),
   backupSetupStatus: () => request<BackupSetupStatus | null>('/api/setup/backup'),
   setupBackup: (input: BackupSetupInput) => request<BackupSetupStatus>('/api/setup/backup', 'POST', input),
   serverTransferStatus: () => request<ServerTransferStatus>('/api/admin/server-transfer'),

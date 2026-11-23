@@ -1,7 +1,7 @@
 import { folderEntityCounts } from './knowledge';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react';
-import { ArrowRightLeft, CheckSquare, ChevronDown, ChevronRight, Copy, Download, FilePlus2, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, LoaderCircle, MoreHorizontal, Pencil, Plus, Search, Share2, Square, Trash2, Upload, X } from 'lucide-react';
-import type { Folder, Note, NoteSummary } from '../shared/types';
+import { ArrowRightLeft, Bot, CheckSquare, ChevronDown, ChevronRight, Copy, CopyPlus, Download, FileImage, FilePlus2, FileText, Folder as FolderIcon, FolderInput, FolderOpen, FolderPlus, LoaderCircle, Maximize2, MoreHorizontal, Pencil, Plus, Search, Share2, Square, Trash2, Upload, X } from 'lucide-react';
+import type { Folder, Note, NoteSummary, WhiteboardFile } from '../shared/types';
 import type { ExplorerFolderState } from './useNotebook';
 import { dateLocale, t, uiLanguage } from './i18n';
 import { placeMenu } from './menuPosition';
@@ -16,6 +16,20 @@ interface NotebookExplorerProps {
   activeFolderId: string | null | undefined;
   folders: Folder[];
   notes: NoteSummary[];
+  boards: WhiteboardFile[];
+  activeBoardId?: string;
+  openBoard(board: WhiteboardFile): void;
+  openBoardFullscreen(board: WhiteboardFile): void;
+  createBoardIn(folderId: string): void;
+  moveBoard(board: WhiteboardFile): void;
+  duplicateBoard(board: WhiteboardFile): void;
+  copyBoardPath(board: WhiteboardFile): void;
+  copyBoardId(board: WhiteboardFile): void;
+  copyBoardMcpUri(board: WhiteboardFile): void;
+  downloadBoard(board: WhiteboardFile): void;
+  exportBoard(board: WhiteboardFile, format: 'png' | 'svg'): void;
+  copyBoardContent(board: WhiteboardFile): void;
+  deleteBoard(board: WhiteboardFile): void;
   currentNote: Note | null;
   pendingIds: Set<string>;
   selectionMode: boolean;
@@ -49,7 +63,7 @@ interface NotebookExplorerProps {
   toggleSelected(id: string): void;
   openNoteMenu(id: string, trigger: HTMLElement): void;
   loadMore(): void;
-  createNote(): void;
+  openCreateMenu(): void;
 }
 
 function compactExcerpt(value: string) {
@@ -87,6 +101,15 @@ function quickNoteTitle(timestamp: number) {
 
 export function NotebookExplorer(props: NotebookExplorerProps) {
   const entityCounts = useMemo(() => folderEntityCounts(props.folders), [props.folders]);
+  const boardsByFolder = useMemo(() => {
+    const grouped = new Map<string | null, WhiteboardFile[]>();
+    for (const board of props.boards) {
+      const items = grouped.get(board.folderId) ?? [];
+      items.push(board);
+      grouped.set(board.folderId, items);
+    }
+    return grouped;
+  }, [props.boards]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const treeRef = useRef<HTMLUListElement>(null);
   const hierarchical = props.view === 'all' && !props.query && !props.activeTag;
@@ -212,7 +235,45 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
     </li>;
   };
 
+  const boardRows = (boards: WhiteboardFile[] | undefined, depth: number) => !props.selectionMode && boards?.map((board) =>
+    <li key={board.id} className="explorer-note-item" style={{ '--tree-depth': depth } as React.CSSProperties}>
+      <button className={`note-row explorer-note-row with-meta${props.activeBoardId === board.id ? ' selected' : ''}`}
+        aria-current={props.activeBoardId === board.id ? 'true' : undefined} data-note-row data-full-name disabled={props.disabled}
+        onClick={() => props.openBoard(board)}><Square size={18} />
+        <span className="explorer-note-copy"><strong className="note-row-title" data-full-name-label>{board.name}</strong></span>
+      </button>
+      <details className="folder-action-menu board-action-menu" onToggle={(event) => {
+        if (event.target !== event.currentTarget) return;
+        const popover = event.currentTarget.querySelector<HTMLElement>('.folder-action-popover');
+        if (!event.currentTarget.open) { popover?.hidePopover(); return; }
+        popover?.showPopover();
+        for (const menu of document.querySelectorAll<HTMLDetailsElement>('.folder-action-menu[open]')) {
+          if (menu !== event.currentTarget) menu.removeAttribute('open');
+        }
+        const trigger = event.currentTarget.querySelector('summary')?.getBoundingClientRect();
+        if (trigger && popover) placeMenu(popover, trigger);
+      }}>
+        <summary role="button" className="explorer-row-more" aria-label={t('board_actions')}><MoreHorizontal size={16} /></summary>
+        <div className="folder-action-popover board-action-popover" role="menu" aria-label={t('board_actions')} popover="manual">
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.openBoard(board); }}><Pencil size={17} /><span className="folder-action-label">{t('board_edit')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.openBoardFullscreen(board); }}><Maximize2 size={17} /><span className="folder-action-label">{t('board_open_fullscreen')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.moveBoard(board); }}><FolderInput size={17} /><span className="folder-action-label">{t('移动到文件夹')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.duplicateBoard(board); }}><CopyPlus size={17} /><span className="folder-action-label">{t('board_duplicate')}</span></button>
+          <button role="menuitem" onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyBoardPath(board); }}><Copy size={17} /><span className="folder-action-label">{t('复制路径')}</span></button>
+          <button role="menuitem" onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyBoardId(board); }}><Copy size={17} /><span className="folder-action-label">{t('复制 ID')}</span></button>
+          <button role="menuitem" onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyBoardMcpUri(board); }}><Bot size={17} /><span className="folder-action-label">{t('board_copy_mcp_uri')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.downloadBoard(board); }}><Download size={17} /><span className="folder-action-label">{t('board_source')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.exportBoard(board, 'png'); }}><FileImage size={17} /><span className="folder-action-label">{t('board_png')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.exportBoard(board, 'svg'); }}><FileImage size={17} /><span className="folder-action-label">{t('board_svg')}</span></button>
+          <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.copyBoardContent(board); }}><Copy size={17} /><span className="folder-action-label">{t('board_copy_source')}</span></button>
+          <button role="menuitem" className="danger" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.deleteBoard(board); }}><Trash2 size={17} /><span className="folder-action-label">{t('board_delete')}</span></button>
+        </div>
+      </details>
+    </li>);
+
   const folderBranch = (folder: Folder, depth: number): ReactNode => {
+    const boards = boardsByFolder.get(folder.id);
+    const count = (entityCounts.get(folder.id) ?? 0) + (boards?.length ?? 0);
     const open = expanded.has(folder.id);
     const children = foldersByParent.get(folder.id) ?? [];
     const bucket = props.explorerFolders[props.explorerFolderKey(folder.id)];
@@ -227,7 +288,7 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
           revealedTarget.current = `${props.activeFolderId ?? ''}:${folder.id}:${folder.id}`;
           toggleFolder(folder.id);
           props.inspectFolder(folder.id);
-        }}>{open ? <FolderOpen size={18} /> : <FolderIcon size={18} />}<span data-full-name-label>{folder.name}</span><small aria-label={t('direct_entity_count', entityCounts.get(folder.id) ?? 0)}>{entityCounts.get(folder.id) ?? 0}</small></button>
+        }}>{open ? <FolderOpen size={18} /> : <FolderIcon size={18} />}<span data-full-name-label>{folder.name}</span><small aria-label={t('direct_entity_count', count)}>{count}</small></button>
         <details className="folder-action-menu" onToggle={(event) => {
           if (event.target !== event.currentTarget) return;
           const popover = event.currentTarget.querySelector<HTMLElement>('.folder-action-popover');
@@ -247,6 +308,7 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.editFolder(folder); }}><Pencil size={17} /><span className="folder-action-label">{t('编辑名称与描述')}</span></button>
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); toggleFolder(folder.id, true); props.createChild(folder.id); }}><FolderPlus size={17} /><span className="folder-action-label">{t('新建文件夹')}</span></button>
             <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.createNoteIn(folder.id); }}><FilePlus2 size={17} /><span className="folder-action-label">{t('新建文件')}</span></button>
+            <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); toggleFolder(folder.id, true); props.createBoardIn(folder.id); }}><Square size={17} /><span className="folder-action-label">{t('board_new')}</span></button>
             {props.uploadFileTo && (
               <button role="menuitem" disabled={props.disabled} onClick={(event) => { closeFolderMenu(event.currentTarget); props.uploadFileTo?.(folder.id); }}><Upload size={17} /><span className="folder-action-label">{t('上传文件')}</span></button>
             )}
@@ -263,9 +325,10 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
       {open && <ul className="folder-children">
         {children.map((child) => folderBranch(child, depth + 1))}
         {bucket?.notes.map((item) => noteRow(item, depth + 1, true))}
+        {boardRows(boards, depth + 1)}
         {bucket?.loading && <li className="explorer-inline-state" style={{ '--tree-depth': depth + 1 } as React.CSSProperties}><LoaderCircle className="spin" size={14} />{t('loading')}</li>}
         {bucket?.error && <li className="explorer-inline-state error" style={{ '--tree-depth': depth + 1 } as React.CSSProperties}><span>{t('加载失败')}</span><button onClick={() => void props.ensureFolder(folder.id, { force: true })}>{t('retry')}</button></li>}
-        {bucket && !bucket.loading && !bucket.error && !bucket.notes.length && !children.length && <li className="explorer-inline-state" style={{ '--tree-depth': depth + 1 } as React.CSSProperties}><span className="explorer-empty-label">{t('no_notes')}</span></li>}
+        {bucket && !bucket.loading && !bucket.error && !bucket.notes.length && !children.length && !boards?.length && <li className="explorer-inline-state" style={{ '--tree-depth': depth + 1 } as React.CSSProperties}><span className="explorer-empty-label">{t('no_notes')}</span></li>}
         {bucket?.nextOffset !== null && bucket && <li style={{ '--tree-depth': depth + 1 } as React.CSSProperties}><button className="load-more explorer-load-more" onClick={() => void props.ensureFolder(folder.id, { append: true })}>{t('加载更多')}<ChevronDown size={14} /></button></li>}
       </ul>}
     </li>;
@@ -317,6 +380,7 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
             ? selectedFolder && folderBranch(selectedFolder, 0)
             : <>
               {(rootBucket?.notes ?? []).map((item) => noteRow(item, 0, true))}
+              {boardRows(boardsByFolder.get(null), 0)}
               {(foldersByParent.get(null) ?? []).map((folder) => folderBranch(folder, 0))}
               {rootBucket?.loading && <li className="explorer-inline-state"><LoaderCircle className="spin" size={14} />{t('loading')}</li>}
               {rootBucket?.error && <li className="explorer-inline-state error"><span>{t('加载失败')}</span><button onClick={() => void props.ensureFolder(null, { force: true })}>{t('retry')}</button></li>}
@@ -327,6 +391,6 @@ export function NotebookExplorer(props: NotebookExplorerProps) {
       {!hierarchical && props.nextOffset !== null && <button className="load-more" onClick={props.loadMore}>{t('加载更多')}<ChevronDown size={14} /></button>}
     </div>
     <footer className="list-footer"><span>{props.notes.length} {t('篇笔记')}</span></footer>
-    <button className="mobile-compose" aria-label={t('新建笔记')} disabled={props.loading} onClick={props.createNote}><Plus size={23} /></button>
+    <button className="mobile-compose" aria-label={t('board_create_menu')} aria-haspopup="dialog" disabled={props.loading} onClick={props.openCreateMenu}><Plus size={23} /></button>
   </section>;
 }

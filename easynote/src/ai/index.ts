@@ -8,6 +8,7 @@ import {
   type IntegrationNoteSummary,
   type Note,
   type NoteInput,
+  type WhiteboardFile,
 } from '../shared/types.js';
 import { EASYNOTE_VERSION } from '../shared/version.js';
 import { EasyNoteClient } from './client.js';
@@ -159,6 +160,20 @@ function recentNote(note: IntegrationNoteSummary) {
 function resourceMarkdown(note: Note): string {
   const title = note.title.replace(/\s+/g, ' ').trim() || 'Untitled note';
   return `# ${title}\n\n${note.content}`;
+}
+
+const whiteboardMetadataSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  folderId: z.string().nullable(),
+  revision: z.number().int().positive(),
+});
+
+function whiteboardResult(board: WhiteboardFile) {
+  return {
+    board,
+    uri: `easynote://whiteboards/${board.id}.excalidraw`,
+  };
 }
 
 export async function createMcpServer(client: EasyNoteClient): Promise<McpServer> {
@@ -431,6 +446,55 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
     };
   });
 
+  server.registerTool('easynote_list_whiteboards', {
+    title: 'List EasyNote Whiteboards',
+    description: 'List all Excalidraw whiteboard files with stable IDs, folder IDs and revisions.',
+    inputSchema: z.object({}).strict(),
+    outputSchema: z.object({ boards: z.array(whiteboardMetadataSchema.extend({ uri: z.string() })) }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async () => {
+    try {
+      const { boards } = await client.whiteboards();
+      const result = { boards: boards.map((board) => ({ ...board, uri: whiteboardResult(board).uri })) };
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('easynote_read_whiteboard', {
+    title: 'Read EasyNote Whiteboard',
+    description: 'Read one standard Excalidraw JSON file. Use its current revision for later updates.',
+    inputSchema: z.object({ id: z.uuid() }).strict(),
+    outputSchema: z.object({ board: whiteboardMetadataSchema, uri: z.string(), scene: z.unknown() }),
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  }, async ({ id }) => {
+    try {
+      const { board, scene } = await client.whiteboard(id);
+      const result = { ...whiteboardResult(board), scene };
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
+
+  const whiteboardTemplate = new ResourceTemplate('easynote://whiteboards/{id}.excalidraw', {
+    list: async () => ({
+      resources: (await client.whiteboards()).boards.map((board) => ({
+        uri: whiteboardResult(board).uri,
+        name: board.name,
+        description: `Revision ${board.revision}`,
+        mimeType: 'application/vnd.excalidraw+json',
+      })),
+    }),
+  });
+  server.registerResource('easynote_whiteboard', whiteboardTemplate, {
+    title: 'EasyNote Whiteboard',
+    description: 'A live EasyNote whiteboard represented as a standard Excalidraw JSON file.',
+    mimeType: 'application/vnd.excalidraw+json',
+  }, async (uri, variables) => {
+    const id = variables.id;
+    if (typeof id !== 'string' || !idPattern.test(id)) throw new Error('The EasyNote resource URI has an invalid whiteboard ID.');
+    const { scene } = await client.whiteboard(id);
+    return { contents: [{ uri: uri.href, mimeType: 'application/vnd.excalidraw+json', text: JSON.stringify(scene) }] };
+  });
+
   server.registerTool('easynote_list_folders', {
     title: 'List EasyNote Folders',
     description: 'List the complete EasyNote folder hierarchy with stable IDs, parent IDs, descriptions and direct note counts.',
@@ -448,6 +512,53 @@ export async function createMcpServer(client: EasyNoteClient): Promise<McpServer
   });
 
   if (status.access !== 'read-write') return server;
+
+  server.registerTool('easynote_create_whiteboard', {
+    title: 'Create EasyNote Whiteboard',
+    description: 'Create a standard Excalidraw whiteboard file. Reuse the same ID and identical input to safely retry.',
+    inputSchema: z.object({
+      id: z.uuid().optional(),
+      name: z.string().min(1).max(169).describe('Filename without the .excalidraw extension.'),
+      folderId: z.uuid().nullable().default(null),
+      scene: z.unknown().describe('A standard Excalidraw scene with type excalidraw, version 2 and an elements array.'),
+    }).strict(),
+    outputSchema: z.object({ board: whiteboardMetadataSchema, uri: z.string() }),
+    annotations: writeAnnotations,
+  }, async ({ id = crypto.randomUUID(), name, folderId, scene }) => {
+    try {
+      const board = await client.saveWhiteboard({ id, name: `${name.trim()}.excalidraw`, folderId, revision: 0 }, scene);
+      const result = whiteboardResult(board);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
+
+  server.registerTool('easynote_update_whiteboard', {
+    title: 'Update EasyNote Whiteboard',
+    description: 'Update a whiteboard scene, rename it, or move it to another folder. expected_revision must match the latest read result.',
+    inputSchema: z.object({
+      id: z.uuid(),
+      expected_revision: z.number().int().positive(),
+      name: z.string().min(1).max(169).optional().describe('Optional filename without the .excalidraw extension.'),
+      folderId: z.uuid().nullable().optional(),
+      scene: z.unknown().optional(),
+    }).strict().refine(({ name, folderId, scene }) => name !== undefined || folderId !== undefined || scene !== undefined, {
+      message: 'Supply a name, folderId or scene.',
+    }),
+    outputSchema: z.object({ board: whiteboardMetadataSchema, uri: z.string() }),
+    annotations: writeAnnotations,
+  }, async ({ id, expected_revision, name, folderId, scene }) => {
+    try {
+      const current = await client.whiteboard(id);
+      if (current.board.revision !== expected_revision) throw new Error('The whiteboard changed. Read it again before retrying.');
+      const board = await client.saveWhiteboard({
+        ...current.board,
+        name: name === undefined ? current.board.name : `${name.trim()}.excalidraw`,
+        folderId: folderId === undefined ? current.board.folderId : folderId,
+      }, scene ?? current.scene);
+      const result = whiteboardResult(board);
+      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) { return toolError(error); }
+  });
 
   server.registerTool('easynote_create_note', {
     title: 'Create EasyNote Note',
